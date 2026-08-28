@@ -10,11 +10,15 @@ Post-process existing docs/<slug>/sections/*.md chunks in place:
 
 Both passes are idempotent: rerunning makes no further change.
 
-Breadcrumbs are only added to manuals whose heading levels form a usable
+Ancestors are only walked for manuals whose heading levels form a usable
 hierarchy. In a flat manual (notably tshell-ref, where 95% of chunks share
 one level) there is nothing to walk, and a guessed parent would be worse
 than none -- see references/failure-modes.md for why a wrong parent is
-actively dangerous in a command reference.
+actively dangerous in a command reference. Those manuals still get a
+breadcrumb of the document title alone: it guesses no ancestor, so it cannot
+be wrong, and a chunk retrieved on its own still names its source. Chunks
+that already carry a breadcrumb naming ancestors are left alone, so this
+never overwrites the page-accurate ones rebuild_reference.py writes.
 
 Usage:
   python scripts/enrich_chunks.py "Synopsys Manual" --dry-run
@@ -41,7 +45,6 @@ from pathlib import Path
 MAX_FLATNESS = 0.50
 
 BREADCRUMB_SEP = " › "  # single right-pointing angle quote
-BREADCRUMB_RE = re.compile(r"^\*[^*\n]*›[^*\n]*\*\s*$")
 
 FENCE_RE = re.compile(r"^\s*```")
 BARE_NUM_RE = re.compile(r"^\s*\d{1,4}\s*$")
@@ -241,6 +244,21 @@ def is_existing_breadcrumb(line: str, manual_title: str) -> bool:
     return s[1:-1].strip().startswith(manual_title.strip())
 
 
+def has_richer_breadcrumb(text: str, manual_title: str) -> bool:
+    """True if this chunk already carries a breadcrumb naming ancestors.
+
+    rebuild_reference.py writes page-accurate breadcrumbs that name the owning
+    entity ("... > tessent -shell"). Those are strictly better than the
+    title-only fallback, and apply_breadcrumb refreshes in place, so without
+    this check a title-only pass would overwrite real entity attribution with
+    less information than it found.
+    """
+    first = next((l for l in text.splitlines() if l.strip()), None)
+    if first is None or not is_existing_breadcrumb(first, manual_title):
+        return False
+    return BREADCRUMB_SEP.strip() in first
+
+
 def apply_breadcrumb(text: str, crumb: str, manual_title: str) -> str:
     lines = text.splitlines()
     first = next((i for i, l in enumerate(lines) if l.strip()), None)
@@ -266,11 +284,17 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
     min_count = max(10, int(0.05 * len(sections)))
     furniture = detect_furniture(texts, min_count, manifest["title"])
 
+    # A usable hierarchy gets the full walk. A flat document gets the title
+    # alone: no ancestor is guessed, so the failure this guard exists to
+    # prevent (a chunk claiming the wrong parent) cannot happen, while a chunk
+    # retrieved on its own still says which document it came from. Without this
+    # fallback, flat documents left 21% of one corpus with no attribution.
     do_crumbs = flatness(sections) < MAX_FLATNESS
+    crumb_mode = "walk" if do_crumbs else "title"
     crumbs = (
         build_breadcrumbs(sections, manifest["title"], toc_titles(manifest.get("toc")))
         if do_crumbs
-        else None
+        else [manifest["title"]] * len(sections)
     )
 
     changed = 0
@@ -281,14 +305,16 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
     for idx, (s, text) in enumerate(zip(sections, texts)):
         new, dropped = strip_furniture(text, furniture)
         lines_dropped += dropped
-        if crumbs:
+        # Never trade a breadcrumb with ancestors for a title-only one.
+        keep_existing = crumb_mode == "title" and has_richer_breadcrumb(new, manifest["title"])
+        if not keep_existing:
             new = apply_breadcrumb(new, crumbs[idx], manifest["title"])
         if new != text:
             changed += 1
             if not dry_run:
                 (mdir / s["file"]).write_text(new, encoding="utf-8")
             s["chars"] = len(new)
-        if crumbs:
+        if not keep_existing:
             s["breadcrumb"] = crumbs[idx]
         if len(samples) < 3 and dropped:
             samples.append(s["file"])
@@ -305,13 +331,22 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
         "changed": changed,
         "lines_dropped": lines_dropped,
         "furniture_patterns": len(furniture),
-        "breadcrumbs": bool(crumbs),
+        "breadcrumbs": crumb_mode,
         "flatness": flatness(sections),
         "furniture_sample": sorted(furniture, key=len, reverse=True)[:4],
     }
 
 
 def main() -> None:
+    # These documents are full of characters like "™" and "›" that a Windows
+    # console's legacy default code page (cp1252, cp950, ...) cannot encode --
+    # printing a furniture sample containing one killed --dry-run mid-report.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -338,7 +373,7 @@ def main() -> None:
     for r in results:
         print(
             f"{r['chunks']:7d} {r['changed']:8d} {r['lines_dropped']:7d} "
-            f"{'yes' if r['breadcrumbs'] else 'no':>7}  {r['slug']}"
+            f"{r['breadcrumbs']:>7}  {r['slug']}"
         )
     print(
         f"\ntotals: {sum(r['chunks'] for r in results)} chunks, "

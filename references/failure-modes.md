@@ -181,6 +181,15 @@ For calibration, the original hand-built corpus had 8 chunks over 9 KB out of
 - Breadcrumb detection keyed on the `›` separator, so title-only breadcrumbs
   (no separator) weren't recognized and got re-prepended every run — 2,117
   chunks would have accumulated duplicates. Key off the document title instead.
+- A later pass overwrote metadata that an earlier, better-informed pass had
+  written. `enrich_chunks.py` refreshes the breadcrumb line in place, so once
+  it gained a title-only fallback for flat documents it would have replaced
+  `Synthesis Tool Commands › set_scan_configuration` -- written by
+  `rebuild_reference.py` from the PDF's own page map -- with the bare document
+  title, destroying the entity attribution that makes command lookup
+  trustworthy. 6,316 chunks across two reference manuals were exposed. A pass
+  that can only add information must check whether more is already there
+  before it writes.
 - An index builder wrote `ensure_ascii=False` while existing files used escapes,
   and added a trailing newline where the originals had none — producing diff
   churn on every regeneration. Match existing conventions or accept one

@@ -14,6 +14,9 @@
          title / slug / dictionary / supersedes overrides.
        - Moves the PDF into "<vendor>\" (next to the other source PDFs).
        - Runs convert_manual.py on it to produce docs\<slug>\.
+       - Runs enrich_chunks.py on that new slug to strip page furniture
+         and add breadcrumbs, so a new document matches the rest of the
+         corpus instead of waiting for someone to remember the step.
        - If the sidecar named a "supersedes" slug, removes that old
          docs\<slug>\ folder and records the swap in superseded.json.
     2. Runs build_index.py on the vendor folder to refresh docs\index.json
@@ -27,6 +30,15 @@
 .EXAMPLE
   # Drop new PDFs in "Tessent Manual\new pdf\" and/or "Synopsys Manual\new pdf\", then:
   .\scripts\update.ps1
+
+.EXAMPLE
+  # Drive a corpus kept elsewhere, without copying these scripts into it:
+  H:\Playground\PDF-to-RAG\scripts\update.ps1 -Root "D:\Manuals"
+
+.PARAMETER Root
+  The corpus root to scan for corpus folders. Defaults to this script's parent
+  folder, which is right when the scripts sit inside the corpus. Pass it when
+  the skill is installed once and used against corpora kept elsewhere.
 
 .NOTES
   Sidecar JSON format ("<pdfname>.json", all fields optional):
@@ -49,7 +61,9 @@
 #>
 
 [CmdletBinding()]
-param()
+param(
+    [string]$Root
+)
 
 function Get-DefaultTitle {
     param([string]$Stem)
@@ -178,6 +192,15 @@ function Update-Vendor {
             $newSlug = Split-Path -Leaf $Matches[1].Trim()
         }
 
+        # Freshly converted chunks still carry the PDF's page furniture (running
+        # title, "Feedback" link) and have no breadcrumb, unlike the rest of the
+        # corpus. Enrich just this slug; the pass is idempotent and decides for
+        # itself whether the heading hierarchy is usable.
+        if ($newSlug) {
+            Write-Host "  enriching chunks (strip page furniture, add breadcrumbs) ..."
+            python (Join-Path $PSScriptRoot "enrich_chunks.py") $VendorDir --only $newSlug
+        }
+
         if ($supersedes) {
             if ($newSlug) {
                 Add-SupersededEntry -VendorDir $VendorDir -OldSlug $supersedes -NewSlug $newSlug
@@ -198,7 +221,14 @@ function Update-Vendor {
     }
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+if ($Root) {
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw "-Root '$Root' is not a folder."
+    }
+    $repoRoot = (Resolve-Path -LiteralPath $Root).Path
+} else {
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+}
 
 Test-Dependencies
 

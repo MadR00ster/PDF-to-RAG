@@ -229,7 +229,7 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |
-| `update.ps1` | Windows drop-and-run: converts PDFs staged in `<corpus>/new pdf/`, then reindexes. |
+| `update.ps1` | Windows drop-and-run: converts PDFs staged in `<corpus>/new pdf/`, enriches each new slug, then reindexes. `-Root <path>` drives a corpus kept outside this repo. |
 
 They are parameterized by corpus directory and slug, and assume the layout
 above. Read the module docstrings — each records why it works the way it does.
