@@ -114,9 +114,12 @@ documents and by 20 points between two regions of the same manual:
 benchmark's main finding, and it reversed an earlier conclusion drawn from prose
 alone:
 
-- **Prose** → Docling for extraction, then anchor ancestors to the TOC. Buys
-  100% page coverage and multi-level breadcrumbs where the prose path today
-  gives 0% pages and one ancestor at best.
+- **Prose** → `convert_docling.py`: Docling for extraction, ancestors anchored
+  to the TOC. Buys 100% page coverage and multi-level breadcrumbs where the
+  light path gives 0% pages and one ancestor at best. It merges Docling's
+  tokenizer-bounded ~500-char pieces up to the usual chunk target, so the
+  result sits alongside the rest of a corpus rather than retrieving unevenly,
+  and marks each breadcrumb `anchored` or `page` so a consumer can weigh it.
 - **Reference / dictionary** → `rebuild_reference.py`, unchanged. It attributes
   99–100% of chunks to the right entity; anything derived from Docling's
   headings managed 16–62% on the same documents. Retiring it would be a severe
@@ -138,7 +141,7 @@ protocol whichever extractor you choose — they are extractor-independent.
 
 **What is bundled.** `convert_manual.py` and `rebuild_reference.py` implement
 the `pymupdf4llm` path and need nothing beyond `requirements.txt`.
-`convert_docling.py` implements the prose route above and needs Docling, which
+`convert_docling.py` implements the prose route below and needs Docling, which
 is a multi-gigabyte install pulling in PyTorch and runs at ~1.2s/page — so it
 is deliberately **not** in `requirements.txt`. Install it only when
 `pick_extractor.py` says a corpus will benefit:
@@ -281,6 +284,7 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |
+| `convert_docling.py` | One prose PDF → `docs/<slug>/` with page numbers and TOC-anchored breadcrumbs. Needs Docling. |
 | `pick_extractor.py` | Pre-flight a PDF: text layer, shape, bookmark density, expected confidence, runtime. |
 | `build_search_db.py` | Corpus → one SQLite FTS5 index. `--emit-vscode-config` also wires up VS Code. |
 | `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only. |

@@ -174,7 +174,7 @@ def report(path: Path, verbose: bool) -> None:
         return
 
     if shape == "reference":
-        print(f"  => rebuild_reference.py")
+        print("  => rebuild_reference.py")
         print(f"     Measured 99-100% entity attribution; anything derived from a")
         print(f"     structure model's headings managed 16-62% on the same documents.")
     else:
@@ -182,7 +182,7 @@ def report(path: Path, verbose: bool) -> None:
         f_band, f_note = fallback_band(multi_share)
         print(f"  bookmark density: {density:.2f}/page -> anchoring {a_band} ({a_note})")
         print(f"  pages starting 2+ sections: {multi_share * 100:.0f}% -> fallback {f_band} ({f_note})")
-        print(f"  => Docling + TOC anchoring"
+        print(f"  => convert_docling.py  (Docling + TOC-anchored breadcrumbs)"
               f"{'  (but mark fallback ancestors clearly -- most chunks use them)' if a_band == 'low' else ''}")
         est = pages * DOCLING_SECONDS_PER_PAGE
         print(f"     est. {est / 60:.0f} min at ~{DOCLING_SECONDS_PER_PAGE}s/page"
