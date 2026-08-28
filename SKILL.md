@@ -73,86 +73,57 @@ boundary lands badly, so never drop it.
 
 ## Choosing an extractor
 
-The highest-leverage decision here, and worth making deliberately rather than
-inheriting. Most failure modes in `references/failure-modes.md` trace to one
-root cause: **`pymupdf4llm` infers heading levels from font size, so the
-"hierarchy" is a guess.** Breadcrumbs and entity attribution then become
-reconstruction work to compensate for that guess.
+Run `scripts/pick_extractor.py <pdfs>` first. It reads the PDF's bookmark
+outline in a second or two and reports text layer, document shape, bookmark
+density and the breadcrumb confidence to expect, then names the converter. Read
+its reasoning, not only its verdict.
 
-**Docling** (IBM Research) parses into a structured document model and chunks
-against that structure instead of font size. Its `HybridChunker` attaches
-heading metadata and a **page number** to every chunk. Prefer it for prose.
+The decision matters because of the root cause behind most of
+`references/failure-modes.md`: **`pymupdf4llm` infers heading levels from font
+size, so the "hierarchy" is a guess.** Docling parses a real document model and
+attaches a page number to every chunk — measured across seven slices and five
+PDF producers, 100% page coverage against 0%. Pages are what make every other
+piece of metadata auditable.
 
-Measured against seven slices spanning five PDF producers
-(`references/extractor-benchmark.md`), it is decisive on page provenance —
-100% of chunks versus 0% from the prose path here — and page numbers are what
-make every other piece of metadata auditable.
+**Route by document shape. Do not pick one extractor for a whole corpus.**
+Prose and reference documents scored oppositely, by wide margins:
 
-It does **not** remove the need for TOC verification. Its heading precision
-measured no better (41% vs 43% TOC-confirmed on the same slice), and it offers
-its own artifacts as headings, including shell transcript lines like
+| shape | converter | why |
+|---|---|---|
+| prose | `convert_docling.py` | 100% pages, multi-level TOC-anchored breadcrumbs |
+| reference / dictionary | `rebuild_reference.py` | 99–100% entity attribution; Docling-derived headings managed 16–62% |
+| mixed | inspect first | convert the entry chapters as reference, the rest as prose |
+| no bookmark TOC | either, warily | nothing can verify a breadcrumb; treat every ancestor as unverified |
+| no text layer | neither | OCR first — the `pdf` skill bundled with Claude covers it |
+
+**A structure-aware extractor does not retire TOC verification.** Docling's
+heading precision measured no better (41% vs 43% TOC-confirmed), and it offers
+its own artifacts as headings — including shell transcript lines like
 `ANALYSIS> analyze_scan_chains`. Take `meta.headings` at face value and roughly
 half your chunks claim an unverifiable ancestor.
 
-**pymupdf4llm** is fast and light on native-text PDFs with no ML models to
-load. Prefer it for large text-heavy corpora where throughput matters, or when
-Docling's runtime is prohibitive — a 6,000-page manual makes that a real
-constraint, not a theoretical one.
+Prose ancestors therefore come from the TOC rather than from detected headings:
+the chunk's own heading where the TOC confirms it, otherwise the heading stack
+in force at its position on the page. The second is 82.9% correct, so
+`convert_docling.py` marks it `page` instead of `anchored`. Weigh them
+differently downstream.
 
-Verify two things on a sample before committing, because they decide how much
-of this skill you still need. Both were measured across five PDF producers in
-`references/extractor-benchmark.md` — read that before re-deriving it, but still
-check them on *your* corpus, since the second one swung from 16% to 88% between
-documents and by 20 points between two regions of the same manual:
-
-- **Does chunk metadata carry page numbers, not just headings?** Page
-  provenance is painful to bolt on afterwards (failure mode 3).
-- **Does the detected hierarchy match the PDF's bookmark TOC?** If it
-  diverges, you are back to reconstruction regardless of the library's claims.
-
-**Route by document shape rather than picking one extractor.** This is the
-benchmark's main finding, and it reversed an earlier conclusion drawn from prose
-alone:
-
-- **Prose** → `convert_docling.py`: Docling for extraction, ancestors anchored
-  to the TOC. Buys 100% page coverage and multi-level breadcrumbs where the
-  light path gives 0% pages and one ancestor at best. It merges Docling's
-  tokenizer-bounded ~500-char pieces up to the usual chunk target, so the
-  result sits alongside the rest of a corpus rather than retrieving unevenly,
-  and marks each breadcrumb `anchored` or `page` so a consumer can weigh it.
-- **Reference / dictionary** → `rebuild_reference.py`, unchanged. It attributes
-  99–100% of chunks to the right entity; anything derived from Docling's
-  headings managed 16–62% on the same documents. Retiring it would be a severe
-  regression exactly where wrong attribution does the most damage.
-
-When anchoring prose ancestors, a chunk whose own heading the TOC confirms is
-positionally precise. Everything else falls back to "the stack in force at this
-page", which is **60.5% correct at page granularity and 82.9% once the chunk and
-the headings are located by y-coordinate on the page**. Mark those chunks lower
-confidence rather than presenting them like anchored ones.
-
-**Pre-flight on bookmark density.** TOC titles per chunk predicts the anchoring
-rate (0.55 → ~88% confirmed; 0.09 → ~16%), and the share of pages where two or
-more TOC entries start predicts how far the fallback can be trusted. Both are
-computable before converting anything.
-
-Keep the corpus layout, index building, furniture stripping and verification
-protocol whichever extractor you choose — they are extractor-independent.
-
-**What is bundled.** `convert_manual.py` and `rebuild_reference.py` implement
-the `pymupdf4llm` path and need nothing beyond `requirements.txt`.
-`convert_docling.py` implements the prose route below and needs Docling, which
-is a multi-gigabyte install pulling in PyTorch and runs at ~1.2s/page — so it
-is deliberately **not** in `requirements.txt`. Install it only when
-`pick_extractor.py` says a corpus will benefit:
+**What is bundled.** `convert_manual.py` and `rebuild_reference.py` are the
+`pymupdf4llm` path and need only `requirements.txt`. `convert_docling.py` needs
+Docling — a multi-gigabyte install pulling in PyTorch, running at ~1.2s/page —
+deliberately **not** in `requirements.txt`. Install it when the pre-flight says
+a corpus earns it:
 
 ```bash
 pip install docling
 ```
 
-**Scanned PDFs** have no text layer, so neither path produces anything until
-OCR runs. The `pdf` skill bundled with Claude covers that, along with tables,
-forms and page manipulation.
+Corpus layout, index building, furniture stripping and the verification
+protocol are extractor-independent; keep them either way. Method, per-slice
+numbers and the harness bugs found along the way are in
+`references/extractor-benchmark.md`. Check the bands against your own sample:
+the anchoring rate swung 16–88% between documents, and 20 points between two
+regions of the same manual.
 
 ## Two document shapes
 
@@ -321,44 +292,34 @@ python scripts/build_search_db.py --root <corpus> --emit-vscode-config
 python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
 ```
 
-The first writes one SQLite FTS5 index and a `.vscode/mcp.json` pointing at
-`mcp_server.py`; the second drives a real handshake and every tool. Collections
-are discovered from disk — `<corpus>/docs/` is one collection, or one per
-subfolder that has a `docs/` — so nothing is hardcoded per corpus. The index is
-a **snapshot**: rebuild after any conversion or enrichment, or the server keeps
-answering from the old corpus.
+The first writes one SQLite FTS5 index plus a `.vscode/mcp.json`; the second
+drives a real handshake and every tool. Collections are discovered from disk,
+so nothing is hardcoded per corpus. Tools: `search_docs`, `get_section`,
+`lookup_entity`, `list_documents`, `get_toc`. The index is a **snapshot** —
+rebuild after any conversion or enrichment, or the server keeps answering from
+the corpus as it used to be.
 
-Tools: `search_docs`, `get_section`, `lookup_entity`, `list_documents`,
-`get_toc`.
+**Lexical, not embeddings**, because real queries are identifiers and error
+strings: `set_scan_configuration`, `-chain_count`, `K23 DRC`. A vector index
+would add a dependency, a rebuild cost and an API key to blur them.
 
-**Lexical, not embeddings.** Real queries are identifiers and error strings —
-`set_scan_configuration`, `-chain_count`, `K23 DRC`. Exact matching serves those;
-a vector index adds a dependency, a rebuild cost and an API key to blur them.
-Heading and entity columns are weighted above body text, and a chunk whose
-entity *is* the query is boosted further.
+Four retrieval decisions worth carrying to any implementation, each of which
+came from watching bad results rather than from theory:
 
-**Rewrite queries before they reach FTS5.** `_` and `-` are token separators and
-stray quotes are a syntax error, so every term becomes an explicitly quoted
-phrase: `set_scan_configuration` → `"set scan configuration"`, matching the
-literal identifier and prose that spells it out. Drop stopwords (FTS5 ANDs
-everything, and agents ask questions: "how do I define a clock" must not require
-"how"), and if the ANDed terms find nothing, retry with OR rather than reporting
-a dead end.
+- **Rewrite queries before FTS5 sees them.** `_` and `-` are token separators
+  and stray quotes are a syntax error, so each term becomes a quoted phrase.
+- **Drop stopwords, then fall back to OR.** FTS5 ANDs everything and agents ask
+  questions: "how do I define a clock" must not require "how", and one unlucky
+  word must not turn a good question into a dead end.
+- **Demote front matter.** A contents page lists every heading in the document,
+  so it outranks the real one — "DRC Rule K23 . . . 151" beating rule K23.
+- **Cap hits per document**, or one large reference fills every result page.
 
-**Demote front matter.** A contents page lists every heading in the document, so
-it matches almost any query and outranks the real page — "DRC Rule K23 . . . 151"
-beating the text of rule K23. Flag those at build time and push them down; don't
-delete them.
-
-**Cap hits per document.** One large reference will otherwise fill every result
-page. Default to at most 5.
-
-**A partial index must say so.** This is the failure mode that looks like a
-correct answer: if some chunks did not make it in, search returns "no matches"
-for something the corpus does cover and nothing on screen says the shelf was
-half empty. The build refuses to exit 0 and names the unreadable files; the
-server reports per-document coverage and appends a "Partial index" warning to
-every result until it is whole.
+**A partial index must say so.** This is the failure that looks like a correct
+answer: search returns "no matches" for something the corpus does cover, and
+nothing on screen says the shelf was half empty. The build refuses to exit 0
+and names the unreadable files; the server reports per-document coverage and
+warns on every result until the index is whole.
 
 ## Platform notes
 
