@@ -1,6 +1,6 @@
 ---
 name: pdf-to-rag
-description: Convert a folder of PDF manuals, handbooks, or reference documentation into a retrieval-ready markdown corpus — chunked, indexed, and carrying the chunk-level metadata (breadcrumbs, page numbers, entity attribution) that decides whether retrieval is actually safe. Also use this to diagnose or repair an existing chunked corpus. Trigger whenever the user wants to make PDFs searchable or queryable, build a RAG dataset / knowledge base / vector-store corpus from documents, chunk documents for embedding, add page citations to retrieved text, or asks why their RAG answers are wrong or vague — including casual framings like "I have a pile of vendor manuals I want to ask questions about", "turn these datasheets into something I can search", or "my retrieval keeps returning useless fragments".
+description: Convert a folder of PDF manuals, handbooks, or reference documentation into a retrieval-ready markdown corpus — chunked, indexed, and carrying the chunk-level metadata (breadcrumbs, page numbers, entity attribution) that decides whether retrieval is actually safe. Also use this to diagnose or repair an existing chunked corpus. Trigger whenever the user wants to make PDFs searchable or queryable, build a RAG dataset / knowledge base / vector-store corpus from documents, chunk documents for embedding, add page citations to retrieved text, wire a document corpus into an editor as an MCP server they can query from VS Code or Claude Code, or asks why their RAG answers are wrong or vague — including casual framings like "I have a pile of vendor manuals I want to ask questions about", "turn these datasheets into something I can search", or "my retrieval keeps returning useless fragments".
 ---
 
 # PDF → RAG corpus
@@ -61,6 +61,10 @@ boundary lands badly, so never drop it.
    furniture, adds breadcrumbs). Reference documents get this during their
    own conversion, so don't run both over the same document.
 6. **Verify** with the protocol below before declaring done.
+7. **Serve it.** A corpus nobody can query is a folder of markdown. Build the
+   search index and wire it into the user's editor — see "Serving the corpus
+   over MCP". Do this as part of delivering, not as a follow-up they have to
+   ask for.
 
 ## Choosing an extractor
 
@@ -229,6 +233,9 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |
+| `build_search_db.py` | Corpus → one SQLite FTS5 index. `--emit-vscode-config` also wires up VS Code. |
+| `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only. |
+| `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
 | `update.ps1` | Windows drop-and-run: converts PDFs staged in `<corpus>/new pdf/`, enriches each new slug, then reindexes. `-Root <path>` drives a corpus kept outside this repo. |
 
 They are parameterized by corpus directory and slug, and assume the layout
@@ -237,6 +244,56 @@ above. Read the module docstrings — each records why it works the way it does.
 `references/failure-modes.md` has the full catalog with measurements. Read it
 when debugging a corpus that already exists, or before changing chunking or
 furniture logic.
+
+## Serving the corpus over MCP
+
+Chunking and metadata only pay off when something can retrieve them. Two
+stdlib-only scripts turn a converted corpus into a server any MCP client
+(VS Code/Copilot, Claude Code, Cursor) can query:
+
+```bash
+python scripts/build_search_db.py --root <corpus> --emit-vscode-config
+python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
+```
+
+The first writes one SQLite FTS5 index and a `.vscode/mcp.json` pointing at
+`mcp_server.py`; the second drives a real handshake and every tool. Collections
+are discovered from disk — `<corpus>/docs/` is one collection, or one per
+subfolder that has a `docs/` — so nothing is hardcoded per corpus. The index is
+a **snapshot**: rebuild after any conversion or enrichment, or the server keeps
+answering from the old corpus.
+
+Tools: `search_docs`, `get_section`, `lookup_entity`, `list_documents`,
+`get_toc`.
+
+**Lexical, not embeddings.** Real queries are identifiers and error strings —
+`set_scan_configuration`, `-chain_count`, `K23 DRC`. Exact matching serves those;
+a vector index adds a dependency, a rebuild cost and an API key to blur them.
+Heading and entity columns are weighted above body text, and a chunk whose
+entity *is* the query is boosted further.
+
+**Rewrite queries before they reach FTS5.** `_` and `-` are token separators and
+stray quotes are a syntax error, so every term becomes an explicitly quoted
+phrase: `set_scan_configuration` → `"set scan configuration"`, matching the
+literal identifier and prose that spells it out. Drop stopwords (FTS5 ANDs
+everything, and agents ask questions: "how do I define a clock" must not require
+"how"), and if the ANDed terms find nothing, retry with OR rather than reporting
+a dead end.
+
+**Demote front matter.** A contents page lists every heading in the document, so
+it matches almost any query and outranks the real page — "DRC Rule K23 . . . 151"
+beating the text of rule K23. Flag those at build time and push them down; don't
+delete them.
+
+**Cap hits per document.** One large reference will otherwise fill every result
+page. Default to at most 5.
+
+**A partial index must say so.** This is the failure mode that looks like a
+correct answer: if some chunks did not make it in, search returns "no matches"
+for something the corpus does cover and nothing on screen says the shelf was
+half empty. The build refuses to exit 0 and names the unreadable files; the
+server reports per-document coverage and appends a "Partial index" warning to
+every result until it is whole.
 
 ## Platform notes
 
@@ -255,10 +312,15 @@ Encountered on Windows; harmless to apply anywhere.
 
 ## Where this skill stops
 
-It produces a corpus, not a retrieval system. There is no embedding index and
-no ranking — the delivered artifact is chunked markdown plus an index, which
-greps well for exact identifiers and answers conceptual questions poorly. Say
-so plainly rather than letting "RAG-ready" imply more than was built.
+It produces a corpus plus **lexical** retrieval over it: chunked markdown, a
+BM25 full-text index, and an MCP server an editor can query. That answers
+"where is this identifier documented" extremely well.
+
+What it does not do is semantic search. There is no embedding index, no vector
+similarity, no reranking, so a question phrased in words the documents never
+use will miss — paraphrase, synonym and concept queries are exactly where a
+lexical index is weakest. Say so plainly rather than letting "RAG-ready" imply
+more than was built.
 
 For the layer above, the community `rag-architect` skills cover vector store
 selection, embedding models, hybrid BM25 + vector search, reranking, and
