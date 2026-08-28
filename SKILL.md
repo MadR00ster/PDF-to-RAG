@@ -51,6 +51,11 @@ boundary lands badly, so never drop it.
 2. **Classify each document.** Prose manual or reference/dictionary (one entry
    per command, function, part number, error code)? This single call drives
    everything downstream — see "Two document shapes".
+   `scripts/pick_extractor.py <pdfs>` decides it from the PDF's own bookmark
+   outline in a second or two, and also reports the text layer, bookmark
+   density and the breadcrumb confidence to expect. It classified 38 real
+   manuals with no false positives, and flags genuinely mixed documents as
+   `mixed` rather than guessing. Read its output; don't just take the verdict.
 3. **Convert.** Pick an extractor first (next section), then
    `scripts/convert_manual.py` for prose, `scripts/rebuild_reference.py` for
    reference documents.
@@ -265,6 +270,7 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |
+| `pick_extractor.py` | Pre-flight a PDF: text layer, shape, bookmark density, expected confidence, runtime. |
 | `build_search_db.py` | Corpus → one SQLite FTS5 index. `--emit-vscode-config` also wires up VS Code. |
 | `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only. |
 | `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
