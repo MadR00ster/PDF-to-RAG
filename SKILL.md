@@ -76,10 +76,18 @@ reconstruction work to compensate for that guess.
 
 **Docling** (IBM Research) parses into a structured document model and chunks
 against that structure instead of font size. Its `HybridChunker` attaches
-heading metadata to each chunk and merges undersized neighbours that share a
-heading — natively doing much of what `scripts/` rebuilds by hand. Prefer it
-when structure fidelity matters: nested headings, complex or merged-cell
-tables, or any corpus needing reliable breadcrumbs and entity attribution.
+heading metadata and a **page number** to every chunk. Prefer it for prose.
+
+Measured against seven slices spanning five PDF producers
+(`references/extractor-benchmark.md`), it is decisive on page provenance —
+100% of chunks versus 0% from the prose path here — and page numbers are what
+make every other piece of metadata auditable.
+
+It does **not** remove the need for TOC verification. Its heading precision
+measured no better (41% vs 43% TOC-confirmed on the same slice), and it offers
+its own artifacts as headings, including shell transcript lines like
+`ANALYSIS> analyze_scan_chains`. Take `meta.headings` at face value and roughly
+half your chunks claim an unverifiable ancestor.
 
 **pymupdf4llm** is fast and light on native-text PDFs with no ML models to
 load. Prefer it for large text-heavy corpora where throughput matters, or when
@@ -87,17 +95,41 @@ Docling's runtime is prohibitive — a 6,000-page manual makes that a real
 constraint, not a theoretical one.
 
 Verify two things on a sample before committing, because they decide how much
-of this skill you still need:
+of this skill you still need. Both were measured across five PDF producers in
+`references/extractor-benchmark.md` — read that before re-deriving it, but still
+check them on *your* corpus, since the second one swung from 16% to 88% between
+documents and by 20 points between two regions of the same manual:
 
 - **Does chunk metadata carry page numbers, not just headings?** Page
   provenance is painful to bolt on afterwards (failure mode 3).
 - **Does the detected hierarchy match the PDF's bookmark TOC?** If it
   diverges, you are back to reconstruction regardless of the library's claims.
 
-The bundled scripts implement the `pymupdf4llm` path. On Docling, much of the
-chunking and breadcrumb logic becomes unnecessary — but keep the corpus layout,
-index building, furniture stripping and verification protocol, which are all
-extractor-independent.
+**Route by document shape rather than picking one extractor.** This is the
+benchmark's main finding, and it reversed an earlier conclusion drawn from prose
+alone:
+
+- **Prose** → Docling for extraction, then anchor ancestors to the TOC. Buys
+  100% page coverage and multi-level breadcrumbs where the prose path today
+  gives 0% pages and one ancestor at best.
+- **Reference / dictionary** → `rebuild_reference.py`, unchanged. It attributes
+  99–100% of chunks to the right entity; anything derived from Docling's
+  headings managed 16–62% on the same documents. Retiring it would be a severe
+  regression exactly where wrong attribution does the most damage.
+
+When anchoring prose ancestors, a chunk whose own heading the TOC confirms is
+positionally precise. Everything else falls back to "the stack in force at this
+page", which is **60.5% correct at page granularity and 82.9% once the chunk and
+the headings are located by y-coordinate on the page**. Mark those chunks lower
+confidence rather than presenting them like anchored ones.
+
+**Pre-flight on bookmark density.** TOC titles per chunk predicts the anchoring
+rate (0.55 → ~88% confirmed; 0.09 → ~16%), and the share of pages where two or
+more TOC entries start predicts how far the fallback can be trusted. Both are
+computable before converting anything.
+
+Keep the corpus layout, index building, furniture stripping and verification
+protocol whichever extractor you choose — they are extractor-independent.
 
 **Scanned PDFs** have no text layer, so neither path produces anything until
 OCR runs. The `pdf` skill bundled with Claude covers that, along with tables,
@@ -244,6 +276,11 @@ above. Read the module docstrings — each records why it works the way it does.
 `references/failure-modes.md` has the full catalog with measurements. Read it
 when debugging a corpus that already exists, or before changing chunking or
 furniture logic.
+
+`references/extractor-benchmark.md` measures pymupdf4llm, Docling and a
+TOC-anchored hybrid against seven slices spanning five PDF producers and both
+document shapes. Read it before switching extractors — it reverses the
+conclusion a prose-only comparison suggests.
 
 ## Serving the corpus over MCP
 
