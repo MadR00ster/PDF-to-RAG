@@ -136,6 +136,17 @@ computable before converting anything.
 Keep the corpus layout, index building, furniture stripping and verification
 protocol whichever extractor you choose — they are extractor-independent.
 
+**What is bundled.** `convert_manual.py` and `rebuild_reference.py` implement
+the `pymupdf4llm` path and need nothing beyond `requirements.txt`.
+`convert_docling.py` implements the prose route above and needs Docling, which
+is a multi-gigabyte install pulling in PyTorch and runs at ~1.2s/page — so it
+is deliberately **not** in `requirements.txt`. Install it only when
+`pick_extractor.py` says a corpus will benefit:
+
+```bash
+pip install docling
+```
+
 **Scanned PDFs** have no text layer, so neither path produces anything until
 OCR runs. The `pdf` skill bundled with Claude covers that, along with tables,
 forms and page manipulation.
