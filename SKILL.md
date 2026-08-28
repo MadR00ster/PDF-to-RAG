@@ -298,6 +298,13 @@ above. Read the module docstrings — each records why it works the way it does.
 when debugging a corpus that already exists, or before changing chunking or
 furniture logic.
 
+`tests/test_pipeline.py` generates fixture PDFs with a known bookmark TOC and
+runs the pipeline over them: `python tests/test_pipeline.py`. It covers the
+things that have actually broken here -- idempotency, never downgrading
+metadata a better-informed pass wrote, declining to attribute entities from too
+little evidence, and the output contract the index and search builders read.
+Run it before changing a converter.
+
 `references/extractor-benchmark.md` measures pymupdf4llm, Docling and a
 TOC-anchored hybrid against seven slices spanning five PDF producers and both
 document shapes. Read it before switching extractors — it reverses the
