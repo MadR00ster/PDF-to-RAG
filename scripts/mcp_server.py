@@ -142,8 +142,8 @@ class CorpusMissing(Exception):
 CORPUS: Corpus
 
 
-def to_match_expr(query: str) -> str:
-    """Turn a natural query into a safe FTS5 MATCH expression.
+def to_match_terms(query: str) -> list[str]:
+    """Turn a natural query into safe FTS5 MATCH terms, one per word or phrase.
 
     Queries are full of identifiers like `set_scan_configuration`, `-chain_count`
     and `tessent -shell`, none of which survive being handed to FTS5 raw: `_` and
@@ -152,6 +152,9 @@ def to_match_expr(query: str) -> str:
     `set_scan_configuration` becomes "set scan configuration" -- matching both
     the literal identifier and prose that spells it out, with BM25 preferring
     the denser hit. Explicit "quoted phrases" and trailing `*` are honoured.
+
+    Returned as a list, not a joined expression, so the caller can combine
+    terms with AND or OR without reaching inside a phrase.
     """
     phrases: list[str] = []
     singles: list[str] = []
@@ -180,7 +183,7 @@ def to_match_expr(query: str) -> str:
         term = render(word)
         if term:
             singles.append(term)
-    return " ".join(phrases + singles)
+    return phrases + singles
 
 
 def run_match(match_expr: str, collection: str | None, document: str | None, limit: int) -> list[sqlite3.Row]:
@@ -210,16 +213,18 @@ def run_match(match_expr: str, collection: str | None, document: str | None, lim
 
 
 def search(query: str, collection=None, document=None, limit=10, max_per_document=5) -> list[sqlite3.Row]:
-    match_expr = to_match_expr(query)
-    if not match_expr:
+    terms = to_match_terms(query)
+    if not terms:
         raise ValueError("Query has no searchable words in it.")
 
-    rows = run_match(match_expr, collection, document, limit)
-    if not rows and " " in match_expr:
+    rows = run_match(" ".join(terms), collection, document, limit)
+    if not rows and len(terms) > 1:
         # Every term ANDed found nothing. One unlucky word should not turn a
         # good question into a dead end, so fall back to OR and let BM25 float
-        # the chunks that hit the most terms.
-        rows = run_match(match_expr.replace(" ", " OR "), collection, document, limit)
+        # the chunks that hit the most terms. Join the terms, not the words:
+        # an identifier is a multi-word phrase, and "set scan configuration"
+        # has to stay one phrase rather than become "set OR scan OR ...".
+        rows = run_match(" OR ".join(terms), collection, document, limit)
 
     scored = sorted(((rank_adjust(r, query), r) for r in rows), key=lambda pair: pair[0])
     picked: list[sqlite3.Row] = []

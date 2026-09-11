@@ -14,18 +14,24 @@ here, not a coverage percentage:
     breadcrumb detector keyed on the separator once re-prepended a crumb every
     run, and the title-only fallback reintroduced exactly that risk.
   * no metadata downgrade -- a pass that can only add information must not
-    overwrite better information already there. This is what protects the
-    page-accurate entity breadcrumbs rebuild_reference.py writes.
+    overwrite better information already there, whichever branch it takes.
+    This is what protects the page-accurate entity breadcrumbs
+    rebuild_reference.py writes.
   * entity attribution -- the command level is found from the TOC, and its
     >=20-entry threshold means a small document silently attributes nothing.
+    A chapter that is not a command must end the command before it, or the
+    last command in a chapter owns the appendices.
   * the output contract -- build_index.py and build_search_db.py read what the
     converters write, so a manifest field rename breaks retrieval, not a test.
+  * the server -- driven over stdio as an editor drives it, including the
+    AND->OR fallback on an identifier, which reaches FTS5 as a phrase.
   * optional-dependency gating -- convert_docling.py must fail with
     instructions, not a traceback, when Docling is absent.
 """
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -91,15 +97,37 @@ def prose_fixture(path: Path) -> None:
     write_pdf(path, pages, toc)
 
 
+def command_page(name: str) -> list[tuple[str, int]]:
+    return [(name, 20),
+            ("SYNTAX", 14), (f"{name} -value <int>", 11),
+            ("ARGUMENTS", 14), ("-value  the value to set", 11)]
+
+
 def reference_fixture(path: Path, n_commands: int) -> None:
     """A command dictionary: one entry per command, listed at TOC level 1."""
     pages, toc = [], []
     for i in range(n_commands):
         name = f"set_widget_option_{i:02d}"
-        pages.append([(name, 20),
-                      ("SYNTAX", 14), (f"{name} -value <int>", 11),
-                      ("ARGUMENTS", 14), ("-value  the value to set", 11)])
+        pages.append(command_page(name))
         toc.append([1, name, len(pages)])
+    write_pdf(path, pages, toc)
+
+
+def nested_reference_fixture(path: Path, n_commands: int) -> None:
+    """Commands at TOC level 2 under a chapter, then chapters that are not
+    commands -- the tshell-ref shape, with an appendix and a licence after the
+    last entry. Neither belongs to any command."""
+    pages = [[("Command Reference", 22), ("This chapter lists every widget command.", 11)]]
+    toc = [[1, "Command Reference", 1]]
+    for i in range(n_commands):
+        name = f"set_widget_option_{i:02d}"
+        pages.append(command_page(name))
+        toc.append([2, name, len(pages)])
+    trailing = [("Appendix A Troubleshooting", "If the widget will not power on, check the fuse."),
+                ("End-User License Agreement", "You may not redistribute this software.")]
+    for chapter, text in trailing:
+        pages.append([(chapter, 22), (text, 11)])
+        toc.append([1, chapter, len(pages)])
     write_pdf(path, pages, toc)
 
 
@@ -113,9 +141,11 @@ class PipelineTest(unittest.TestCase):
         cls.prose_pdf = cls.corpus / "widget-guide.pdf"
         cls.ref_pdf = cls.corpus / "widget-commands.pdf"
         cls.small_ref_pdf = cls.corpus / "tiny-commands.pdf"
+        cls.nested_ref_pdf = cls.corpus / "nested-commands.pdf"
         prose_fixture(cls.prose_pdf)
         reference_fixture(cls.ref_pdf, 25)      # clears the >=20 command threshold
         reference_fixture(cls.small_ref_pdf, 8)  # deliberately below it
+        nested_reference_fixture(cls.nested_ref_pdf, 22)
 
     @classmethod
     def tearDownClass(cls):
@@ -154,7 +184,7 @@ class PipelineTest(unittest.TestCase):
         self.assertFalse(missing, f"chunks left with no attribution: {missing[:3]}")
 
     def test_04_enrich_never_downgrades_a_richer_breadcrumb(self):
-        """The guard that protects rebuild_reference.py's entity breadcrumbs."""
+        """A title-only pass must not replace a breadcrumb that names ancestors."""
         slug_dir = self.corpus / "docs" / "prose"
         m = self.manifest("prose")
         target = slug_dir / m["sections"][0]["file"]
@@ -242,6 +272,87 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("pip install docling", out, "no install instruction")
         self.assertIn("convert_manual.py", out, "did not point at the light path")
         self.assertNotIn("Traceback", out, "gated with a traceback instead of a message")
+
+    # ---------------------------------------------------------------- server
+
+    def test_10_mcp_server_passes_its_smoke_test(self):
+        """The server, driven over stdio the way an editor drives it.
+
+        The smoke test includes the AND->OR fallback on an identifier. An
+        identifier reaches FTS5 as a multi-word phrase, and the fallback used to
+        rewrite the spaces inside it as well, turning "set widget option 00"
+        into a phrase containing the word "or" that could never match.
+        """
+        db = self.tmp / "index.sqlite3"
+        self.assertTrue(db.is_file(), "test_08 builds the index this test serves")
+        r = run("mcp_smoke_test.py", "--db", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("SKIP", r.stdout,
+                         "the index has no entities, so the identifier probes never ran")
+
+    # ------------------------------------------------------ entity boundaries
+
+    def test_11_entity_regions_end_at_chapters(self):
+        """Text that follows a command but is not one must belong to nothing.
+
+        Regions used to end only where the next command began, so the last
+        command in a chapter owned whatever came after it -- the next chapter,
+        the appendices, the licence -- and lookup_entity served it all as that
+        command's entry. Checked by what each chunk contains, not by the share
+        of chunks carrying a label: coverage is not correctness.
+        """
+        r = run("rebuild_reference.py", str(self.nested_ref_pdf),
+                "--title", "Widget Commands", "--slug", "nested")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        slug_dir = self.corpus / "docs" / "nested"
+        sections = self.manifest("nested")["sections"]
+        for s in sections:
+            body = (slug_dir / s["file"]).read_text(encoding="utf-8")
+            if "fuse" in body or "redistribute" in body:
+                self.assertIsNone(s["command"],
+                                  f"{s['file']} is an appendix or licence, labelled {s['command']}")
+            owner = re.search(r"(set_widget_option_\d+) -value", body)
+            if owner:
+                self.assertEqual(s["command"], owner.group(1),
+                                 f"{s['file']} documents {owner.group(1)}")
+        self.assertEqual({s["command"] for s in sections if s["command"]},
+                         {f"set_widget_option_{i:02d}" for i in range(22)},
+                         "bounding the regions cost a command its attribution")
+
+    # ------------------------------------------------- breadcrumb provenance
+
+    def test_12_enrich_leaves_converter_breadcrumbs_alone_in_walk_mode(self):
+        """The no-downgrade guard used to hold for flat documents only.
+
+        enrich_chunks takes the heading walk when a document's levels vary, and
+        that branch refreshed every breadcrumb in place -- replacing the
+        page-accurate `Title › command` rebuild_reference.py writes. Force the
+        walk on real rebuild_reference output and check nothing moves.
+        """
+        corpus = self.tmp / "WalkCorpus"
+        slug_dir = corpus / "docs" / "walkref"
+        r = run("rebuild_reference.py", str(self.ref_pdf), "--title", "Widget Commands",
+                "--slug", "walkref", "--out-root", str(corpus / "docs"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+        manifest_path = slug_dir / "manifest.json"
+        m = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for i, s in enumerate(m["sections"]):
+            s["level"] = 1 + i % 3      # modal level at ~1/3, so enrich walks
+        manifest_path.write_text(json.dumps(m, indent=2), encoding="utf-8")
+
+        def crumbs():
+            cur = json.loads(manifest_path.read_text(encoding="utf-8"))
+            return [(s["breadcrumb"],
+                     (slug_dir / s["file"]).read_text(encoding="utf-8").split("\n")[0])
+                    for s in cur["sections"]]
+
+        before = crumbs()
+        r = run("enrich_chunks.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"walk\s+walkref",
+                         "enrich did not take the walk branch, so this proves nothing")
+        self.assertEqual(crumbs(), before, "enrich rewrote breadcrumbs a converter wrote")
 
 
 if __name__ == "__main__":

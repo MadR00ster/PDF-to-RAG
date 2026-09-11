@@ -22,7 +22,9 @@ So this script goes through pages instead, which is exact:
      character range back to a page range.
   4. The PDF's own TOC lists every command with its page (1,319 in
      tshell-ref, 1,334 in syn2 -- complete and authoritative). A chunk
-     belongs to the last command whose page <= the chunk's first page.
+     belongs to the last command whose page <= the chunk's first page,
+     unless a shallower TOC entry (a chapter, an appendix, the licence)
+     starts in between -- then it belongs to none.
 
 Output matches convert_manual.py's layout, plus per-section `page_start`,
 `page_end`, `command`, and `breadcrumb`.
@@ -170,15 +172,28 @@ def main() -> None:
     )
 
     cmd_level = pick_command_level(toc)
-    commands = []  # (page, name) sorted by page
+    # Every TOC entry at the command level starts a command's entry. Every
+    # shallower one -- a chapter, an appendix, the licence -- ends the entry
+    # before it and starts a region that belongs to no command. Without those
+    # ends the last command in a chapter owned everything up to the next
+    # command: the next chapter's introduction, the appendices, the licence,
+    # all served by lookup_entity as part of that command.
+    boundaries = []  # (page, toc_index, title, command|None)
     if cmd_level is not None:
-        for lvl, title, page in toc:
-            if lvl == cmd_level and (title or "").strip():
-                commands.append((page, title.strip()))
-        commands.sort()
-    cmd_pages = [p for p, _ in commands]
+        for i, (lvl, title, page) in enumerate(toc):
+            title = (title or "").strip()
+            if not title:
+                continue
+            if lvl == cmd_level:
+                boundaries.append((page, i, title, title))
+            elif lvl < cmd_level and page >= 1:
+                boundaries.append((page, i, title, None))
+        # By page, then TOC order: where two entries share a page, TOC order
+        # is document order and alphabetical order need not be.
+        boundaries.sort()
+    n_commands = sum(1 for b in boundaries if b[3])
     print(
-        f"[{args.slug}] command level L{cmd_level}: {len(commands)} commands",
+        f"[{args.slug}] command level L{cmd_level}: {n_commands} commands",
         flush=True,
     )
 
@@ -192,16 +207,16 @@ def main() -> None:
     for i, num in enumerate(page_numbers):
         page_index.setdefault(num, i)
 
-    def command_offset(page: int, name: str, floor: int) -> int:
-        """Offset where a command's entry starts: its page, refined to the
-        line naming it when that can be found (two commands can share a
-        page, and page granularity alone would merge them)."""
+    def entry_offset(page: int, title: str, floor: int) -> int:
+        """Offset where a TOC entry starts: its page, refined to the line
+        naming it when that can be found (two entries can share a page, and
+        page granularity alone would merge them)."""
         idx = page_index.get(page)
         base = page_starts[idx] if idx is not None else floor
         base = max(base, floor)
         window_end = min(len(full_md), base + 40000)
         pat = re.compile(
-            r"^[#*_ \t]*" + re.escape(name) + r"[*_ \t]*$", re.M
+            r"^[#*_ \t]*" + re.escape(title) + r"[*_ \t]*$", re.M
         )
         hit = pat.search(full_md, base, window_end)
         return hit.start() if hit else base
@@ -209,9 +224,9 @@ def main() -> None:
     regions = []  # (start, end, command|None)
     floor = 0
     starts = []
-    for page, name in commands:
-        off = command_offset(page, name, floor)
-        starts.append((off, name))
+    for page, _i, title, command in boundaries:
+        off = entry_offset(page, title, floor)
+        starts.append((off, command))
         floor = off
     if starts and starts[0][0] > 0:
         regions.append((0, starts[0][0], None))

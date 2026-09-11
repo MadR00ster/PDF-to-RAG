@@ -149,8 +149,13 @@ def main() -> int:
         tool("get_section", {}, "section_id", expect_error=True)
         tool("search_docs", {"query": "x", "collection": "nope-not-real"}, "unknown collection", expect_error=True)
         tool("search_docs", {"query": "zzzqqxyw", "limit": 3}, "no matches")
-        # One impossible word must not sink an otherwise good question.
+        # One impossible word must not sink an otherwise good question -- nor
+        # one built around a phrase or an identifier. Both reach FTS5 as a
+        # multi-word phrase, which the OR fallback has to keep whole.
         tool("search_docs", {"query": f"{p['title_word']} zzzqqxyw", "limit": 3}, "result(s) for")
+        tool("search_docs", {"query": f'"{p["phrase"]}" zzzqqxyw', "limit": 3}, "result(s) for")
+        if p["entity"]:
+            tool("search_docs", {"query": f"{p['entity']} zzzqqxyw", "limit": 3}, "result(s) for")
     finally:
         client.close()
 
