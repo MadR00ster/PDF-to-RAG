@@ -75,6 +75,8 @@ boundary lands badly, so never drop it.
    search index and wire it into the user's editor — see "Serving the corpus
    over MCP". Do this as part of delivering, not as a follow-up they have to
    ask for.
+9. **Measure it** with a test set before changing anything about retrieval —
+   see "Measuring retrieval".
 
 ## Choosing an extractor
 
@@ -315,9 +317,11 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `pick_extractor.py` | Pre-flight a PDF: text layer, shape, bookmark density, expected confidence, runtime. |
 | `extract_figures.py` | Crops every figure from the source PDFs into `docs/<slug>/figures/` and ties each to its section. Additive; `--dry-run`, `--jobs N`. |
 | `ocr_figures.py` | Reads the words in figures that have no text of their own (raster images) into `figures.json`, so search can find them. Needs Tesseract's language data. |
-| `build_search_db.py` | Corpus → one SQLite FTS5 index, figures included. `--emit-vscode-config` also wires up VS Code. |
+| `build_search_db.py` | Corpus → one stemmed SQLite FTS5 index, figures included. `--emit-vscode-config` also wires up VS Code. |
 | `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only; `get_page_image` also needs PyMuPDF. |
 | `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
+| `sample_sections.py` | Stratified sample of sections to write test questions from; `--figures` for sections with figures. |
+| `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. |
 
 They are parameterized by corpus directory and slug, and assume the layout
 above. Read the module docstrings — each records why it works the way it does.
@@ -392,14 +396,20 @@ the corpus as it used to be.
 strings: `set_scan_configuration`, `-chain_count`, `K23 DRC`. A vector index
 would add a dependency, a rebuild cost and an API key to blur them.
 
-Four retrieval decisions worth carrying to any implementation, each of which
-came from watching bad results rather than from theory:
+Retrieval decisions worth carrying to any implementation, each of which came
+from watching bad results or measuring them rather than from theory:
 
 - **Rewrite queries before FTS5 sees them.** `_` and `-` are token separators
   and stray quotes are a syntax error, so each term becomes a quoted phrase.
-- **Drop stopwords, then fall back to OR.** FTS5 ANDs everything and agents ask
-  questions: "how do I define a clock" must not require "how", and one unlucky
-  word must not turn a good question into a dead end.
+  Combine terms, never words: `"set scan configuration"` must stay one phrase.
+- **Drop stopwords, then rank by OR whenever AND comes up short.** FTS5 ANDs
+  everything and agents ask questions: "how do I define a clock" must not
+  require "how". Falling back only when AND found *nothing* let one weak chunk
+  that happened to hold every word stand in for the answer; falling back
+  whenever AND returns less than a page took hit@5 from 82% to 89%.
+- **Stem.** Questions say "options" and "toggling" where manuals say "option"
+  and "toggle". Porter stemming lifted reworded questions from 55% to 73% hit@5
+  and cost no identifier lookup.
 - **Demote front matter.** A contents page lists every heading in the document,
   so it outranks the real one — "DRC Rule K23 . . . 151" beating rule K23.
 - **Cap hits per document**, or one large reference fills every result page.
@@ -409,6 +419,34 @@ answer: search returns "no matches" for something the corpus does cover, and
 nothing on screen says the shelf was half empty. The build refuses to exit 0
 and names the unreadable files; the server reports per-document coverage and
 warns on every result until the index is whole.
+
+## Measuring retrieval
+
+Every retrieval choice — chunk size, stemming, a fallback, embeddings, figure
+descriptions — is a guess until it moves a number. Build the number first.
+
+1. `scripts/sample_sections.py --root <corpus> --n 60` draws a stratified
+   sample: every document gets a share by the square root of its size, and
+   front matter, boilerplate and stubs are left out.
+2. Write one question per sampled section while reading it, into
+   `<corpus>/eval/questions.jsonl` with that section as the answer. Give each a
+   kind: `identifier` (names a command, option or message), `concept` (natural
+   wording), `paraphrase` (deliberately avoids the section's own terms — the
+   gap an embedding index would close), `figure` (answered by a figure; sample
+   with `--figures` and look at the image), and `real` for questions users
+   actually asked.
+3. `scripts/eval_search.py --db <index> --questions … --misses` scores hit@k and
+   MRR per kind through the server's own `search()`.
+4. **Review every miss before believing it.** When what came back answers the
+   question just as well, add it as an answer and say so in the question's
+   note. Two of the first twelve misses on a real corpus were right answers the
+   test did not know about.
+5. Compare configurations on the same questions and read the per-question
+   changes, not just the totals — on 57 questions, one question is 1.75 points.
+
+Questions written by someone who has just read the answer share its words, so
+they flatter lexical search. `paraphrase` measures that bias; `real` questions
+are the only ones free of it, so ask the user for some.
 
 ## Platform notes
 
@@ -437,6 +475,14 @@ use will miss — paraphrase, synonym and concept queries are exactly where a
 lexical index is weakest. Say so plainly rather than letting "RAG-ready" imply
 more than was built.
 
+Measure that gap before building for it. On a 24-manual EDA corpus, stemmed
+BM25 put the answer in its top five for 100% of questions naming an
+identifier, 90% of naturally worded ones and 73% of questions deliberately
+reworded to avoid the manual's terms — so an embedding index had a few points
+to add there, all of them on the reworded kind
+(`references/retrieval-measurement.md`). Real users' questions should decide
+whether those points are worth a model dependency.
+
 For the layer above, the community `rag-architect` skills cover vector store
 selection, embedding models, hybrid BM25 + vector search, reranking, and
 RAGAS-style evaluation — and explicitly do *not* cover PDF extraction or chunk
@@ -446,7 +492,8 @@ those decide how it gets found.
 One idea worth borrowing from them: **choose chunk size empirically against the
 real corpus** rather than by hand. The 9 KB default here was inherited by
 matching an existing corpus, which is a defensible starting point and not a
-measured optimum.
+measured optimum; `eval_search.py` turns it into one — rebuild at another size
+and compare on the same questions.
 
 ## Reporting
 
