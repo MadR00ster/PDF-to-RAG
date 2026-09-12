@@ -341,10 +341,32 @@ def page_figures(page, boxes: list[tuple], stats: Counter) -> list[dict]:
 class Linker:
     """Ties figures to sections, walking both in document order."""
 
-    def __init__(self, texts: list[str]):
+    def __init__(self, texts: list[str], page_ranges: list[tuple] | None = None):
         self.padded = [f" {norm(t)} " for t in texts]
         self.captions = caption_lines(texts)
+        self.pages = page_ranges or []
+        self.has_pages = any(start is not None for start, _ in self.pages)
         self.cursor = 0
+
+    def by_page(self, page: int) -> int | None:
+        """The section whose page range holds the figure's page.
+
+        Exact wherever the converter tracked pages (rebuild_reference.py,
+        convert_docling.py), and better evidence than any text match --
+        failure-modes.md section 3 is the record of what text-scanning costs.
+        It also survives chunking that text matching cannot: in a rebuilt
+        command reference a bold caption starts its own chunk, which leaves the
+        paragraph above the figure in the previous one.
+
+        Only where the page belongs to one section. Measured against the caption
+        on a rebuilt command reference: 100% agreement on an unshared page (26
+        figures), 76.7% where one entry ends and the next begins on it (344). A
+        figure hung on the wrong command is the failure this skill exists to
+        prevent, so a shared page links to nothing and the figure is served by
+        page instead."""
+        hits = [i for i, (start, end) in enumerate(self.pages)
+                if start is not None and end is not None and start <= page <= end]
+        return hits[0] if len(hits) == 1 else None
 
     def by_caption(self, caption: str) -> int | None:
         key = norm(caption)
@@ -422,7 +444,7 @@ def extract(doc_dir: Path, pdf_path: Path, dry_run: bool, dpi: int, max_px: int)
     out_dir = doc_dir / "figures"
     if not dry_run:
         out_dir.mkdir(exist_ok=True)
-    linker = Linker(texts)
+    linker = Linker(texts, [(s.get("page_start"), s.get("page_end")) for s in sections])
     entries, per_page, unlinked, disagree = [], Counter(), [], []
     for f in figures:
         section = how = None
@@ -430,15 +452,30 @@ def extract(doc_dir: Path, pdf_path: Path, dry_run: bool, dpi: int, max_px: int)
             section = linker.by_caption(f["caption"])
             if section is not None:
                 how = "caption"
-                check = linker.by_context(f["context"]) if f["context"] else None
-                if check is not None:
-                    stats["check_agree" if check == section else "check_disagree"] += 1
-                    if check != section and len(disagree) < 3:
+                # Score the fallbacks against the caption wherever both apply:
+                # that agreement is the only estimate of how far to trust them
+                # on the figures that have no caption at all.
+                for method, guess in (("page", linker.by_page(f["page"])),
+                                      ("context", linker.by_context(f["context"]) if f["context"] else None)):
+                    if guess is None:
+                        continue
+                    stats[f"check_{method}_agree" if guess == section else f"check_{method}_disagree"] += 1
+                    if guess != section and method == "context" and len(disagree) < 3:
                         disagree.append(f"p.{f['page']} {f['caption'][:40]}: caption -> "
-                                        f"{sections[section]['file']}, context -> {sections[check]['file']}")
-        if section is None and f["context"]:
-            section = linker.by_context(f["context"])
-            how = "context" if section is not None else None
+                                        f"{sections[section]['file']}, context -> {sections[guess]['file']}")
+        # Pages where the converter tracked them, the paragraph above where it
+        # did not. Never both: the context method scored 96-99% against the
+        # caption on documents chunked by heading, and 5.8% on a command
+        # reference rebuilt into one chunk per entry, where a bold caption
+        # starts its own chunk and leaves the paragraph above it in the
+        # previous one. Whichever signal a document supports, it has one.
+        if section is None:
+            if linker.has_pages:
+                section = linker.by_page(f["page"])
+                how = "page" if section is not None else None
+            elif f["context"]:
+                section = linker.by_context(f["context"])
+                how = "context" if section is not None else None
         if section is not None:
             linker.cursor = section
         elif f["caption"] and len(unlinked) < 3:
@@ -514,8 +551,8 @@ def report(r: dict) -> None:
     s = r["stats"]
     print(f"  {r['slug'][:32]:32} {s['pages']:>5} pp  {s['analysed']:>5} analysed  "
           f"{s['figures']:>4} figures on {s['figure_pages']:>4} pp ({s['captioned']:>4} captioned)  "
-          f"linked: {s['link_caption']:>4} caption {s['link_context']:>4} context "
-          f"{s['link_None']:>4} none  {r['secs']:5.0f}s", flush=True)
+          f"linked: {s['link_caption']:>4} caption {s['link_page']:>4} page "
+          f"{s['link_context']:>4} context {s['link_None']:>4} none  {r['secs']:5.0f}s", flush=True)
     for u in r["unlinked"]:
         print(f"      unlinked caption: {u}")
     for d in r["disagree"]:
@@ -574,15 +611,17 @@ def main() -> int:
             totals.update(r["stats"])
             report(r)
 
-    checked = totals["check_agree"] + totals["check_disagree"]
     print(f"\ntotals: {totals['figures']} figures from {totals['pages']} pages "
           f"({totals['analysed']} analysed); dropped {totals['too_small']} too small, "
           f"{totals['repeated']} repeated; linked {totals['link_caption']} by caption, "
-          f"{totals['link_context']} by context, {totals['link_None']} not at all"
+          f"{totals['link_page']} by page, {totals['link_context']} by context, "
+          f"{totals['link_None']} not at all"
           + (f"; {totals['layout_errors']} pages failed layout" if totals["layout_errors"] else ""))
-    if checked:
-        print(f"context check: on {checked} captioned figures that also have context, the context "
-              f"method picks the caption's section {totals['check_agree'] / checked:.1%} of the time")
+    for method in ("page", "context"):
+        checked = totals[f"check_{method}_agree"] + totals[f"check_{method}_disagree"]
+        if checked:
+            print(f"{method} check: on {checked} captioned figures the {method} method picks the "
+                  f"caption's section {totals[f'check_{method}_agree'] / checked:.1%} of the time")
     if totals["layout_errors"]:
         print(f"\n!! the layout model failed on {totals['layout_errors']} page(s), whose figures are "
               "missing from figures.json. Rerun those documents: the extraction is partial, and a "

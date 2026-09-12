@@ -81,10 +81,17 @@ showing reworded misses at a rate this test set does not.
 | found | 4,150 | |
 | captioned | 2,945 | 71% |
 | tied to a section by caption | 2,942 | 99.9% of captioned |
-| tied by the paragraph above | 658 | |
-| not tied, served by page | 550 | 13% |
+| tied by its page | 87 | where the page belongs to one section |
+| tied by the paragraph above | 580 | |
+| not tied, served by page | 541 | 13% |
 | with drawn labels (vector) | 764 | 18% |
 | words read by OCR | 3,284 | 97% of the 3,386 with no text layer |
+
+Which fallback applies depends on the converter. Where chunks carry page
+numbers, the figure's page decides — but only where that page belongs to one
+section: checked against the caption, that is 100% right on an unshared page
+(26 figures) and 76.7% where one entry ends and the next begins on the same one
+(344), so a shared page ties nothing and the figure is served by page instead.
 
 Checked against the caption on the 1,656 figures that have both, the context
 method picked the caption's section 97.5% of the time. Its disagreements are
@@ -129,6 +136,40 @@ a figure). After OCR it has one figure question left to win on this set, and an
 agent that finds the section looks at the figure itself through `get_figure`.
 Worth revisiting only if real questions keep missing figures that OCR reads
 badly — waveforms and dense schematics.
+
+## What rebuilding the two reference manuals changed
+
+`syn2` and `tshell-ref` had been converted with `convert_manual.py`, so no chunk
+in this corpus carried a page number or the name of the command it documented —
+failure mode 1, live, in the two manuals most exposed to it. Rebuilt with
+`rebuild_reference.py`:
+
+| | syn2 | tshell-ref |
+|---|---|---|
+| chunks | 856 → 1,645 | 6,393 → 4,511 |
+| naming their command | 0 → 1,643 (99.9%) | 0 → 4,246 (94.1%) |
+| carrying page numbers | 0 → all | 0 → all |
+
+Every bare `Description` or `Arguments` chunk in syn2 now names its command and
+carries a `Title › command` breadcrumb; the two chunks that name none are the
+copyright pages. Across the corpus the index went from 14,860 chunks and no
+entities at all to 13,767 chunks and 2,653 entities, so `lookup_entity` answers
+here for the first time.
+
+On the same 76 questions, the gain is in the first result rather than the page:
+
+| | before | after |
+|---|---|---|
+| hit@1 | 63% | **71%** |
+| hit@5 | 92% | 92% |
+| MRR | 0.749 | **0.802** |
+| identifier hit@1 | 69% | **85%** |
+
+The rebuild renames every section in both manuals, which breaks any test
+question pointing into them and every figure link in `tshell-ref`. The answers
+were remapped by matching each old chunk's text, kept in `.rebuild-backup`,
+against the new sections; the figures were re-extracted. Budget for both after
+any rebuild.
 
 ## Caveats
 

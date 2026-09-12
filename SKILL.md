@@ -243,12 +243,22 @@ model pymupdf4llm itself uses, crops every figure into `docs/<slug>/figures/`,
 and records page, box, caption and drawn labels in `figures.json`. It touches
 nothing the converter wrote.
 
-**A figure belongs to a section only on evidence.** Its own caption appearing as
-a line of the section is exact: 331 of 331 captioned figures in one Tessent
-guide, 454 of 454 in a Synopsys one. Without a caption, the paragraph above it
-must appear just after the previous figure's section, or else exactly once in
-the whole document; checked against the caption wherever both exist, that picks
-the same section 96–100% of the time.
+**A figure belongs to a section only on evidence**, and which evidence there is
+depends on what the converter left behind. Its own caption appearing as a line
+of the section is exact: 331 of 331 captioned figures in one Tessent guide, 454
+of 454 in a Synopsys one. Failing that:
+
+- **Its page, where the chunks carry page numbers** (`rebuild_reference.py`,
+  `convert_docling.py`) and the page belongs to one section. Checked against the
+  caption: 100% agreement on an unshared page, 76.7% where one entry ends and
+  the next begins on it — so a shared page ties nothing.
+- **The paragraph above it, where they carry no pages**: found just after the
+  previous figure's section, or else exactly once in the document. Checked
+  against the caption, that is 96–99% right on documents chunked by heading —
+  and 5.8% on a command reference rebuilt into one chunk per entry, where a bold
+  caption starts its own chunk and strands the paragraph above it in the
+  previous one. So it is never used where pages exist.
+
 Otherwise the figure stays unattached and is served by page — a guessed section
 would present a diagram as illustrating text it does not.
 
