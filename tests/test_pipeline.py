@@ -26,7 +26,8 @@ here, not a coverage percentage:
   * the server -- driven over stdio as an editor drives it, including the
     AND->OR fallback on an identifier, which reaches FTS5 as a phrase.
   * figures -- extracted from the PDF without touching what the converter
-    wrote, tied to a section only by evidence, and served as images.
+    wrote, tied to a section only by evidence, and served as images. A figure
+    OCR could not read stays unread, so a rerun retries it.
   * optional-dependency gating -- convert_docling.py must fail with
     instructions, not a traceback, when Docling is absent.
 """
@@ -476,6 +477,31 @@ class PipelineTest(unittest.TestCase):
         hit = con.execute("SELECT file FROM chunks WHERE chunks MATCH 'figures:reset'").fetchone()
         con.close()
         self.assertTrue(hit, "the OCR text never reached the search index")
+
+    def test_15_a_failed_ocr_read_is_left_to_retry(self):
+        """Tesseract failing on a figure must not be recorded as reading nothing.
+
+        The pass skips any figure that already carries an `ocr` field, so an
+        empty string written after a failure makes that figure unsearchable for
+        good -- and the run would still exit 0, which is how a corpus ends up
+        with a hole nobody sees.
+        """
+        corpus = self.tmp / "FigCorpus"      # built by test_13, OCR'd by test_14
+        index = corpus / "docs" / "figs" / "figures.json"
+        data = json.loads(index.read_text(encoding="utf-8"))
+        for f in data["figures"]:
+            f.pop("ocr", None)               # back to "never read"
+        index.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+        broken = self.tmp / "broken-tessdata"
+        broken.mkdir(exist_ok=True)
+        (broken / "eng.traineddata").write_bytes(b"not a model")
+        r = run("ocr_figures.py", str(corpus), "--tessdata", str(broken))
+
+        self.assertNotEqual(r.returncode, 0, "a pass that read nothing reported success")
+        after = json.loads(index.read_text(encoding="utf-8"))["figures"]
+        self.assertFalse([f for f in after if "ocr" in f],
+                         "a figure Tesseract could not read was recorded as read")
 
 
 if __name__ == "__main__":

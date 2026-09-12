@@ -74,7 +74,7 @@ def ocr_document(job: tuple) -> dict:
     path = doc_dir / "figures.json"
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     todo = [f for f in data.get("figures", []) if not f.get("labels") and "ocr" not in f]
-    result = {"slug": doc_dir.name, "read": len(todo), "empty": 0, "secs": 0.0}
+    result = {"slug": doc_dir.name, "read": 0, "empty": 0, "failed": 0, "secs": 0.0}
     if not todo:
         return result
 
@@ -83,13 +83,19 @@ def ocr_document(job: tuple) -> dict:
     for f in todo:
         page = doc[f["page"] - 1]
         page.remove_rotation()
-        pix = page.get_pixmap(dpi=DPI, clip=pymupdf.Rect(f["bbox"]), alpha=False)
         try:
+            pix = page.get_pixmap(dpi=DPI, clip=pymupdf.Rect(f["bbox"]), alpha=False)
             read = pymupdf.open("pdf", pix.pdfocr_tobytes(language=language, tessdata=tessdata))
             text = " ".join(read[0].get_text().split())
         except Exception:
-            text = ""
-        f["ocr"] = text[:1000]  # an empty string still records that it was read
+            # Leave "ocr" unset so a rerun retries this figure. Recording an
+            # empty string would mark a figure Tesseract never managed to read
+            # as read-and-blank, and every later run would skip it -- one
+            # transient failure making it unsearchable for good.
+            result["failed"] += 1
+            continue
+        f["ocr"] = text[:1000]  # an empty string records a figure with no words in it
+        result["read"] += 1
         result["empty"] += not text
     doc.close()
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -128,13 +134,14 @@ def main() -> int:
         sys.exit(f"No figures.json under {coll / 'docs'} -- run extract_figures.py first.")
 
     print(f"{coll.name}: OCR of figures without text, {len(jobs)} document(s)", flush=True)
-    totals = {"read": 0, "empty": 0}
+    totals = {"read": 0, "empty": 0, "failed": 0}
 
     def report(r: dict) -> None:
-        totals["read"] += r["read"]
-        totals["empty"] += r["empty"]
-        print(f"  {r['slug'][:40]:40} {r['read']:>5} read, {r['empty']:>4} with no text  {r['secs']:5.0f}s",
-              flush=True)
+        for key in totals:
+            totals[key] += r[key]
+        note = f"  !! {r['failed']} failed" if r["failed"] else ""
+        print(f"  {r['slug'][:40]:40} {r['read']:>5} read, {r['empty']:>4} with no text  "
+              f"{r['secs']:5.0f}s{note}", flush=True)
 
     if args.jobs > 1 and len(jobs) > 1:
         with ProcessPoolExecutor(min(args.jobs, len(jobs))) as pool:
@@ -145,6 +152,10 @@ def main() -> int:
             report(ocr_document(j))
     print(f"\n{totals['read']} figure(s) read, {totals['empty']} with no text found. "
           "Rebuild the index with build_search_db.py to search it.")
+    if totals["failed"]:
+        print(f"!! Tesseract failed on {totals['failed']} figure(s). They keep no `ocr` field, so "
+              "rerunning retries exactly those; the pass is incomplete until it exits 0.")
+        return 2
     return 0
 
 

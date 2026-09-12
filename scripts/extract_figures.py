@@ -45,6 +45,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -254,6 +255,21 @@ def caption_text(lines: list[str], caption_box: bool) -> str:
     return " ".join(text.split())[:200]
 
 
+def crop_fingerprint(page, rect) -> str:
+    """A cheap identity for the artwork inside `rect`: a 32-pixel greyscale
+    render, hashed. Geometry alone cannot tell two pictures apart, and both
+    places that compare figures need to -- one page template can hold a
+    different screenshot on every page, and a replaced PDF can put new artwork
+    at the old coordinates."""
+    try:
+        zoom = min(32 / max(rect.width, 1), 32 / max(rect.height, 1))
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=rect,
+                              colorspace=pymupdf.csGRAY, alpha=False)
+        return hashlib.blake2b(pix.samples, digest_size=8).hexdigest()
+    except Exception:
+        return ""
+
+
 def page_figures(page, boxes: list[tuple], stats: Counter) -> list[dict]:
     """Figures on one page, each with its caption and the paragraph above it."""
     pics = []
@@ -317,6 +333,7 @@ def page_figures(page, boxes: list[tuple], stats: Counter) -> list[dict]:
             "caption": caption,
             "labels": " ".join(" ".join(lines_in(words, pr)).split())[:600],
             "context": context,
+            "fingerprint": crop_fingerprint(page, pr),
         })
     return out
 
@@ -386,9 +403,13 @@ def extract(doc_dir: Path, pdf_path: Path, dry_run: bool, dpi: int, max_px: int)
             continue
         found.extend(page_figures(page, boxes, stats))
 
-    # A logo or border graphic sits in the same place on page after page.
+    # A logo or border graphic repeats in the same place, page after page. The
+    # artwork is part of the key, not just the position: two different
+    # uncaptioned screenshots dropped into the same template box are not
+    # furniture, and deleting them on a coincidence of geometry is the mistake
+    # failure-modes.md section 5 records for furniture detection.
     def spot(f):
-        return tuple(round(v / 4) for v in f["rect"])
+        return tuple(round(v / 4) for v in f["rect"]) + (f["fingerprint"],)
     spots = Counter(spot(f) for f in found)
     limit = max(5, REPEAT_SHARE * doc.page_count)
     figures = []
@@ -431,6 +452,7 @@ def extract(doc_dir: Path, pdf_path: Path, dry_run: bool, dpi: int, max_px: int)
             "id": fid,
             "page": f["page"],
             "bbox": [round(v, 1) for v in f["rect"]],
+            "fingerprint": f["fingerprint"] or None,
             "file": f"figures/{fid}.png",
             "caption": f["caption"] or None,
             "labels": f["labels"] or None,
@@ -453,8 +475,16 @@ def extract(doc_dir: Path, pdf_path: Path, dry_run: bool, dpi: int, max_px: int)
             # whose crop has not moved.
             read = {e["id"]: e for e in old if "ocr" in e}
             for e in entries:
-                if e["id"] in read and read[e["id"]].get("bbox") == e["bbox"]:
-                    e["ocr"] = read[e["id"]]["ocr"]
+                prev = read.get(e["id"])
+                if not prev or prev.get("bbox") != e["bbox"]:
+                    continue
+                # The same box is not the same picture. A PDF replaced in place
+                # can hold new artwork at the old coordinates, and carrying the
+                # old reading over would leave words searchable that are no
+                # longer in the figure. An entry written before fingerprints
+                # existed has none, and can only be matched by its box.
+                if prev.get("fingerprint") in (None, e["fingerprint"]):
+                    e["ocr"] = prev["ocr"]
         index_path.write_text(json.dumps({
             "slug": manifest.get("slug", doc_dir.name),
             "source_pdf": manifest.get("source_pdf"),
@@ -553,6 +583,11 @@ def main() -> int:
     if checked:
         print(f"context check: on {checked} captioned figures that also have context, the context "
               f"method picks the caption's section {totals['check_agree'] / checked:.1%} of the time")
+    if totals["layout_errors"]:
+        print(f"\n!! the layout model failed on {totals['layout_errors']} page(s), whose figures are "
+              "missing from figures.json. Rerun those documents: the extraction is partial, and a "
+              "partial figure set that exits 0 is one nobody notices.")
+        return 2
     return 0
 
 

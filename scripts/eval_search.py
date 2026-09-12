@@ -24,10 +24,12 @@ well, add it there: a test that marks right answers wrong under-reports, and
 the misses are where to look.
 
 `kind` is free-form and results are broken down by it. The ones this skill
-uses: identifier (names a command, option or message), concept (paraphrased,
-avoiding the answer's own wording), figure (answered by what a figure shows),
-and real (asked by an actual user -- the most valuable, and the only kind not
-written by someone who had just read the answer).
+uses, matching SKILL.md's "Measuring retrieval": identifier (names a command,
+option, rule or message), concept (natural wording, sharing some of the
+answer's terms), paraphrase (deliberately avoids the answer's own wording --
+the gap an embedding index would close), figure (answered by what a figure
+shows), and real (asked by an actual user -- the most valuable, and the only
+kind not written by someone who had just read the answer).
 """
 from __future__ import annotations
 
@@ -111,11 +113,15 @@ def main() -> int:
             print(f"   {s}")
         return 2
 
-    results = []
+    results, errors = [], []
     for q in questions:
         try:
             rows = mcp_server.search(q["question"], limit=LIMIT)
-        except ValueError:
+        except ValueError as exc:
+            # A query the index cannot run is not a miss. Scored as one, a
+            # search that is broken for every question reads as a search that
+            # ranks badly, and this tool exists to tell those apart.
+            errors.append(f"{q.get('id')}: {exc}")
             rows = []
         rank = next((i for i, row in enumerate(rows, 1) if is_answer(row, q["answers"])), None)
         results.append({
@@ -130,6 +136,13 @@ def main() -> int:
         groups.setdefault(r["kind"], []).append(r)
     summary = {kind: score(items) for kind, items in sorted(groups.items())}
     summary["all"] = score(results)
+
+    if errors:
+        print(f"!! {len(errors)} question(s) could not be searched at all. Until these run, the "
+              "scores below measure nothing about ranking:")
+        for e in errors[:10]:
+            print(f"   {e}")
+        print()
 
     meta = dict(mcp_server.CORPUS.db.execute("SELECT key, value FROM meta").fetchall())
     print(f"{args.questions.name} against {Path(args.db).name} "
@@ -151,8 +164,9 @@ def main() -> int:
 
     if args.json:
         args.json.write_text(json.dumps({"db": str(args.db), "meta": meta, "summary": summary,
-                                         "results": results}, indent=2) + "\n", encoding="utf-8")
-    return 0
+                                         "results": results, "errors": errors},
+                                        indent=2) + "\n", encoding="utf-8")
+    return 3 if errors else 0
 
 
 if __name__ == "__main__":
