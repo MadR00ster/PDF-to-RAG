@@ -76,7 +76,7 @@ def probes(db: Path) -> dict:
     """Pull real terms out of the index so the checks suit this corpus."""
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    out = {"entity": None, "collection": None}
+    out = {"entity": None, "collection": None, "figure": None}
     row = con.execute("SELECT slug, title FROM documents ORDER BY section_count DESC LIMIT 1").fetchone()
     out["document"], out["title_word"] = row["slug"], (row["title"].split() or ["the"])[0]
     row = con.execute("SELECT name FROM entities LIMIT 1").fetchone()
@@ -87,6 +87,11 @@ def probes(db: Path) -> dict:
         out["collection"] = row["collection"]
     row = con.execute("SELECT heading FROM chunks WHERE length(heading) > 12 LIMIT 1").fetchone()
     out["phrase"] = row["heading"] if row else out["title_word"]
+    try:
+        row = con.execute("SELECT id FROM figures ORDER BY id LIMIT 1").fetchone()
+        out["figure"] = row["id"] if row else None
+    except sqlite3.OperationalError:
+        pass  # an index built before figures existed
     con.close()
     return out
 
@@ -115,6 +120,22 @@ def main() -> int:
         if args.verbose and body:
             print("\n" + "\n".join("      " + l for l in body.splitlines()[:40]) + "\n")
 
+    def image_tool(name: str, tool_args: dict) -> None:
+        """An image tool must return exactly one PNG, not just text about one."""
+        resp = client.call("tools/call", {"name": name, "arguments": tool_args})
+        result = resp.get("result") or {}
+        content = result.get("content", [])
+        text = "\n".join(c.get("text", "") for c in content if c.get("type") == "text")
+        if result.get("isError") and "needs PyMuPDF" in text:
+            print(f"  n/a   {name} (PyMuPDF is not installed for the server)")
+            return
+        images = [c for c in content if c.get("type") == "image"]
+        ok = (not result.get("isError") and len(images) == 1
+              and images[0].get("mimeType") == "image/png" and len(images[0].get("data", "")) > 100)
+        check(f"{name}({json.dumps(tool_args)[:70]})", ok, text[:160])
+        if args.verbose and text:
+            print("\n" + "\n".join("      " + l for l in text.splitlines()[:10]) + "\n")
+
     try:
         resp = client.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                           "clientInfo": {"name": "smoke", "version": "1"}})
@@ -124,7 +145,8 @@ def main() -> int:
         check("ping", client.call("ping").get("result") == {})
 
         names = {t["name"] for t in (client.call("tools/list").get("result") or {}).get("tools", [])}
-        check("tools/list", {"search_docs", "get_section", "lookup_entity", "list_documents", "get_toc"} <= names,
+        check("tools/list", {"search_docs", "get_section", "lookup_entity", "list_documents", "get_toc",
+                             "get_figure", "get_page_image"} <= names,
               f"got {sorted(names)}")
 
         print("\nTools:")
@@ -142,11 +164,18 @@ def main() -> int:
             tool("lookup_entity", {"name": p["entity"] + "zzq"}, "did you mean", expect_error=False)
         else:
             print("  SKIP  lookup_entity (this corpus has no reference documents)")
+        if p["figure"]:
+            image_tool("get_figure", {"figure_id": p["figure"]})
+        else:
+            print("  n/a   get_figure (this index has no figures)")
+        image_tool("get_page_image", {"document": p["document"], "page": 1})
 
         print("\nError handling:")
         tool("search_docs", {"query": "((("}, "no searchable words", expect_error=True)
         tool("get_toc", {"document": "does-not-exist"}, "unknown document slug", expect_error=True)
         tool("get_section", {}, "section_id", expect_error=True)
+        tool("get_figure", {"figure_id": 999999999}, "figure", expect_error=True)
+        tool("get_page_image", {"document": p["document"], "page": 0}, "page", expect_error=True)
         tool("search_docs", {"query": "x", "collection": "nope-not-real"}, "unknown collection", expect_error=True)
         tool("search_docs", {"query": "zzzqqxyw", "limit": 3}, "no matches")
         # One impossible word must not sink an otherwise good question -- nor

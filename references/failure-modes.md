@@ -226,7 +226,9 @@ Recorded so a future pass doesn't rediscover them as surprises.
   with page tracking. A full-corpus rebuild would fix it at the cost of hours.
 - **Figure text is unusable soup** — `<!-- Start of picture text -->SoC<br>CPU<br>…`.
   Diagram labels with no structure, diluting embeddings. Left in place because
-  deleting the markers would make it indistinguishable from prose.
+  deleting the markers would make it indistinguishable from prose. The figures
+  themselves are now extracted as images and tied to their sections
+  (`extract_figures.py`), so an agent can look at a diagram instead.
 - **Copyright/legal boilerplate** survives as chunk 001 of most documents.
 - **Residual footers** where a document's footer is a version string rather than
   its title (`Version T-2022.03`), which title-matching doesn't catch.

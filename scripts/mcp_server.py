@@ -19,10 +19,13 @@ Tools:
   lookup_entity    assemble a whole entry from a reference document
   list_documents   the catalog: slugs, titles, sizes, coverage
   get_toc          table of contents for one document
+  get_figure       a figure's image, with its caption and the section it illustrates
+  get_page_image   one page of a source PDF as an image (needs PyMuPDF)
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import difflib
 import json
 import os
@@ -46,12 +49,19 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-# bm25 column weights, in table column order: heading, entity, breadcrumb, body.
-# A hit in the heading, or in the name of the entity a chunk documents, says far
-# more about relevance than the same word buried in a page of prose.
-BM25_WEIGHTS = (10.0, 8.0, 3.0, 1.0)
+# bm25 column weights, in table column order: heading, entity, breadcrumb, body,
+# figures. A hit in the heading, or in the name of the entity a chunk documents,
+# says far more about relevance than the same word buried in a page of prose.
+# An index built before figures has the UNINDEXED `slug` fifth, which never
+# matches, so the extra weight is inert there.
+BM25_WEIGHTS = (10.0, 8.0, 3.0, 1.0, 1.0)
 
 MAX_SECTION_CHARS = 40_000
+
+# get_page_image renders: body text stays readable at about 1,800 image tokens
+# a page, and the long edge stays under every current model's native limit.
+PAGE_DPI = 120
+IMAGE_MAX_PX = 1568
 WORD_RE = re.compile(r"[0-9A-Za-z]+")
 
 # FTS5 ANDs every term, so "how do I define a clock" demands that a chunk
@@ -77,6 +87,8 @@ class Corpus:
         self.db_path = db_path
         self._db: sqlite3.Connection | None = None
         self._entity_names: list[str] | None = None
+        self._root: Path | None = None
+        self._has_figures: bool | None = None
         self.name = db_path.stem
 
     @property
@@ -124,6 +136,25 @@ class Corpus:
         if self._entity_names is None:
             self._entity_names = [r["name"] for r in self.db.execute("SELECT DISTINCT name FROM entities")]
         return self._entity_names
+
+    @property
+    def root(self) -> Path:
+        """The corpus root recorded at build time, or the index's own folder if
+        the corpus has moved since -- the index is built at the root by default."""
+        if self._root is None:
+            row = self.db.execute("SELECT value FROM meta WHERE key = 'root'").fetchone()
+            recorded = Path(row["value"]) if row and row["value"] else None
+            self._root = recorded if recorded and recorded.is_dir() else self.db_path.parent
+        return self._root
+
+    @property
+    def has_figures(self) -> bool:
+        """False for an index built before figures existed."""
+        if self._has_figures is None:
+            self._has_figures = bool(self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'figures'"
+            ).fetchone())
+        return self._has_figures
 
 
 class CorpusMissing(Exception):
@@ -299,7 +330,9 @@ def format_results(rows: list[sqlite3.Row], query: str) -> str:
     for i, r in enumerate(rows, 1):
         out.append(f"### {i}. {r['heading'] or '(untitled section)'}")
         out.append(cite(r))
-        out.append(f"section_id: {r['id']} · file: {r['file']}")
+        figures = section_figures(r["slug"], r["ord"])
+        out.append(f"section_id: {r['id']} · file: {r['file']}"
+                   + (f" · {len(figures)} figure(s)" if figures else ""))
         snip = " ".join((r["snip"] or "").split())
         if snip:
             out.append(f"> {snip}")
@@ -312,6 +345,11 @@ def format_section(row: sqlite3.Row, body: str) -> str:
     head = [f"# {row['heading'] or '(untitled section)'}", cite(row), f"file: {row['file']}", ""]
     if len(body) > MAX_SECTION_CHARS:
         body = body[:MAX_SECTION_CHARS] + f"\n\n…[truncated at {MAX_SECTION_CHARS:,} characters]"
+    figures = section_figures(row["slug"], row["ord"])
+    if figures:
+        body = body.rstrip() + "\n\nFigures in this section -- view one with get_figure:\n" + "\n".join(
+            f"- figure_id {f['id']}: {f['caption'] or '(no caption)'} (p. {f['page']})" for f in figures
+        )
     return "\n".join(head) + body
 
 
@@ -481,6 +519,8 @@ def tool_list_documents(args: dict) -> str:
             flags.append("page numbers")
         if r["has_entities"]:
             flags.append("per-chunk entity attribution")
+        if "figure_count" in r.keys() and r["figure_count"]:
+            flags.append(f"{r['figure_count']} figures")
         extra = f" — {', '.join(flags)}" if flags else ""
         gap = (r["section_count"] or 0) - (r["indexed_count"] or 0)
         coverage = (
@@ -525,6 +565,79 @@ def tool_get_toc(args: dict) -> str:
     if not shown:
         lines.append("(nothing matched — try a larger `max_level` or a different `contains`)")
     return "\n".join(lines)
+
+
+def section_figures(slug: str, ordinal) -> list[sqlite3.Row]:
+    """Figures extract_figures.py tied to one section, in page order."""
+    if ordinal is None or not CORPUS.has_figures:
+        return []
+    return CORPUS.db.execute(
+        "SELECT id, caption, page FROM figures WHERE slug = ? AND section_ord = ? ORDER BY page, id",
+        (slug, ordinal),
+    ).fetchall()
+
+
+def image_block(png: bytes) -> dict:
+    return {"type": "image", "data": base64.b64encode(png).decode("ascii"), "mimeType": "image/png"}
+
+
+def tool_get_figure(args: dict) -> list[dict]:
+    if not CORPUS.has_figures:
+        raise ValueError("This index has no figures. Run extract_figures.py on the corpus, "
+                         "then rebuild the index with build_search_db.py.")
+    figure_id = args.get("figure_id")
+    if figure_id is None:
+        raise ValueError("`figure_id` is required; get_section lists a section's figures.")
+    row = CORPUS.db.execute(
+        "SELECT f.*, d.title FROM figures f JOIN documents d ON d.slug = f.slug WHERE f.id = ?",
+        (int(figure_id),),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"No figure with figure_id {figure_id}.")
+    try:
+        png = (CORPUS.root / row["file"]).read_bytes()
+    except OSError as exc:
+        raise ValueError(f"The image for figure {figure_id} could not be read ({exc}). "
+                         "Rerun extract_figures.py, then build_search_db.py.") from exc
+
+    lines = [row["caption"] or "(figure without a caption)",
+             f"{row['title']} ({row['slug']}) · p. {row['page']}"]
+    if row["section_ord"] is not None:
+        sec = CORPUS.db.execute(
+            "SELECT rowid AS id, heading FROM chunks WHERE slug = ? AND ord = ?",
+            (row["slug"], row["section_ord"]),
+        ).fetchone()
+        if sec:
+            lines.append(f"Illustrates section_id {sec['id']}: {sec['heading']}")
+    else:
+        lines.append("Not tied to a section; get_page_image shows its page in context.")
+    if row["description"]:
+        lines.append(f"Generated description (check it against the image): {row['description']}")
+    return [{"type": "text", "text": "\n".join(lines)}, image_block(png)]
+
+
+def tool_get_page_image(args: dict) -> list[dict]:
+    slug = (args.get("document") or "").strip()
+    row = CORPUS.db.execute("SELECT * FROM documents WHERE slug = ?", (slug,)).fetchone()
+    if not row:
+        raise ValueError(f"Unknown document slug '{slug}'. Call `list_documents` for valid slugs.")
+    page_no = clamp_int(args.get("page"), 0, 0, 1_000_000)
+    if not 1 <= page_no <= (row["page_count"] or 0):
+        raise ValueError(f"`page` must be between 1 and {row['page_count']} for {slug}.")
+    try:
+        import pymupdf  # optional: everything else here is standard library
+    except ImportError:
+        raise ValueError("Rendering pages needs PyMuPDF in the server's Python: pip install pymupdf. "
+                         "get_figure works without it.") from None
+    pdf = CORPUS.root / row["collection_dir"] / (row["source_pdf"] or "")
+    if not pdf.is_file():
+        raise ValueError(f"The source PDF for {slug} is not at {pdf}.")
+    with pymupdf.open(pdf) as doc:
+        page = doc[page_no - 1]
+        zoom = min(PAGE_DPI / 72, IMAGE_MAX_PX / max(page.rect.width, page.rect.height))
+        png = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False).tobytes("png")
+    return [{"type": "text", "text": f"{row['title']} ({slug}) · p. {page_no} of {row['page_count']}"},
+            image_block(png)]
 
 
 def build_tools() -> list[dict]:
@@ -572,7 +685,7 @@ def build_tools() -> list[dict]:
                 "Return the full markdown of one section chunk, by section_id from a search "
                 "result or by file path. Use it when the snippet is not enough. `context` also "
                 "returns neighbouring sections, which is how you read a procedure that "
-                "continues past one chunk."
+                "continues past one chunk. It also lists the section's figures by figure_id."
             ),
             "inputSchema": {
                 "type": "object",
@@ -625,6 +738,37 @@ def build_tools() -> list[dict]:
                 "required": ["document"],
             },
         },
+        {
+            "name": "get_figure",
+            "description": (
+                "Show one figure as an image, with its caption, page and the section it "
+                "illustrates. get_section lists a section's figures by figure_id, and search "
+                "results say how many a section has. Look at the figure rather than guessing "
+                "what a diagram shows from the text around it."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "figure_id": {"type": "integer", "description": "figure_id from get_section."},
+                },
+                "required": ["figure_id"],
+            },
+        },
+        {
+            "name": "get_page_image",
+            "description": (
+                "Render one page of a document's source PDF as an image. Use it for a figure or "
+                "table the text extraction mangled, or to see a page exactly as printed."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "document": {"type": "string", "description": "Document slug (see list_documents)."},
+                    "page": {"type": "integer", "description": "1-based page number in the PDF."},
+                },
+                "required": ["document", "page"],
+            },
+        },
     ]
 
 
@@ -634,6 +778,8 @@ HANDLERS = {
     "lookup_entity": tool_lookup_entity,
     "list_documents": tool_list_documents,
     "get_toc": tool_get_toc,
+    "get_figure": tool_get_figure,
+    "get_page_image": tool_get_page_image,
 }
 
 
@@ -656,7 +802,8 @@ def handle_request(method: str, params: dict) -> dict:
             "instructions": (
                 f"Authoritative documentation for {CORPUS.name} ({scope}). Answer questions "
                 "about it from these tools rather than from memory, and cite the document and "
-                "page you used."
+                "page you used. When a section lists figures, look at the ones that matter with "
+                "get_figure rather than guessing what a diagram shows."
             ),
         }
     if method == "ping":
@@ -678,13 +825,15 @@ def call_tool(params: dict) -> dict:
     if handler is None:
         raise MethodNotFound(f"tool '{name}'")
     try:
-        text, is_error = handler(params.get("arguments") or {}), False
+        result, is_error = handler(params.get("arguments") or {}), False
     except (CorpusMissing, ValueError) as exc:
-        text, is_error = str(exc), True
+        result, is_error = str(exc), True
     except Exception:
         log(traceback.format_exc())
-        text, is_error = f"{name} failed unexpectedly; see the server log for the traceback.", True
-    return {"content": [{"type": "text", "text": text}], "isError": is_error}
+        result, is_error = f"{name} failed unexpectedly; see the server log for the traceback.", True
+    # Text tools return a string; image tools return their content blocks.
+    content = result if isinstance(result, list) else [{"type": "text", "text": result}]
+    return {"content": content, "isError": is_error}
 
 
 def resolve_db(explicit: str | None) -> Path:

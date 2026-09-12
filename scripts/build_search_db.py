@@ -6,6 +6,10 @@ Walks every `<collection>/docs/<slug>/manifest.json` under the corpus root,
 reads each section chunk off disk, and writes one SQLite file with an FTS5
 full-text index. `mcp_server.py` queries that file; nothing else reads it.
 
+Figures come along once extract_figures.py has run: each document's
+figures.json becomes rows get_figure serves, and each figure's caption and
+drawn labels are indexed with the section it illustrates.
+
 Standard library only -- FTS5 ships inside Python's bundled SQLite, so a
 corpus becomes queryable from an editor with no packages, no API key and no
 network.
@@ -61,17 +65,22 @@ CREATE TABLE documents (
     char_count    INTEGER,
     has_pages     INTEGER NOT NULL DEFAULT 0,
     has_entities  INTEGER NOT NULL DEFAULT 0,
+    figure_count  INTEGER NOT NULL DEFAULT 0,
     toc_json      TEXT
 );
 
--- One row per section chunk. The four leading columns are searchable; the
+-- One row per section chunk. The five leading columns are searchable; the
 -- rest are UNINDEXED so they cost storage but no index space, and can still
 -- be filtered on in WHERE once MATCH has narrowed the candidate set.
+-- `figures` holds the captions, drawn labels and OCR text of the figures tied
+-- to the chunk, so a question about what a diagram shows can land on the
+-- section it illustrates.
 CREATE VIRTUAL TABLE chunks USING fts5(
     heading,
     entity,
     breadcrumb,
     body,
+    figures,
     slug         UNINDEXED,
     collection   UNINDEXED,
     title        UNINDEXED,
@@ -100,6 +109,25 @@ CREATE TABLE entities (
 );
 CREATE INDEX idx_entities_lower ON entities(name_lower);
 CREATE INDEX idx_entities_slug  ON entities(slug);
+
+-- Figures from extract_figures.py. section_ord ties one to the chunk it
+-- illustrates, and is NULL when nothing tied it without guessing.
+CREATE TABLE figures (
+    id          INTEGER PRIMARY KEY,
+    slug        TEXT NOT NULL,
+    collection  TEXT NOT NULL,
+    page        INTEGER,
+    caption     TEXT,
+    labels      TEXT,
+    ocr         TEXT,            -- words ocr_figures.py read off a raster figure
+    description TEXT,
+    file        TEXT NOT NULL,   -- the crop, relative to the corpus root
+    width       INTEGER,
+    height      INTEGER,
+    section_ord INTEGER,
+    link        TEXT             -- how section_ord was decided: caption | context
+);
+CREATE INDEX idx_figures_section ON figures(slug, section_ord);
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
@@ -202,7 +230,19 @@ def load_documents(root: Path):
             yield key, display, manifest_path, manifest
 
 
-def build(root: Path, out_path: Path, stats_only: bool = False) -> int:
+def load_figures(doc_dir: Path) -> list[dict]:
+    """extract_figures.py's output for one document; empty if it has not run."""
+    path = doc_dir / "figures.json"
+    if not path.is_file():
+        return []
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig")).get("figures", [])
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  !! skipping {path}: {exc}", file=sys.stderr)
+        return []
+
+
+def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: bool = True) -> int:
     documents = list(load_documents(root))
     if not documents:
         print(
@@ -233,6 +273,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False) -> int:
 
     total_chunks = 0
     total_chars = 0
+    total_figures = 0
     unreadable: list[str] = []
 
     for key, display, manifest_path, manifest in documents:
@@ -244,10 +285,20 @@ def build(root: Path, out_path: Path, stats_only: bool = False) -> int:
         rows = []
         entity_spans: dict[str, list] = {}
         chars_here = 0
+        has_pages = False
 
         wanted = [(i, s) for i, s in enumerate(sections) if s.get("file")]
         with ThreadPoolExecutor(READ_THREADS) as pool:
             bodies = list(pool.map(lambda pair: read_chunk(doc_dir / pair[1]["file"]), wanted))
+
+        figure_rows = [f for f in load_figures(doc_dir) if f.get("file")]
+        ord_of = {s["file"]: i for i, s in wanted}
+        figure_words: dict[str, list[str]] = {}
+        for f in figure_rows if figure_text else ():
+            if f.get("section"):
+                figure_words.setdefault(f["section"], []).append(
+                    " ".join(x for x in (f.get("caption"), f.get("labels"), f.get("ocr"),
+                                         f.get("description")) if x))
 
         for (ordinal, sec), body in zip(wanted, bodies):
             path = doc_dir / sec["file"]
@@ -259,12 +310,14 @@ def build(root: Path, out_path: Path, stats_only: bool = False) -> int:
             entity = sec.get("command") or sec.get("entity") or ""
             page_start = sec.get("page_start")
             page_end = sec.get("page_end")
+            has_pages = has_pages or page_start is not None
 
             rows.append((
                 heading,
                 entity,
                 sec.get("breadcrumb") or "",
                 body,
+                " ".join(figure_words.get(sec["file"], [])),
                 slug,
                 key,
                 title,
@@ -287,20 +340,21 @@ def build(root: Path, out_path: Path, stats_only: bool = False) -> int:
                     span[2] = page_end if span[2] is None else max(span[2], page_end)
 
         db.executemany(
-            "INSERT INTO chunks (heading, entity, breadcrumb, body, slug, collection,"
+            "INSERT INTO chunks (heading, entity, breadcrumb, body, figures, slug, collection,"
             " title, file, ord, level, page_start, page_end, chars, noise)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
         db.execute(
             "INSERT INTO documents (slug, collection, collection_dir, title, source_pdf,"
             " page_count, section_count, indexed_count, char_count, has_pages,"
-            " has_entities, toc_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " has_entities, figure_count, toc_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 slug, key, display, title, manifest.get("source_pdf"),
                 manifest.get("page_count"), len(wanted), len(rows), chars_here,
-                1 if any(r[10] is not None for r in rows) else 0,
+                1 if has_pages else 0,
                 1 if entity_spans else 0,
+                len(figure_rows),
                 json.dumps(manifest.get("toc", []), ensure_ascii=False),
             ),
         )
@@ -310,20 +364,32 @@ def build(root: Path, out_path: Path, stats_only: bool = False) -> int:
                 " page_start, page_end) VALUES (?,?,?,?,?,?,?)",
                 [(n, n.lower(), slug, key, s[0], s[1], s[2]) for n, s in sorted(entity_spans.items())],
             )
+        if figure_rows:
+            db.executemany(
+                "INSERT INTO figures (slug, collection, page, caption, labels, ocr, description, file,"
+                " width, height, section_ord, link) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(slug, key, f.get("page"), f.get("caption"), f.get("labels"), f.get("ocr"), f.get("description"),
+                  (doc_dir / f["file"]).relative_to(root).as_posix(), f.get("width"), f.get("height"),
+                  ord_of.get(f.get("section")), f.get("link")) for f in figure_rows],
+            )
 
         total_chunks += len(rows)
         total_chars += chars_here
+        total_figures += len(figure_rows)
         gap = len(wanted) - len(rows)
         note = f"  !! {gap} unreadable" if gap else ""
-        print(f"  {key:18s} {slug:40s} {len(rows):5d} chunks  {chars_here:>10,} chars{note}")
+        figs = f"  {len(figure_rows):>5} figures" if figure_rows else ""
+        print(f"  {key:18s} {slug:40s} {len(rows):5d} chunks  {chars_here:>10,} chars{figs}{note}")
 
     for k, v in (
         ("built_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
         ("root", str(root)),
         ("corpus_name", root.name),
         ("chunks", str(total_chunks)),
+        ("figures", str(total_figures)),
+        ("figure_text", "1" if figure_text else "0"),
         ("unreadable", str(len(unreadable))),
-        ("schema_version", "1"),
+        ("schema_version", "2"),
     ):
         db.execute("INSERT INTO meta (key, value) VALUES (?,?)", (k, v))
 
@@ -334,7 +400,8 @@ def build(root: Path, out_path: Path, stats_only: bool = False) -> int:
     os.replace(tmp_path, out_path)
 
     print(
-        f"\n{len(documents)} documents, {total_chunks:,} chunks, {total_chars:,} chars"
+        f"\n{len(documents)} documents, {total_chunks:,} chunks, {total_chars:,} chars,"
+        f" {total_figures:,} figures"
         f"\n-> {out_path}  ({out_path.stat().st_size / 1048576:.1f} MB, {time.time() - started:.1f}s)"
     )
 
@@ -400,6 +467,12 @@ def main() -> int:
         action="store_true",
         help="also write <root>/.vscode/mcp.json so VS Code finds the server",
     )
+    ap.add_argument(
+        "--no-figure-text",
+        action="store_true",
+        help="serve figures but keep their captions and labels out of search "
+        "(for measuring what that text adds)",
+    )
     args = ap.parse_args()
 
     root = Path(args.root).resolve()
@@ -409,7 +482,7 @@ def main() -> int:
     out_path = Path(args.out).resolve() if args.out else root / DEFAULT_DB_NAME
 
     print(f"Indexing corpus at {root}")
-    code = build(root, out_path, stats_only=args.stats_only)
+    code = build(root, out_path, stats_only=args.stats_only, figure_text=not args.no_figure_text)
 
     if args.emit_vscode_config and not args.stats_only and out_path.exists():
         written = emit_vscode_config(root, out_path)
