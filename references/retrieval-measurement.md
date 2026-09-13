@@ -62,15 +62,37 @@ as a running header, which furniture stripping keeps because single-token lines
 are never furniture. Finding them is not the problem here; attributing them is,
 and a running header is luck, not a guarantee.
 
-## Semantic search: the headroom
+## Semantic search: measured, and not built
 
-After the two lexical changes, 5 of 57 text questions miss the top five: three
-reworded, two naturally worded. That is the most an embedding index could add
-on this set — under nine points — and nearly all of it on questions that avoid
-the manual's own words. Questions naming an identifier are already at 100%.
+After the two lexical changes, 5 of 57 text questions missed the top five —
+three reworded, two naturally worded — so an embedding index had under nine
+points to win, nearly all on questions that avoid the manual's own words.
 
-Not built. What would change that is real users' questions (kind `real`)
-showing reworded misses at a rate this test set does not.
+It won none of them. On the rebuilt corpus, every chunk embedded as overlapping
+1,200-character passages prefixed with the section's breadcrumb (44,935
+passages), with BAAI/bge-small-en-v1.5 on CPU, scored against all 76 questions:
+
+| ranker | identifier | concept | paraphrase | figure | hit@1 | hit@5 | MRR |
+|---|---|---|---|---|---|---|---|
+| BM25, as shipped | 100% | 90% | 73% | 95% | **71%** | **92%** | **0.803** |
+| embeddings alone | 85% | 80% | 45% | 74% | 57% | 75% | 0.654 |
+| reciprocal rank fusion of both | 96% | 90% | 73% | 84% | 64% | 88% | 0.753 |
+
+Fusion rescued a handful — one reworded question from rank 21 to 2 — and
+demoted more: three identifier questions from rank 1 to 5 or worse, two figure
+questions from the top three to 12 and 27. The kind embeddings exist for,
+reworded questions, did not move at all. Manual text is identifier-dense
+jargon, and a general-purpose small model blurs exactly what BM25 matches
+exactly.
+
+What was not tried, so this does not rule out: a larger or domain-tuned model;
+fusion weighted towards BM25, which would be tuned on the same 76 questions it
+was then scored on; and passages carrying figure OCR text, which the index
+searches and the embeddings here did not — part of the figure gap is that.
+None is worth the cost on this evidence: 74 minutes to embed the corpus on this
+machine, a model download and a dependency, and a re-embed after every
+conversion. Real users' questions (kind `real`) missing in a way this test set
+does not would be the reason to revisit.
 
 ## Figures
 

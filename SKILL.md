@@ -486,12 +486,14 @@ lexical index is weakest. Say so plainly rather than letting "RAG-ready" imply
 more than was built.
 
 Measure that gap before building for it. On a 24-manual EDA corpus, stemmed
-BM25 put the answer in its top five for 100% of questions naming an
-identifier, 90% of naturally worded ones and 73% of questions deliberately
-reworded to avoid the manual's terms — so an embedding index had a few points
-to add there, all of them on the reworded kind
-(`references/retrieval-measurement.md`). Real users' questions should decide
-whether those points are worth a model dependency.
+BM25 put the answer in its top five for 100% of questions naming an identifier,
+90% of naturally worded ones and 73% of questions deliberately reworded to avoid
+the manual's terms. Adding a small general-purpose embedding model with rank
+fusion did not move the reworded questions at all and lowered the overall top-5
+rate from 92% to 88%: identifier-dense manuals are where lexical search is
+strongest and a small model blurs what it matches exactly
+(`references/retrieval-measurement.md`). Real users' questions missing in a way
+a test set does not are the reason to revisit, not the promise of the technique.
 
 For the layer above, the community `rag-architect` skills cover vector store
 selection, embedding models, hybrid BM25 + vector search, reranking, and
