@@ -16,9 +16,10 @@ one level) there is nothing to walk, and a guessed parent would be worse
 than none -- see references/failure-modes.md for why a wrong parent is
 actively dangerous in a command reference. Those manuals still get a
 breadcrumb of the document title alone: it guesses no ancestor, so it cannot
-be wrong, and a chunk retrieved on its own still names its source. Chunks
-that already carry a breadcrumb naming ancestors are left alone, so this
-never overwrites the page-accurate ones rebuild_reference.py writes.
+be wrong, and a chunk retrieved on its own still names its source.
+Breadcrumbs a page-aware converter wrote (rebuild_reference.py,
+convert_docling.py) are never touched in either mode, and a title-only pass
+never replaces one that already names ancestors.
 
 Usage:
   python scripts/enrich_chunks.py "Synopsys Manual" --dry-run
@@ -259,6 +260,24 @@ def has_richer_breadcrumb(text: str, manual_title: str) -> bool:
     return BREADCRUMB_SEP.strip() in first
 
 
+# Manifest fields only the page-aware converters write, each alongside a
+# breadcrumb built from better evidence than the heading walk here:
+# rebuild_reference.py's `command` comes from the PDF's page map, and
+# convert_docling.py's `confidence` from its bookmark TOC.
+CONVERTER_BREADCRUMB_FIELDS = ("command", "confidence")
+
+
+def converter_owns_breadcrumb(section: dict) -> bool:
+    """True if a page-aware converter wrote this chunk's breadcrumb.
+
+    Those are left alone in both modes. The only guard used to apply in title
+    mode, so a reference document whose heading levels happened to vary took
+    the walk instead and had `Title › command` replaced by whatever the
+    heading stack said.
+    """
+    return any(f in section for f in CONVERTER_BREADCRUMB_FIELDS)
+
+
 def apply_breadcrumb(text: str, crumb: str, manual_title: str) -> str:
     lines = text.splitlines()
     first = next((i for i, l in enumerate(lines) if l.strip()), None)
@@ -305,8 +324,11 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
     for idx, (s, text) in enumerate(zip(sections, texts)):
         new, dropped = strip_furniture(text, furniture)
         lines_dropped += dropped
-        # Never trade a breadcrumb with ancestors for a title-only one.
-        keep_existing = crumb_mode == "title" and has_richer_breadcrumb(new, manifest["title"])
+        # Never overwrite a breadcrumb a page-aware converter wrote, and never
+        # trade one with ancestors for a title-only one.
+        keep_existing = converter_owns_breadcrumb(s) or (
+            crumb_mode == "title" and has_richer_breadcrumb(new, manifest["title"])
+        )
         if not keep_existing:
             new = apply_breadcrumb(new, crumbs[idx], manifest["title"])
         if new != text:

@@ -219,14 +219,17 @@ verification is cheap; shipping a corpus with holes is not.
 
 Recorded so a future pass doesn't rediscover them as surprises.
 
-- **No retrieval layer.** The corpus is chunked markdown plus grep. Grep is
-  genuinely strong for exact identifier lookup and useless for conceptual
-  questions. Hybrid BM25 + embeddings is the natural next step.
+- **Lexical retrieval only.** BM25 over the chunks, served over MCP, is strong
+  for exact identifier lookup and weakest where a question avoids the manual's
+  own words. Measure that gap with a test set (SKILL.md, "Measuring
+  retrieval") before adding embeddings for it.
 - **Page coverage is partial** — 46% of chunks, i.e. only the documents rebuilt
   with page tracking. A full-corpus rebuild would fix it at the cost of hours.
 - **Figure text is unusable soup** — `<!-- Start of picture text -->SoC<br>CPU<br>…`.
   Diagram labels with no structure, diluting embeddings. Left in place because
-  deleting the markers would make it indistinguishable from prose.
+  deleting the markers would make it indistinguishable from prose. The figures
+  themselves are now extracted as images and tied to their sections
+  (`extract_figures.py`), so an agent can look at a diagram instead.
 - **Copyright/legal boilerplate** survives as chunk 001 of most documents.
 - **Residual footers** where a document's footer is a version string rather than
   its title (`Version T-2022.03`), which title-matching doesn't catch.

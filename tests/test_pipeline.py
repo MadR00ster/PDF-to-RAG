@@ -14,18 +14,27 @@ here, not a coverage percentage:
     breadcrumb detector keyed on the separator once re-prepended a crumb every
     run, and the title-only fallback reintroduced exactly that risk.
   * no metadata downgrade -- a pass that can only add information must not
-    overwrite better information already there. This is what protects the
-    page-accurate entity breadcrumbs rebuild_reference.py writes.
+    overwrite better information already there, whichever branch it takes.
+    This is what protects the page-accurate entity breadcrumbs
+    rebuild_reference.py writes.
   * entity attribution -- the command level is found from the TOC, and its
     >=20-entry threshold means a small document silently attributes nothing.
+    A chapter that is not a command must end the command before it, or the
+    last command in a chapter owns the appendices.
   * the output contract -- build_index.py and build_search_db.py read what the
     converters write, so a manifest field rename breaks retrieval, not a test.
+  * the server -- driven over stdio as an editor drives it, including the
+    AND->OR fallback on an identifier, which reaches FTS5 as a phrase.
+  * figures -- extracted from the PDF without touching what the converter
+    wrote, tied to a section only by evidence, and served as images. A figure
+    OCR could not read stays unread, so a rerun retries it.
   * optional-dependency gating -- convert_docling.py must fail with
     instructions, not a traceback, when Docling is absent.
 """
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -91,16 +100,86 @@ def prose_fixture(path: Path) -> None:
     write_pdf(path, pages, toc)
 
 
+def command_page(name: str) -> list[tuple[str, int]]:
+    return [(name, 20),
+            ("SYNTAX", 14), (f"{name} -value <int>", 11),
+            ("ARGUMENTS", 14), ("-value  the value to set", 11)]
+
+
 def reference_fixture(path: Path, n_commands: int) -> None:
     """A command dictionary: one entry per command, listed at TOC level 1."""
     pages, toc = [], []
     for i in range(n_commands):
         name = f"set_widget_option_{i:02d}"
-        pages.append([(name, 20),
-                      ("SYNTAX", 14), (f"{name} -value <int>", 11),
-                      ("ARGUMENTS", 14), ("-value  the value to set", 11)])
+        pages.append(command_page(name))
         toc.append([1, name, len(pages)])
     write_pdf(path, pages, toc)
+
+
+def nested_reference_fixture(path: Path, n_commands: int) -> None:
+    """Commands at TOC level 2 under a chapter, then chapters that are not
+    commands -- the tshell-ref shape, with an appendix and a licence after the
+    last entry. Neither belongs to any command."""
+    pages = [[("Command Reference", 22), ("This chapter lists every widget command.", 11)]]
+    toc = [[1, "Command Reference", 1]]
+    for i in range(n_commands):
+        name = f"set_widget_option_{i:02d}"
+        pages.append(command_page(name))
+        toc.append([2, name, len(pages)])
+    trailing = [("Appendix A Troubleshooting", "If the widget will not power on, check the fuse."),
+                ("End-User License Agreement", "You may not redistribute this software.")]
+    for chapter, text in trailing:
+        pages.append([(chapter, 22), (text, 11)])
+        toc.append([1, chapter, len(pages)])
+    write_pdf(path, pages, toc)
+
+
+def figure_fixture(path: Path) -> None:
+    """Two captioned figures of the two kinds real manuals mix: a vector block
+    diagram whose labels are real text (Synopsys draws its figures) and a
+    raster image whose words are only pixels (Tessent embeds them)."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Wiring", fontsize=20)
+    page.insert_text((72, 104), "The widget connects to the controller through the harness shown below.", fontsize=11)
+    page.insert_text((72, 124), "Seat every connector before applying power to the assembly.", fontsize=11)
+    page.insert_text((72, 160), "Figure 1. Widget Wiring Diagram", fontsize=10)
+    shape = page.new_shape()
+    for i in range(3):
+        shape.draw_rect(pymupdf.Rect(90 + i * 160, 200, 200 + i * 160, 270))
+    for i in range(2):
+        x = 200 + i * 160
+        shape.draw_line((x, 235), (x + 50, 235))
+        shape.draw_polyline([(x + 42, 230), (x + 50, 235), (x + 42, 240)])
+    shape.draw_circle((305, 320), 22)
+    shape.draw_line((305, 270), (305, 298))
+    shape.finish(color=(0, 0, 0), width=1.2)
+    shape.commit()
+    for i, name in enumerate(("CPU", "BUS", "WIDGET")):
+        page.insert_text((105 + i * 160, 240), name, fontsize=10)
+    page.insert_text((292, 324), "PSU", fontsize=9)
+    page.insert_text((72, 380), "After wiring, continue with calibration as the next chapter describes.", fontsize=11)
+
+    page = doc.new_page()
+    page.insert_text((72, 72), "Front Panel", fontsize=20)
+    page.insert_text((72, 104), "The front panel carries the status lamps and the reset switch.", fontsize=11)
+    art = pymupdf.open()
+    canvas = art.new_page(width=360, height=200)
+    canvas.draw_rect(canvas.rect, color=None, fill=(0.88, 0.91, 0.94))
+    for i, rgb in enumerate([(0.8, 0.15, 0.15), (0.15, 0.6, 0.25), (0.95, 0.8, 0.15)]):
+        canvas.draw_rect(pymupdf.Rect(40 + i * 100, 30, 100 + i * 100, 90), color=None, fill=rgb)
+    canvas.insert_text((60, 150), "RESET LAMP", fontsize=30)
+    page.insert_image(pymupdf.Rect(110, 130, 470, 330), pixmap=canvas.get_pixmap(dpi=144))
+    page.insert_text((72, 350), "Figure 2. Front Panel Lamps", fontsize=10)
+    page.insert_text((72, 390), "Press reset for two seconds to clear a fault.", fontsize=11)
+    doc.set_toc([[1, "Wiring", 1], [1, "Front Panel", 2]])
+    doc.save(str(path))
+    doc.close()
+
+
+def words(text: str) -> str:
+    """Lowercase alphanumerics, so markdown emphasis cannot hide a caption."""
+    return " ".join(re.findall(r"[0-9a-z]+", text.lower()))
 
 
 class PipelineTest(unittest.TestCase):
@@ -113,9 +192,11 @@ class PipelineTest(unittest.TestCase):
         cls.prose_pdf = cls.corpus / "widget-guide.pdf"
         cls.ref_pdf = cls.corpus / "widget-commands.pdf"
         cls.small_ref_pdf = cls.corpus / "tiny-commands.pdf"
+        cls.nested_ref_pdf = cls.corpus / "nested-commands.pdf"
         prose_fixture(cls.prose_pdf)
         reference_fixture(cls.ref_pdf, 25)      # clears the >=20 command threshold
         reference_fixture(cls.small_ref_pdf, 8)  # deliberately below it
+        nested_reference_fixture(cls.nested_ref_pdf, 22)
 
     @classmethod
     def tearDownClass(cls):
@@ -154,7 +235,7 @@ class PipelineTest(unittest.TestCase):
         self.assertFalse(missing, f"chunks left with no attribution: {missing[:3]}")
 
     def test_04_enrich_never_downgrades_a_richer_breadcrumb(self):
-        """The guard that protects rebuild_reference.py's entity breadcrumbs."""
+        """A title-only pass must not replace a breadcrumb that names ancestors."""
         slug_dir = self.corpus / "docs" / "prose"
         m = self.manifest("prose")
         target = slug_dir / m["sections"][0]["file"]
@@ -242,6 +323,185 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("pip install docling", out, "no install instruction")
         self.assertIn("convert_manual.py", out, "did not point at the light path")
         self.assertNotIn("Traceback", out, "gated with a traceback instead of a message")
+
+    # ---------------------------------------------------------------- server
+
+    def test_10_mcp_server_passes_its_smoke_test(self):
+        """The server, driven over stdio the way an editor drives it.
+
+        The smoke test includes the AND->OR fallback on an identifier. An
+        identifier reaches FTS5 as a multi-word phrase, and the fallback used to
+        rewrite the spaces inside it as well, turning "set widget option 00"
+        into a phrase containing the word "or" that could never match.
+        """
+        db = self.tmp / "index.sqlite3"
+        self.assertTrue(db.is_file(), "test_08 builds the index this test serves")
+        r = run("mcp_smoke_test.py", "--db", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("SKIP", r.stdout,
+                         "the index has no entities, so the identifier probes never ran")
+
+    # ------------------------------------------------------ entity boundaries
+
+    def test_11_entity_regions_end_at_chapters(self):
+        """Text that follows a command but is not one must belong to nothing.
+
+        Regions used to end only where the next command began, so the last
+        command in a chapter owned whatever came after it -- the next chapter,
+        the appendices, the licence -- and lookup_entity served it all as that
+        command's entry. Checked by what each chunk contains, not by the share
+        of chunks carrying a label: coverage is not correctness.
+        """
+        r = run("rebuild_reference.py", str(self.nested_ref_pdf),
+                "--title", "Widget Commands", "--slug", "nested")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        slug_dir = self.corpus / "docs" / "nested"
+        sections = self.manifest("nested")["sections"]
+        for s in sections:
+            body = (slug_dir / s["file"]).read_text(encoding="utf-8")
+            if "fuse" in body or "redistribute" in body:
+                self.assertIsNone(s["command"],
+                                  f"{s['file']} is an appendix or licence, labelled {s['command']}")
+            owner = re.search(r"(set_widget_option_\d+) -value", body)
+            if owner:
+                self.assertEqual(s["command"], owner.group(1),
+                                 f"{s['file']} documents {owner.group(1)}")
+        self.assertEqual({s["command"] for s in sections if s["command"]},
+                         {f"set_widget_option_{i:02d}" for i in range(22)},
+                         "bounding the regions cost a command its attribution")
+
+    # ------------------------------------------------- breadcrumb provenance
+
+    def test_12_enrich_leaves_converter_breadcrumbs_alone_in_walk_mode(self):
+        """The no-downgrade guard used to hold for flat documents only.
+
+        enrich_chunks takes the heading walk when a document's levels vary, and
+        that branch refreshed every breadcrumb in place -- replacing the
+        page-accurate `Title › command` rebuild_reference.py writes. Force the
+        walk on real rebuild_reference output and check nothing moves.
+        """
+        corpus = self.tmp / "WalkCorpus"
+        slug_dir = corpus / "docs" / "walkref"
+        r = run("rebuild_reference.py", str(self.ref_pdf), "--title", "Widget Commands",
+                "--slug", "walkref", "--out-root", str(corpus / "docs"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+        manifest_path = slug_dir / "manifest.json"
+        m = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for i, s in enumerate(m["sections"]):
+            s["level"] = 1 + i % 3      # modal level at ~1/3, so enrich walks
+        manifest_path.write_text(json.dumps(m, indent=2), encoding="utf-8")
+
+        def crumbs():
+            cur = json.loads(manifest_path.read_text(encoding="utf-8"))
+            return [(s["breadcrumb"],
+                     (slug_dir / s["file"]).read_text(encoding="utf-8").split("\n")[0])
+                    for s in cur["sections"]]
+
+        before = crumbs()
+        r = run("enrich_chunks.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"walk\s+walkref",
+                         "enrich did not take the walk branch, so this proves nothing")
+        self.assertEqual(crumbs(), before, "enrich rewrote breadcrumbs a converter wrote")
+
+    # --------------------------------------------------------------- figures
+
+    def test_13_figures_are_extracted_linked_and_served(self):
+        """Figures come out of the PDF, attach to the section carrying their
+        caption, and reach an agent as images -- without the pass touching a
+        byte the converter wrote, and changing nothing when run twice.
+        """
+        corpus = self.tmp / "FigCorpus"
+        (corpus / "docs").mkdir(parents=True)
+        pdf = corpus / "widget-figures.pdf"
+        figure_fixture(pdf)
+        r = run("convert_manual.py", str(pdf), "--title", "Widget Figures", "--slug", "figs")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        slug_dir = corpus / "docs" / "figs"
+        converted = {p: p.read_bytes() for p in slug_dir.rglob("*") if p.is_file()}
+
+        r = run("extract_figures.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for p, data in converted.items():
+            self.assertEqual(p.read_bytes(), data, f"figure extraction rewrote {p.name}")
+
+        figures_json = slug_dir / "figures.json"
+        figures = json.loads(figures_json.read_text(encoding="utf-8"))["figures"]
+        self.assertEqual([f["caption"] for f in figures],
+                         ["Figure 1. Widget Wiring Diagram", "Figure 2. Front Panel Lamps"])
+        for f in figures:
+            self.assertEqual(f["link"], "caption", f"{f['caption']} was not tied by its caption")
+            section = (slug_dir / f["section"]).read_text(encoding="utf-8")
+            self.assertIn(words(f["caption"]), words(section),
+                          f"{f['caption']} tied to a section that does not carry it")
+            self.assertEqual((slug_dir / f["file"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n",
+                             f"{f['file']} is not a PNG")
+        self.assertIn("WIDGET", figures[0]["labels"] or "", "the vector figure's drawn labels were lost")
+
+        before = figures_json.read_bytes()
+        r = run("extract_figures.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(figures_json.read_bytes(), before, "a second extraction changed figures.json")
+
+        db = corpus / "index.sqlite3"
+        r = run("build_search_db.py", "--root", str(corpus), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run("mcp_smoke_test.py", "--db", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("PASS  get_figure", r.stdout, "the smoke test never reached get_figure")
+        self.assertIn("PASS  get_page_image", r.stdout, "the smoke test never reached get_page_image")
+
+    def test_14_ocr_makes_a_raster_figures_words_searchable(self):
+        """A raster figure's words are pixels: only OCR puts them in the index.
+
+        Runs on test_13's corpus. The vector figure already has drawn labels and
+        must be left alone; the raster one's "RESET LAMP" must reach search.
+        """
+        sys.path.insert(0, str(SCRIPTS))
+        from ocr_figures import find_tessdata
+        if not find_tessdata():
+            self.skipTest("no Tesseract language data here; OCR cannot run")
+        corpus = self.tmp / "FigCorpus"
+        r = run("ocr_figures.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        figures = json.loads((corpus / "docs" / "figs" / "figures.json").read_text(encoding="utf-8"))["figures"]
+        self.assertNotIn("ocr", figures[0], "OCR ran on a figure that already had drawn labels")
+        self.assertIn("RESET", (figures[1].get("ocr") or "").upper(), "OCR did not read the raster figure")
+
+        db = self.tmp / "figocr.sqlite3"
+        r = run("build_search_db.py", "--root", str(corpus), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        import sqlite3
+        con = sqlite3.connect(db)
+        hit = con.execute("SELECT file FROM chunks WHERE chunks MATCH 'figures:reset'").fetchone()
+        con.close()
+        self.assertTrue(hit, "the OCR text never reached the search index")
+
+    def test_15_a_failed_ocr_read_is_left_to_retry(self):
+        """Tesseract failing on a figure must not be recorded as reading nothing.
+
+        The pass skips any figure that already carries an `ocr` field, so an
+        empty string written after a failure makes that figure unsearchable for
+        good -- and the run would still exit 0, which is how a corpus ends up
+        with a hole nobody sees.
+        """
+        corpus = self.tmp / "FigCorpus"      # built by test_13, OCR'd by test_14
+        index = corpus / "docs" / "figs" / "figures.json"
+        data = json.loads(index.read_text(encoding="utf-8"))
+        for f in data["figures"]:
+            f.pop("ocr", None)               # back to "never read"
+        index.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+        broken = self.tmp / "broken-tessdata"
+        broken.mkdir(exist_ok=True)
+        (broken / "eng.traineddata").write_bytes(b"not a model")
+        r = run("ocr_figures.py", str(corpus), "--tessdata", str(broken))
+
+        self.assertNotEqual(r.returncode, 0, "a pass that read nothing reported success")
+        after = json.loads(index.read_text(encoding="utf-8"))["figures"]
+        self.assertFalse([f for f in after if "ocr" in f],
+                         "a figure Tesseract could not read was recorded as read")
 
 
 if __name__ == "__main__":

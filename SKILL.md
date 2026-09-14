@@ -38,6 +38,8 @@ recall for anything destructive.
       manifest.json                title, page_count, PDF TOC, section list
       full.md                      whole document, un-chunked fallback
       sections/NNN-slug.md         retrieval chunks, ~2-9 KB
+      figures.json                 figures: page, box, caption, owning section
+      figures/pNNNNN-K.png         one crop per figure
 ```
 
 `full.md` matters more than it looks: it's the escape hatch whenever a chunk
@@ -65,11 +67,16 @@ boundary lands badly, so never drop it.
 5. **Enrich** prose documents with `scripts/enrich_chunks.py` (strips page
    furniture, adds breadcrumbs). Reference documents get this during their
    own conversion, so don't run both over the same document.
-6. **Verify** with the protocol below before declaring done.
-7. **Serve it.** A corpus nobody can query is a folder of markdown. Build the
+6. **Extract figures** with `scripts/extract_figures.py <collection>`, then
+   `scripts/ocr_figures.py <collection>` where Tesseract is installed — see
+   "Figures". Both only add files, so they run on a corpus converted long ago.
+7. **Verify** with the protocol below before declaring done.
+8. **Serve it.** A corpus nobody can query is a folder of markdown. Build the
    search index and wire it into the user's editor — see "Serving the corpus
    over MCP". Do this as part of delivering, not as a follow-up they have to
    ask for.
+9. **Measure it** with a test set before changing anything about retrieval —
+   see "Measuring retrieval".
 
 ## Choosing an extractor
 
@@ -224,6 +231,67 @@ link, then take bare page numbers and `Chapter N:` headers only when adjacent
 to a confirmed furniture line. Single-token lines are identifiers, never
 furniture.
 
+## Figures
+
+A manual's diagrams carry what its prose leaves out, and a text extractor turns
+them into label soup — `<!-- Start of picture text -->SoC<br>CPU<br>…` — or into
+nothing at all when the figure is a raster image. Extract them as images and
+let the model look.
+
+`scripts/extract_figures.py <collection>` reads each source PDF with the layout
+model pymupdf4llm itself uses, crops every figure into `docs/<slug>/figures/`,
+and records page, box, caption and drawn labels in `figures.json`. It touches
+nothing the converter wrote.
+
+**A figure belongs to a section only on evidence**, and which evidence there is
+depends on what the converter left behind. Its own caption appearing as a line
+of the section is exact: 331 of 331 captioned figures in one Tessent guide, 454
+of 454 in a Synopsys one. Failing that:
+
+- **Its page, where the chunks carry page numbers** (`rebuild_reference.py`,
+  `convert_docling.py`) and the page belongs to one section. Checked against the
+  caption: 100% agreement on an unshared page, 76.7% where one entry ends and
+  the next begins on it — so a shared page ties nothing.
+- **The paragraph above it, where they carry no pages**: found just after the
+  previous figure's section, or else exactly once in the document. Checked
+  against the caption, that is 96–99% right on documents chunked by heading —
+  and 5.8% on a command reference rebuilt into one chunk per entry, where a bold
+  caption starts its own chunk and strands the paragraph above it in the
+  previous one. So it is never used where pages exist.
+
+Otherwise the figure stays unattached and is served by page — a guessed section
+would present a diagram as illustrating text it does not.
+
+Traps, each met on a real corpus:
+
+- A sentence citing a figure ("Figure 59 illustrates …") starts like a caption.
+  A caption follows its number with punctuation or a capitalised title.
+- Synopsys sets "Figure 1" and its title apart with a tab, so a caption box's
+  first line is the bare label; join the next line.
+- The layout model's raw box clips vector drawings at their edges. Grow it the
+  way pymupdf4llm does before cropping.
+- Note icons (~15 pt) and horizontal rules (~3 pt tall) come back as pictures.
+- The model costs ~0.2 s a page, so skip pages with no sizeable image and no
+  drawing in the body — ignoring the panel Synopsys paints behind every page's
+  text area, which otherwise sends every page through.
+- Its ONNX sessions take a thread per core, so parallel jobs fight: one guide
+  took 283 s alone and 1,830 s as one of four jobs. `--jobs` caps each job's
+  share, installed before the model is imported — the sessions are created on
+  import, and importing pymupdf4llm triggers it. Installed after, the cap
+  silently did nothing; installed first, another guide went from 1,552 s to 82 s.
+
+The server shows a figure with `get_figure` and any page with `get_page_image`,
+and `get_section` lists a section's figures by id.
+
+Captions and drawn labels are indexed with their section, and measured they add
+nothing: the caption is already in the section's text, and so, as picture
+soup, are most vector figures' labels. What a raster figure says is invisible to
+search until `scripts/ocr_figures.py` reads it — that took questions answered by
+a figure from 14 of 19 in the top five to 18 of 19, and moved no text question
+out of it. Noisy OCR is enough; search needs only some of the words. With that
+in place, written figure descriptions had one question left to win and were not
+generated — the model looks at the figure itself through `get_figure`.
+
 ## Verification protocol
 
 Text you delete is gone unless someone reconverts the PDF, which can take
@@ -257,13 +325,46 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |
 | `convert_docling.py` | One prose PDF → `docs/<slug>/` with page numbers and TOC-anchored breadcrumbs. Needs Docling. |
 | `pick_extractor.py` | Pre-flight a PDF: text layer, shape, bookmark density, expected confidence, runtime. |
-| `build_search_db.py` | Corpus → one SQLite FTS5 index. `--emit-vscode-config` also wires up VS Code. |
-| `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only. |
+| `extract_figures.py` | Crops every figure from the source PDFs into `docs/<slug>/figures/` and ties each to its section. Additive; `--dry-run`, `--jobs N`. |
+| `ocr_figures.py` | Reads the words in figures that have no text of their own (raster images) into `figures.json`, so search can find them. Needs Tesseract's language data. |
+| `build_search_db.py` | Corpus → one stemmed SQLite FTS5 index, figures included. `--emit-vscode-config` also wires up VS Code. |
+| `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only; `get_page_image` also needs PyMuPDF. |
 | `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
-| `update.ps1` | Windows drop-and-run: converts PDFs staged in `<corpus>/new pdf/`, enriches each new slug, then reindexes. `-Root <path>` drives a corpus kept outside this repo. |
+| `sample_sections.py` | Stratified sample of sections to write test questions from; `--figures` for sections with figures. |
+| `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. |
 
 They are parameterized by corpus directory and slug, and assume the layout
 above. Read the module docstrings — each records why it works the way it does.
+
+## Adding one document later
+
+Once `pick_extractor.py` has said what shape the document is, the rest is a
+fixed sequence:
+
+```bash
+python scripts/convert_manual.py new.pdf --title "Widget User's Manual"  # or rebuild_reference.py / convert_docling.py
+python scripts/enrich_chunks.py "<collection>" --only <slug>             # prose only
+python scripts/extract_figures.py "<collection>" --only <slug>
+python scripts/ocr_figures.py "<collection>" --only <slug>
+python scripts/build_index.py "<collection>"
+python scripts/build_search_db.py --root "<corpus>"
+python scripts/mcp_smoke_test.py --db "<corpus>/mcp-index.sqlite3"
+```
+
+The last two are the ones people skip: without them the server keeps answering
+from the corpus as it used to be.
+
+To retire the edition this one replaces, add `{"file": "old.pdf",
+"superseded_by": "<new slug>"}` to the collection's `superseded.json` and delete
+`docs/<old slug>/` — `build_index.py` then lists it as superseded instead of
+reporting its PDF as unaccounted for.
+
+There is deliberately no wrapper script for this. One existed, and it drifted
+four features behind without anyone noticing: it still sent every document to
+`convert_manual.py`, including the command references that need
+`rebuild_reference.py`, and it never rebuilt the search index. The first step is
+a judgement call, and the rest changes as this skill grows — both are better
+read than buried.
 
 `references/failure-modes.md` has the full catalog with measurements. Read it
 when debugging a corpus that already exists, or before changing chunking or
@@ -273,7 +374,8 @@ furniture logic.
 runs the pipeline over them: `python tests/test_pipeline.py`. It covers the
 things that have actually broken here -- idempotency, never downgrading
 metadata a better-informed pass wrote, declining to attribute entities from too
-little evidence, and the output contract the index and search builders read.
+little evidence, entity regions ending at chapters, figures tied to a section
+only on evidence, and the output contract the index and search builders read.
 Run it before changing a converter.
 
 `references/extractor-benchmark.md` measures pymupdf4llm, Docling and a
@@ -295,7 +397,8 @@ python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
 The first writes one SQLite FTS5 index plus a `.vscode/mcp.json`; the second
 drives a real handshake and every tool. Collections are discovered from disk,
 so nothing is hardcoded per corpus. Tools: `search_docs`, `get_section`,
-`lookup_entity`, `list_documents`, `get_toc`. The index is a **snapshot** —
+`lookup_entity`, `list_documents`, `get_toc`, `get_figure`, `get_page_image`.
+The index is a **snapshot** —
 rebuild after any conversion or enrichment, or the server keeps answering from
 the corpus as it used to be.
 
@@ -303,14 +406,20 @@ the corpus as it used to be.
 strings: `set_scan_configuration`, `-chain_count`, `K23 DRC`. A vector index
 would add a dependency, a rebuild cost and an API key to blur them.
 
-Four retrieval decisions worth carrying to any implementation, each of which
-came from watching bad results rather than from theory:
+Retrieval decisions worth carrying to any implementation, each of which came
+from watching bad results or measuring them rather than from theory:
 
 - **Rewrite queries before FTS5 sees them.** `_` and `-` are token separators
   and stray quotes are a syntax error, so each term becomes a quoted phrase.
-- **Drop stopwords, then fall back to OR.** FTS5 ANDs everything and agents ask
-  questions: "how do I define a clock" must not require "how", and one unlucky
-  word must not turn a good question into a dead end.
+  Combine terms, never words: `"set scan configuration"` must stay one phrase.
+- **Drop stopwords, then rank by OR whenever AND comes up short.** FTS5 ANDs
+  everything and agents ask questions: "how do I define a clock" must not
+  require "how". Falling back only when AND found *nothing* let one weak chunk
+  that happened to hold every word stand in for the answer; falling back
+  whenever AND returns less than a page took hit@5 from 82% to 89%.
+- **Stem.** Questions say "options" and "toggling" where manuals say "option"
+  and "toggle". Porter stemming lifted reworded questions from 55% to 73% hit@5
+  and cost no identifier lookup.
 - **Demote front matter.** A contents page lists every heading in the document,
   so it outranks the real one — "DRC Rule K23 . . . 151" beating rule K23.
 - **Cap hits per document**, or one large reference fills every result page.
@@ -320,6 +429,34 @@ answer: search returns "no matches" for something the corpus does cover, and
 nothing on screen says the shelf was half empty. The build refuses to exit 0
 and names the unreadable files; the server reports per-document coverage and
 warns on every result until the index is whole.
+
+## Measuring retrieval
+
+Every retrieval choice — chunk size, stemming, a fallback, embeddings, figure
+descriptions — is a guess until it moves a number. Build the number first.
+
+1. `scripts/sample_sections.py --root <corpus> --n 60` draws a stratified
+   sample: every document gets a share by the square root of its size, and
+   front matter, boilerplate and stubs are left out.
+2. Write one question per sampled section while reading it, into
+   `<corpus>/eval/questions.jsonl` with that section as the answer. Give each a
+   kind: `identifier` (names a command, option or message), `concept` (natural
+   wording), `paraphrase` (deliberately avoids the section's own terms — the
+   gap an embedding index would close), `figure` (answered by a figure; sample
+   with `--figures` and look at the image), and `real` for questions users
+   actually asked.
+3. `scripts/eval_search.py --db <index> --questions … --misses` scores hit@k and
+   MRR per kind through the server's own `search()`.
+4. **Review every miss before believing it.** When what came back answers the
+   question just as well, add it as an answer and say so in the question's
+   note. Two of the first twelve misses on a real corpus were right answers the
+   test did not know about.
+5. Compare configurations on the same questions and read the per-question
+   changes, not just the totals — on 57 questions, one question is 1.75 points.
+
+Questions written by someone who has just read the answer share its words, so
+they flatter lexical search. `paraphrase` measures that bias; `real` questions
+are the only ones free of it, so ask the user for some.
 
 ## Platform notes
 
@@ -348,6 +485,16 @@ use will miss — paraphrase, synonym and concept queries are exactly where a
 lexical index is weakest. Say so plainly rather than letting "RAG-ready" imply
 more than was built.
 
+Measure that gap before building for it. On a 24-manual EDA corpus, stemmed
+BM25 put the answer in its top five for 100% of questions naming an identifier,
+90% of naturally worded ones and 73% of questions deliberately reworded to avoid
+the manual's terms. Adding a small general-purpose embedding model with rank
+fusion did not move the reworded questions at all and lowered the overall top-5
+rate from 92% to 88%: identifier-dense manuals are where lexical search is
+strongest and a small model blurs what it matches exactly
+(`references/retrieval-measurement.md`). Real users' questions missing in a way
+a test set does not are the reason to revisit, not the promise of the technique.
+
 For the layer above, the community `rag-architect` skills cover vector store
 selection, embedding models, hybrid BM25 + vector search, reranking, and
 RAGAS-style evaluation — and explicitly do *not* cover PDF extraction or chunk
@@ -357,7 +504,8 @@ those decide how it gets found.
 One idea worth borrowing from them: **choose chunk size empirically against the
 real corpus** rather than by hand. The 9 KB default here was inherited by
 matching an existing corpus, which is a defensible starting point and not a
-measured optimum.
+measured optimum; `eval_search.py` turns it into one — rebuild at another size
+and compare on the same questions.
 
 ## Reporting
 
