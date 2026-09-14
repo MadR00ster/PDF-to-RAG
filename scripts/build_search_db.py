@@ -130,7 +130,7 @@ CREATE TABLE figures (
     width       INTEGER,
     height      INTEGER,
     section_ord INTEGER,
-    link        TEXT             -- how section_ord was decided: caption | context
+    link        TEXT             -- how section_ord was decided: caption | page | context
 );
 CREATE INDEX idx_figures_section ON figures(slug, section_ord);
 

@@ -57,10 +57,14 @@ On 57 questions one question is 1.75 points. Read the per-question changes
 
 Eleven questions have as their answer a chunk headed only "Arguments", "Note",
 "Example 1", "Syntax" or "What Next" — failure mode 1. All eleven were found in
-the top five: in this corpus each such chunk still carries its command's name
+the top five: in this corpus each such chunk still carried its command's name
 as a running header, which furniture stripping keeps because single-token lines
-are never furniture. Finding them is not the problem here; attributing them is,
-and a running header is luck, not a guarantee.
+are never furniture. Finding them was not the problem; attributing them was,
+and a running header is luck, not a guarantee. The two manuals holding eight of
+the eleven have since been rebuilt with `rebuild_reference.py`, which names the
+command on every such chunk — see "What rebuilding the two reference manuals
+changed" below. The other three sit in `etassemblereference` and `tmax-rules`,
+which were not rebuilt.
 
 ## Semantic search: measured, and not built
 

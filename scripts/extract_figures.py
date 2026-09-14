@@ -20,16 +20,19 @@ A figure is attached to a section by, in order of trust:
   caption  Its own caption ("Figure 62. Tri-State Bus Contention") appears as a
            line of that section. The List of Figures never matches: its rows
            carry dot leaders and page numbers.
-  context  No caption, but the paragraph just above it on the page is found in
-           a section shortly after the previous figure's, or else in exactly
-           one section of the whole document.
-  (none)   Neither. The crop is still written and served by page, just not
-           attached to a section -- a guessed section would present the diagram
-           as illustrating text it does not illustrate.
+  page     Where the sections carry page numbers (rebuild_reference.py,
+           convert_docling.py): the figure's page belongs to exactly one
+           section. A page shared by two sections ties nothing.
+  context  Where they carry none: the paragraph just above the figure is found
+           in a section shortly after the previous figure's, or else in exactly
+           one section of the whole document. Never used where pages exist.
+  (none)   None of those. The crop is still written and served by page, just
+           not attached to a section -- a guessed section would present the
+           diagram as illustrating text it does not illustrate.
 
-The context method is checked on every figure where both apply: the summary
-reports how often it picks the same section the caption does, which is the
-estimate of how far to trust the figures that only have context.
+Both fallbacks are checked on every captioned figure they would also place: the
+summary reports how often each picks the caption's section, which is the
+estimate of how far to trust the figures that have no caption.
 
 Detection keeps what the model calls a picture, refined the way pymupdf4llm
 refines it, minus what is too small to be a figure (note icons, rules) and what
