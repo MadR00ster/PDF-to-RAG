@@ -45,9 +45,73 @@ recall for anything destructive.
 `full.md` matters more than it looks: it's the escape hatch whenever a chunk
 boundary lands badly, so never drop it.
 
+## When the input does not look like this
+
+The scripts were written for one input shape: a flat folder of PDFs, converted
+in place, with `docs/` beside them and nothing else writing there. Real inputs
+are often something else, and nothing here detects it yet. **Before running any
+script that writes, check the input against the layout above.** If it differs,
+tell the user what you found and choose an approach with them. Don't force the
+input into this layout, and don't run the pipeline anyway to see what breaks.
+
+Three shapes seen so far:
+
+- **Scattered PDFs**, in nested folders or with copies of the same file. That is
+  the case the scripts handle, once the PDFs are gathered into one collection
+  folder.
+- **A vendor HTML help folder with the PDFs alongside.** One example is an
+  Oxygen WebHelp output built from DITA:
+  - one folder per manual, split into topic subfolders
+  - every PDF gathered in one `pdf/` folder, named after its manual's folder
+    (`avalon_maskview_ug/` ↔ `pdf/avalon_maskview_ug.pdf`)
+  - `index.html` redirecting to a landing page
+  - a table of contents that exists only as per-node JavaScript fragments
+    (`oxygen-webhelp/app/nav-links/json/tocId-*.js`), though a top-level
+    `sitemap.html` may also hold it
+
+  Asked whether the HTML and PDFs hold the same text, an agent reported that
+  they do: the same manual rendered twice, with the PDF adding only page
+  furniture. That answer came without numbers. The PDFs on hand may also cover
+  only some of the manuals, so some manuals may exist only as HTML. Other
+  vendors ship custom help trees that look like neither.
+- **An existing corpus built by something else**: an earlier version of this
+  skill, the deleted `update.ps1` (which moved PDFs and deleted `docs/<slug>`
+  folders), an HTML-based RAG skill, or hand edits. An agent asked to update one
+  such corpus reported that the layout matched this skill's for none of its
+  documents.
+
+What breaks, and what it damages:
+
+- **Source PDFs are looked for only beside `docs/`.** Each manifest records
+  `source_pdf` as a bare filename, and `build_index.py`, `extract_figures.py`,
+  `ocr_figures.py` and `get_page_image` all resolve it against the collection
+  folder. When the PDFs live elsewhere, every document looks unaccounted for,
+  and figures and page images fail.
+- **Converters write to `<pdf's folder>/docs` by default.** In a help folder
+  that means inside the vendor's install tree. Pass `--out-root`.
+- **`enrich_chunks.py` rewrites section files and `manifest.json` in place, with
+  no backup.** Its furniture pass deletes any line repeated across 5% of
+  sections (at least 10), which is right for PDF page headers and can delete real content in
+  text another tool produced. Run `--dry-run` first on anything this skill did
+  not convert, and back the folder up.
+- **`build_index.py` replaces `docs/index.json` and `docs/README.md` outright**,
+  and stops with an error on a manifest missing `title`, `source_pdf`,
+  `page_count` or `sections`.
+- **No script reads HTML.** Treating the HTML as a duplicate is safe only for
+  manuals whose PDF is actually there.
+
+For DITA-built help, the HTML is probably the better source even when the PDF
+exists: exact heading hierarchy, no page furniture, figures already as image
+files, real tables. What it lacks is page numbers, which could be recovered by
+matching each section's text against the PDF's pages. This is unmeasured.
+Adaptive input handling is planned, and waits on a real HTML help folder to
+build and test against.
+
 ## Workflow
 
-1. **Inventory.** List the PDFs. Identify superseded versions (same document,
+1. **Inventory.** If the input is not a flat folder of PDFs, or a corpus
+   already exists, read "When the input does not look like this" first.
+   List the PDFs. Identify superseded versions (same document,
    older release) — convert only the newest, record the rest in
    `superseded.json`, keep the old PDFs on disk.
 2. **Classify each document.** Prose manual or reference/dictionary (one entry
@@ -333,8 +397,9 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `sample_sections.py` | Stratified sample of sections to write test questions from; `--figures` for sections with figures. |
 | `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. |
 
-They are parameterized by corpus directory and slug, and assume the layout
-above. Read the module docstrings — each records why it works the way it does.
+They are parameterized by corpus directory and slug, and assume the target
+layout — see "When the input does not look like this" for what happens when it
+isn't. Read the module docstrings — each records why it works the way it does.
 
 ## Adding one document later
 
