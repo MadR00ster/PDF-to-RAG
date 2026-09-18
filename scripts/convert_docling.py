@@ -177,33 +177,69 @@ def resolve_ancestors(c, toc, toc_pos, by_title, doc):
     return [], "none"
 
 
+def common_lineage(a, b):
+    """The chain to label a merged chunk with, or None if these do not belong
+    together.
+
+    Requiring identical chains is too strict, and fails on exactly the
+    documents that need merging most. Docling's heading flips between a section
+    and its sub-headings as it walks a page, so consecutive chunks of one
+    section arrive with chains of different depth:
+
+        ... > Entering PrimeLib Commands > Specifying Cells
+        ... > Entering PrimeLib Commands
+        ... > Entering PrimeLib Commands > Command Help
+
+    Measured on a 6-level, densely bookmarked manual: only 4% of consecutive
+    pairs had identical chains, while 67% were same-lineage and 10% siblings --
+    so the strict rule blocked 77% of legitimate merges and left 71% of chunks
+    under 1 KB.
+
+    Merge when one chain continues the other, or when they differ only in their
+    final element, and label the result with what they share. The merged chunk
+    then claims only ancestry that is true of all of it, and the sub-headings
+    it spans are written into the body.
+    """
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    if n == min(len(a), len(b)):        # one continues the other
+        return a[:n]
+    if len(a) == len(b) and n == len(a) - 1:   # siblings under one parent
+        return a[:n]
+    return None
+
+
 def merge_sections(resolved, max_chars):
-    """Merge consecutive chunks that resolve to the same section.
+    """Merge consecutive chunks that belong to the same section.
 
     Docling's HybridChunker is bounded by a 512-token tokenizer, so it emits
     ~500-char pieces -- far under the size the rest of this skill targets, and
-    a corpus mixing 500-char and 9,000-char chunks retrieves unevenly. Merging
-    on the *resolved ancestor chain* rather than on the heading is what makes
-    this work: Docling changes heading almost every chunk, so merging by
-    heading barely merged anything (measured: 174 pieces became 143, still a
-    632-char median with 70% of chunks under 1 KB).
+    a corpus mixing 500-char and 9,000-char chunks retrieves unevenly.
 
-    A sub-heading that changes mid-merge is written into the body, so the
-    structure survives instead of being silently dropped.
+    Confidence is merged pessimistically: a chunk whose ancestry is partly
+    page-derived is labelled "page", because part of what it claims was not
+    confirmed by the TOC. Blocking the merge on mismatched confidence instead
+    would re-break the oscillating case, since the depth flip usually flips the
+    confidence with it.
     """
     merged, buf = [], None
     for r in resolved:
         head = (r["headings"] or [""])[0]
-        same = (buf is not None
-                and buf["ancestors"] == r["ancestors"]
-                and buf["confidence"] == r["confidence"])
-        if same and len(buf["text"]) + len(r["text"]) + 80 <= max_chars:
+        lineage = common_lineage(buf["ancestors"], r["ancestors"]) if buf else None
+        if (lineage is not None
+                and len(buf["text"]) + len(r["text"]) + 80 <= max_chars):
             if head and head != buf["last_heading"]:
                 buf["text"] += "\n\n### " + head + "\n\n" + r["text"]
                 buf["last_heading"] = head
             else:
                 buf["text"] += "\n\n" + r["text"]
             buf["pages"] |= set(r["pages"])
+            buf["ancestors"] = lineage
+            if r["confidence"] != "anchored":
+                buf["confidence"] = r["confidence"]
             continue
         if buf:
             merged.append(buf)
