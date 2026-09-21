@@ -64,6 +64,8 @@ cm = _load("convert_manual")
 ec = _load("enrich_chunks")
 
 IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*(\s+-[a-z0-9_]+)*$", re.I)
+# An error/warning message code ("ADES-002", "CMD-082"): a reference entry too.
+MESSAGE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}-\d{2,5}$")
 
 
 def pick_command_level(toc: list) -> int | None:
@@ -78,7 +80,14 @@ def pick_command_level(toc: list) -> int | None:
     for lvl, title, _page in toc:
         by_level.setdefault(lvl, []).append((title or "").strip())
     for lvl, titles in by_level.items():
-        n = sum(1 for t in titles if IDENTIFIER_RE.match(t) and "_" in t or " -" in t)
+        n = sum(
+            1
+            for t in titles
+            # Parenthesised as Python already groups it. The bare `or " -" in t`
+            # predates this change; tightening it would move which level is
+            # picked for manuals that already convert correctly.
+            if (IDENTIFIER_RE.match(t) and "_" in t) or " -" in t or MESSAGE_CODE_RE.match(t)
+        )
         if n > best_n:
             best, best_n = lvl, n
     return best if best_n >= 20 else None

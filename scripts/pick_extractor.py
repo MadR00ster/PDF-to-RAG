@@ -50,8 +50,13 @@ IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]*$")
 DOCLING_SECONDS_PER_PAGE = 1.2   # measured, CPU, no OCR
 
 
+MESSAGE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}-\d{2,5}$")
+
+
 def looks_like_entry(title: str) -> bool:
     t = (title or "").strip()
+    if MESSAGE_CODE_RE.match(t):
+        return True
     if not t or " " in t and not t.split()[0].endswith(("_",)):
         # Allow "tessent -shell" style two-token entries, reject prose.
         parts = t.split()

@@ -277,6 +277,27 @@ class PipelineTest(unittest.TestCase):
         self.assertFalse([s for s in m["sections"] if s.get("command")],
                          "attributed commands from below-threshold evidence")
 
+    def test_06b_message_codes_are_entries(self):
+        """An error-message catalogue (ADES-002, CMD-082) is a reference too.
+
+        Its TOC titles have no underscore, so an identifier-only test found no
+        command level and a 3,776-page catalogue came out with 0% attributed.
+        """
+        import importlib.util
+        mods = {}
+        for name in ("rebuild_reference", "pick_extractor"):
+            spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+            mods[name] = importlib.util.module_from_spec(spec)
+            sys.modules[name] = mods[name]
+            spec.loader.exec_module(mods[name])
+        toc = [[1, "Messages", 3], [2, "ADES", 3]] + [
+            [3, f"ADES-{n:03d}", 3 + n // 2] for n in range(2, 40)]
+        self.assertEqual(mods["rebuild_reference"].pick_command_level(toc), 3)
+        looks = mods["pick_extractor"].looks_like_entry
+        self.assertTrue(looks("CMD-082"))
+        self.assertFalse(looks("Chapter 4"))
+        self.assertFalse(looks("Getting Started"))
+
     # ----------------------------------------------------------- pre-flight
 
     def test_07_pick_extractor_classifies_both_shapes(self):
