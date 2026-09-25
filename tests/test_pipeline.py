@@ -796,6 +796,35 @@ class PipelineTest(unittest.TestCase):
                 self.assertIn(expected, raised, f"{name} went unreported; raised {raised}\n{r.stdout}")
                 self.assertEqual(r.returncode, 1 if fails else 0, r.stdout)
 
+    def test_19_checker_order_prefers_the_enclosing_entry(self):
+        """A repeated title must not send the order check ahead to a later
+        copy when the one enclosing the reading position fits. Breadcrumbs
+        name parents only, so a chunk's deepest ancestor is often shallower
+        than the last chunk's; resolving it to the next "Simulating the Design"
+        1,300 entries on flagged 195 correct chunks in one manual."""
+        corpus = self.tmp / "RepeatCorpus"
+        doc_dir = corpus / "docs" / "rep"
+        (doc_dir / "sections").mkdir(parents=True)
+        toc = [[1, "Simulating", 1], [2, "Setup", 1], [3, "Options", 1], [2, "Runtime", 2],
+               [3, "Tuning", 2], [1, "Reference", 3], [2, "Simulating", 3]]
+        # Chunks opening with: Simulating, Setup, Options, Runtime, Tuning.
+        crumbs = ["Guide", "Guide › Simulating", "Guide › Simulating › Setup",
+                  "Guide › Simulating", "Guide › Simulating › Runtime"]
+        sections = []
+        for n, crumb in enumerate(crumbs, start=1):
+            text = f"*{crumb}*\n\n## Part {n}\n\nText of part {n}.\n"
+            name = f"sections/{n:03d}.md"
+            (doc_dir / name).write_text(text, encoding="utf-8")
+            sections.append({"file": name, "heading": f"Part {n}", "level": 2,
+                             "chars": len(text), "breadcrumb": crumb})
+        (doc_dir / "full.md").write_text("x", encoding="utf-8")
+        (doc_dir / "manifest.json").write_text(json.dumps({
+            "source_pdf": "rep.pdf", "title": "Guide", "slug": "rep", "page_count": 3,
+            "toc": [{"level": l, "title": t, "page": p} for l, t, p in toc],
+            "sections": sections}), encoding="utf-8")
+        r, raised = self.check(corpus, "--no-pdf")
+        self.assertNotIn("ancestor-out-of-order", raised, r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

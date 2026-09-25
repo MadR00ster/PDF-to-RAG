@@ -564,12 +564,15 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
                         chain.append(fits)
 
         # ---- order
+        # An entry enclosing where the last chunk was is preferred to one
+        # ahead: titles repeat, and jumping to the next "Simulating the Design"
+        # 1,300 entries on made every chunk after it look out of order.
         ranked = [toc.span[c] for c in (chain[-1] if chain else []) if c in toc.span]
-        if ranked:
+        if ranked and not any(r[0] <= pos < r[3] for r in ranked):
             ahead = [r for r in ranked if r[0] >= pos]
             if ahead:
                 pos = min(r[0] for r in ahead)
-            elif not any(r[0] <= pos < r[3] for r in ranked):
+            else:
                 f.add("ancestor-out-of-order", f"{name}: back to TOC entry #{min(r[0] for r in ranked)} "
                                                f"after #{pos}")
 
