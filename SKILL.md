@@ -202,7 +202,7 @@ regions of the same manual.
 ## Two document shapes
 
 **Prose manuals** have a real heading hierarchy. Chunk on headings; breadcrumbs
-come from the heading stack.
+come from the TOC entries the headings match.
 
 **Reference/dictionary documents** are a flat list of entries. Their heading
 levels are often meaningless (one corpus measured 95% of chunks at a single
@@ -239,13 +239,25 @@ bailing to paragraph packing whenever a split fails to yield 2+ pieces.
 Prepend `*Document › Chapter › Section*`. It helps the embedding and the reader
 equally.
 
-Build ancestors from the heading stack, **but verify each against the PDF's
-bookmark TOC**. Heading levels from font-size heuristics routinely promote a
-procedure step or a stray running footer into a fake chapter — one corpus
-produced `Design Compiler® User Guide › Specify the libraries`, where that is a
-step in a numbered list, not a chapter. Roughly half of headings survive TOC
-verification; the rest fall back to document-title-only. That coverage loss is
-the correct trade.
+**Take ancestors from the PDF's bookmark TOC, never from heading levels.**
+Heading levels from font-size heuristics routinely promote a procedure step or
+a stray running footer into a fake chapter. One corpus produced
+`Design Compiler® User Guide › Specify the libraries`, where that is a step in
+a numbered list, not a chapter.
+
+Checking each heading against the TOC is not enough on its own. A walk that
+kept a stack of TOC-confirmed headings, nested by font-size level, still got
+parents wrong. One chapter heading set smaller than the preface, or one never
+matched, left the previous section as the parent of everything after it.
+Against each chunk's page located in the PDF, 14–23% of the parents it gave
+across 13 manuals were right.
+
+`enrich_chunks.py` instead matches heading lines to TOC entries and keeps the
+longest set of matches that runs forward through both. A chunk that opens with
+a kept match gets that entry's TOC parents. Every other chunk gets the title
+alone. That is 99.3–99.9% right across 22 manuals, and gives a parent to about
+half of chunks. Letting the other chunks inherit the section they follow would
+reach 93–96% of chunks at 89–95% right: a wrong parent in one chunk of ten.
 
 ### Page range — so answers can cite
 
@@ -393,8 +405,17 @@ every earlier test:
 - 3,070 chunks of one reference still carried Tessent's page footer.
 
 It cannot test idempotency. That needs a converter run twice, which
-`tests/test_pipeline.py` does. Without page numbers the content check compares
-against the whole document, so it catches only text lost wholesale.
+`tests/test_pipeline.py` does.
+
+Without page numbers it is much weaker:
+
+- The content check compares against the whole document, so it catches only
+  text lost wholesale.
+- Wrong breadcrumbs mostly pass. On the old heading walk, the nesting and
+  order checks flagged 768 chunks. Locating each chunk's page in the PDF showed
+  about 1,700 with a wrong parent: most wrong parents still nest correctly in
+  the TOC.
+
 `--strict` therefore rejects documents without pages, and it should: they
 cannot be cited or audited.
 

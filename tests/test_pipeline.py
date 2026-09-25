@@ -103,6 +103,19 @@ def prose_fixture(path: Path) -> None:
     write_pdf(path, pages, toc)
 
 
+def inverted_fixture(path: Path) -> None:
+    """A preface set larger than the chapter after it, as real manuals do.
+    The chapter heading comes out as ### inside the preface's chunk, so a walk
+    by heading level keeps the preface as the parent of the whole chapter."""
+    pages, toc = [], []
+    for title, size, level in [("About This Guide", 22, 1), ("Normalized Formats", 14, 1),
+                               ("Data Loading", 16, 2), ("Parametric Data", 16, 2)]:
+        pages.append([(title, size),
+                      (f"This part explains {title.lower()} and how its pages are laid out.", 11)])
+        toc.append([level, title, len(pages)])
+    write_pdf(path, pages, toc)
+
+
 def command_page(name: str) -> list[tuple[str, int]]:
     return [(name, 20),
             ("SYNTAX", 14), (f"{name} -value <int>", 11),
@@ -275,20 +288,85 @@ class PipelineTest(unittest.TestCase):
         missing = [s["file"] for s in m["sections"] if not s.get("breadcrumb")]
         self.assertFalse(missing, f"chunks left with no attribution: {missing[:3]}")
 
-    def test_04_enrich_never_downgrades_a_richer_breadcrumb(self):
-        """A title-only pass must not replace a breadcrumb that names ancestors."""
+    def test_04_enrich_replaces_a_parent_the_toc_does_not_give(self):
+        """A breadcrumb enrich did not get from a converter is rewritten from
+        the TOC, however many ancestors it names.
+
+        This used to assert the opposite: never trade a breadcrumb naming
+        ancestors for a title-only one. That guard dated from before converter
+        breadcrumbs were marked in the manifest (test_12 covers those), and it
+        would have kept every wrong parent the old heading walk wrote.
+        """
         slug_dir = self.corpus / "docs" / "prose"
         m = self.manifest("prose")
         target = slug_dir / m["sections"][0]["file"]
-        rich = "*Widget Guide › Installation › Unpacking*"
         body = target.read_text(encoding="utf-8").split("\n")
-        body[0] = rich
+        body[0] = "*Widget Guide › Installation › Unpacking*"   # Installation has no parent
         target.write_text("\n".join(body), encoding="utf-8")
 
         r = run("enrich_chunks.py", str(self.corpus))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(target.read_text(encoding="utf-8").split("\n")[0], rich,
-                         "a richer breadcrumb naming ancestors was overwritten")
+        self.assertEqual(target.read_text(encoding="utf-8").split("\n")[0], "*Widget Guide*",
+                         "a parent the TOC does not give survived")
+        self.assertEqual(self.manifest("prose")["sections"][0]["breadcrumb"], "Widget Guide")
+
+    def test_04b_enrich_takes_parents_from_the_toc_not_font_sizes(self):
+        """The heading walk kept a larger-set preface as the parent of the
+        chapter after it: measured against located pages, 14-23% of the
+        parents it gave across 13 real manuals were right.
+
+        First the shape of silicon-da-loc-data-intg, written by hand: heading
+        levels from font size put the preface at 2 and the chapter's own
+        opening chunk, marked (intro), at 4, so the walk never popped the
+        preface. Then the same inversion end to end, where the small-set
+        chapter heading lands inside the preface's chunk.
+        """
+        corpus = self.tmp / "SiliconCorpus"
+        doc_dir = corpus / "docs" / "silicon"
+        (doc_dir / "sections").mkdir(parents=True)
+        shape = [("About This Guide", 2), ("1 Normalized File Formats (intro)", 4),
+                 ("Data Loading Modes", 4), ("Example", 5), ("Parametric Data", 4),
+                 ("Header", 5), ("Table", 6)]
+        sections = []
+        for n, (heading, level) in enumerate(shape, start=1):
+            name = f"sections/{n:03d}.md"
+            text = f"## {heading.replace(' (intro)', '')}\n\nText of {heading}.\n"
+            (doc_dir / name).write_text(text, encoding="utf-8")
+            sections.append({"file": name, "heading": heading, "level": level, "chars": len(text)})
+        toc = [[1, "About This Guide", 1], [1, "1 Normalized File Formats", 2],
+               [2, "Data Loading Modes", 3], [2, "Parametric Data", 4], [3, "Header", 4]]
+        (doc_dir / "manifest.json").write_text(json.dumps({
+            "source_pdf": "silicon.pdf", "title": "Data Integration Guide", "slug": "silicon",
+            "page_count": 4, "toc": [{"level": l, "title": t, "page": p} for l, t, p in toc],
+            "sections": sections}), encoding="utf-8")
+        r = run("enrich_chunks.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        crumbs = [s["breadcrumb"] for s in
+                  json.loads((doc_dir / "manifest.json").read_text(encoding="utf-8"))["sections"]]
+        self.assertFalse([c for c in crumbs if "About This Guide" in c],
+                         f"the preface is still a parent: {crumbs}")
+        self.assertEqual(crumbs[2], "Data Integration Guide › 1 Normalized File Formats")
+        self.assertEqual(crumbs[5], "Data Integration Guide › 1 Normalized File Formats › Parametric Data")
+        self.assertEqual(crumbs[3], "Data Integration Guide",
+                         "a heading the TOC does not list inherited a parent")
+
+        corpus = self.tmp / "InvertedCorpus"
+        (corpus / "docs").mkdir(parents=True)
+        pdf = corpus / "formats.pdf"
+        inverted_fixture(pdf)
+        r = run("convert_manual.py", str(pdf), "--title", "Formats Guide", "--slug", "formats")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = run("enrich_chunks.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+        m = json.loads((corpus / "docs" / "formats" / "manifest.json").read_text(encoding="utf-8"))
+        crumbs = {s["heading"]: s["breadcrumb"] for s in m["sections"]}
+        self.assertEqual(crumbs.get("Data Loading"), "Formats Guide › Normalized Formats",
+                         f"parent not taken from the TOC: {crumbs}")
+        self.assertEqual(crumbs.get("Parametric Data"), "Formats Guide › Normalized Formats")
+        self.assertEqual(crumbs.get("About This Guide"), "Formats Guide")
+        r = run("enrich_chunks.py", str(corpus))
+        self.assertIn("0 changed", r.stdout, "a second run changed something")
 
     # ------------------------------------------------------------ reference
 

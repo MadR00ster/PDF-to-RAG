@@ -10,16 +10,12 @@ Post-process existing docs/<slug>/sections/*.md chunks in place:
 
 Both passes are idempotent: rerunning makes no further change.
 
-Ancestors are only walked for manuals whose heading levels form a usable
-hierarchy. In a flat manual (notably tshell-ref, where 95% of chunks share
-one level) there is nothing to walk, and a guessed parent would be worse
-than none -- see references/failure-modes.md for why a wrong parent is
-actively dangerous in a command reference. Those manuals still get a
-breadcrumb of the document title alone: it guesses no ancestor, so it cannot
-be wrong, and a chunk retrieved on its own still names its source.
-Breadcrumbs a page-aware converter wrote (rebuild_reference.py,
-convert_docling.py) are never touched in either mode, and a title-only pass
-never replaces one that already names ancestors.
+Ancestors come from the PDF's bookmark TOC, never from heading levels: a
+chunk whose opening heading is a TOC entry gets that entry's TOC parents,
+and every other chunk gets the document title alone. See build_breadcrumbs
+for how headings are matched to entries and what that measured. Breadcrumbs
+a page-aware converter wrote (rebuild_reference.py, convert_docling.py) are
+never touched; the manifest fields they write say which those are.
 
 Usage:
   python scripts/enrich_chunks.py "Synopsys Manual" --dry-run
@@ -35,19 +31,22 @@ Options:
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import re
 import sys
 from collections import Counter
 from pathlib import Path
 
-# A manual gets breadcrumbs only if fewer than this share of its chunks sit
-# at a single heading level; above it, the "hierarchy" is an artifact.
-MAX_FLATNESS = 0.50
-
 BREADCRUMB_SEP = " › "  # single right-pointing angle quote
 
 FENCE_RE = re.compile(r"^\s*```")
+# pymupdf4llm renders a PDF heading as a markdown heading or as a line that
+# is bold and nothing else.
+HEADING_LINE_RE = re.compile(r"^\s*(#{1,6}\s+\S.*|\*\*[^*].*\*\*)\s*$")
+# A bookmark says "Chapter 2  Scan and ATPG Basics" where the page heading
+# says "Scan and ATPG Basics".
+TOC_PREFIX_RE = re.compile(r"^(chapter|appendix|part)\s+[\w.]{1,4}\s*[:.\-–]?\s+", re.I)
 BARE_NUM_RE = re.compile(r"^\s*\d{1,4}\s*$")
 CHAPTER_HDR_RE = re.compile(r"^\s*(Chapter|Appendix|Section)\s+\w{1,4}\s*:", re.I)
 
@@ -185,50 +184,114 @@ def strip_furniture(text: str, furniture: set[str]) -> tuple[str, int]:
     return out, sum(drop)
 
 
-def toc_titles(toc: list[dict]) -> set[str]:
-    """Normalized set of the PDF's own bookmark titles -- the one piece of
-    genuinely authoritative structure available."""
-    out = set()
-    for t in toc or []:
-        n = normalize_title(t.get("title") or "")
-        if n:
-            out.add(n)
-    return out
-
-
 def normalize_title(s: str) -> str:
     s = re.sub(r"\s+", " ", strip_emphasis(s)).strip()
-    s = re.sub(r"^\d+(\.\d+)*\s*", "", s)  # drop leading chapter numbering
+    s = TOC_PREFIX_RE.sub("", s)
+    s = re.sub(r"^\d+(\.\d+)*\.?\s*", "", s)  # drop leading chapter numbering
     return s.lower()
 
 
-def build_breadcrumbs(sections: list[dict], manual_title: str, toc: set[str]) -> list[str]:
-    """Walk sections in order maintaining a level stack, so each chunk gets
-    'Manual > ancestor > ancestor'. Ancestors only -- the chunk's own heading
-    is already the first line of its body.
+def heading_lines(text: str, manual_title: str) -> list[tuple[bool, str]]:
+    """(opens the chunk, line) for each heading line outside code, in order.
+    A breadcrumb an earlier run wrote is not part of the text."""
+    out, in_code, opening = [], False, True
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        if FENCE_RE.match(raw):
+            in_code, opening = not in_code, False
+            continue
+        if in_code:
+            continue
+        if opening and is_existing_breadcrumb(raw, manual_title):
+            continue
+        if HEADING_LINE_RE.match(raw):
+            out.append((opening, raw))
+        opening = False
+    return out
 
-    Only headings that appear in the PDF's bookmark TOC may become
-    ancestors. The font-size heuristic happily promotes a procedure step
-    ("Specify the libraries") or a stray running footer to a shallow level,
-    and those then masquerade as chapters. Cross-checking against the TOC
-    keeps roughly the half of headings that are real structure and discards
-    the invented ones, so a breadcrumb is either right or absent.
-    """
-    crumbs = []
-    manual_norm = normalize_title(manual_title)
-    stack: list[tuple[int, str]] = []
-    for s in sections:
-        level = s.get("level") or 0
-        heading = strip_emphasis(s.get("heading") or "")
-        norm = normalize_title(heading)
+
+def toc_chains(toc: list[tuple[int, str]], manual_norm: str) -> list[list[str]]:
+    """Every TOC entry's chain of titles from the top, itself last. An entry
+    repeating the manual's own title is left out: the crumb starts with it."""
+    chains, stack = [], []
+    for level, title in toc:
         while stack and stack[-1][0] >= level:
             stack.pop()
-        parts = [manual_title] + [h for _, h in stack]
-        crumbs.append(BREADCRUMB_SEP.join(parts))
-        # Only TOC-verified, non-self-referential headings become ancestors.
-        if norm and norm in toc and norm != manual_norm and "(intro)" not in heading:
-            stack.append((level, heading))
-    return crumbs
+        stack.append((level, title))
+        chains.append([t for _, t in stack if normalize_title(t) != manual_norm])
+    return chains
+
+
+def longest_in_order(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The longest run of (heading line, TOC entry) matches increasing in
+    both, pairs given in line order with each line's entries descending so a
+    line matches at most one entry. Patience sorting, O(n log n)."""
+    tails: list[int] = []
+    tail_at: list[int] = []
+    prev: list[int | None] = [None] * len(pairs)
+    for n, (_, entry) in enumerate(pairs):
+        pos = bisect.bisect_left(tails, entry)
+        if pos == len(tails):
+            tails.append(entry)
+            tail_at.append(n)
+        else:
+            tails[pos] = entry
+            tail_at[pos] = n
+        prev[n] = tail_at[pos - 1] if pos else None
+    run, n = [], (tail_at[-1] if tail_at else None)
+    while n is not None:
+        run.append(pairs[n])
+        n = prev[n]
+    return run[::-1]
+
+
+def build_breadcrumbs(texts: list[str], manual_title: str, toc: list[dict]) -> list[str]:
+    """'Manual › ancestor › ancestor' for each chunk, the ancestors taken
+    from the bookmark TOC. Ancestors only -- the chunk's own heading is
+    already the first line of its body.
+
+    Heading lines are matched to TOC entries by title, and only the longest
+    set of matches that runs forward through both the text and the TOC is
+    kept. Titles repeat ("Overview" in every chapter) and headings can name a
+    section chapters before its own, so a match is trusted for being in
+    order with the others, not for being a match. A chunk that opens with a
+    kept match is that entry, and gets its TOC parents. Every other chunk
+    gets the title alone.
+
+    Heading levels play no part: pymupdf4llm guesses them from font size.
+    The walk they replaced -- a level stack of TOC-confirmed headings -- was
+    right for 14-23% of the chunks it gave a parent, measured against each
+    chunk's page located in the PDF across 13 manuals: one unmatched
+    chapter heading left the previous chapter, or a preface, as the parent
+    of everything after it. This is right for 99.4-99.9% and gives a parent
+    to 48-62% of chunks, where the old walk managed 22-45%. Letting a chunk
+    without its own match inherit the section it follows would reach 93-96%
+    of chunks at 89-95% right -- a wrong parent in one chunk of ten, which is
+    the error this skill exists to prevent.
+    """
+    manual_norm = normalize_title(manual_title)
+    entries = [(e["level"], re.sub(r"\s+", " ", e.get("title") or "").strip())
+               for e in toc if isinstance(e, dict) and isinstance(e.get("level"), int)]
+    chains = toc_chains(entries, manual_norm)
+    by_title: dict[str, list[int]] = {}
+    for j, (_, title) in enumerate(entries):
+        norm = normalize_title(title)
+        if norm and norm != manual_norm:
+            by_title.setdefault(norm, []).append(j)
+
+    opens: list[tuple[int, bool]] = []  # per heading line: (chunk, opens it)
+    pairs: list[tuple[int, int]] = []
+    for k, text in enumerate(texts):
+        for opening, raw in heading_lines(text, manual_title):
+            line = len(opens)
+            opens.append((k, opening))
+            for j in sorted(by_title.get(normalize_title(raw), []), reverse=True):
+                pairs.append((line, j))
+
+    own = {opens[line][0]: j for line, j in longest_in_order(pairs) if opens[line][1]}
+    return [BREADCRUMB_SEP.join([manual_title] + (chains[own[k]][:-1] if k in own else []))
+            for k in range(len(texts))]
 
 
 def is_existing_breadcrumb(line: str, manual_title: str) -> bool:
@@ -245,21 +308,6 @@ def is_existing_breadcrumb(line: str, manual_title: str) -> bool:
     return s[1:-1].strip().startswith(manual_title.strip())
 
 
-def has_richer_breadcrumb(text: str, manual_title: str) -> bool:
-    """True if this chunk already carries a breadcrumb naming ancestors.
-
-    rebuild_reference.py writes page-accurate breadcrumbs that name the owning
-    entity ("... > tessent -shell"). Those are strictly better than the
-    title-only fallback, and apply_breadcrumb refreshes in place, so without
-    this check a title-only pass would overwrite real entity attribution with
-    less information than it found.
-    """
-    first = next((l for l in text.splitlines() if l.strip()), None)
-    if first is None or not is_existing_breadcrumb(first, manual_title):
-        return False
-    return BREADCRUMB_SEP.strip() in first
-
-
 # Manifest fields only the page-aware converters write, each alongside a
 # breadcrumb built from better evidence than the heading walk here:
 # rebuild_reference.py's `command` comes from the PDF's page map, and
@@ -270,10 +318,12 @@ CONVERTER_BREADCRUMB_FIELDS = ("command", "confidence")
 def converter_owns_breadcrumb(section: dict) -> bool:
     """True if a page-aware converter wrote this chunk's breadcrumb.
 
-    Those are left alone in both modes. The only guard used to apply in title
-    mode, so a reference document whose heading levels happened to vary took
-    the walk instead and had `Title › command` replaced by whatever the
-    heading stack said.
+    Those are always left alone, and every other breadcrumb is rewritten --
+    including this script's own earlier ones, which the TOC walk exists to
+    correct. The provenance is the manifest field, not the breadcrumb's shape:
+    a guard that kept any breadcrumb naming ancestors once protected
+    `Title › command` from a title-only pass, and would now protect every
+    wrong parent the old heading walk wrote.
     """
     return any(f in section for f in CONVERTER_BREADCRUMB_FIELDS)
 
@@ -287,13 +337,6 @@ def apply_breadcrumb(text: str, crumb: str, manual_title: str) -> str:
     return f"*{crumb}*\n\n" + text.lstrip()
 
 
-def flatness(sections: list[dict]) -> float:
-    if not sections:
-        return 1.0
-    lv = Counter(s.get("level") or 0 for s in sections)
-    return lv.most_common(1)[0][1] / len(sections)
-
-
 def process_manual(mdir: Path, dry_run: bool) -> dict:
     manifest_path = mdir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
@@ -303,18 +346,11 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
     min_count = max(10, int(0.05 * len(sections)))
     furniture = detect_furniture(texts, min_count, manifest["title"])
 
-    # A usable hierarchy gets the full walk. A flat document gets the title
-    # alone: no ancestor is guessed, so the failure this guard exists to
-    # prevent (a chunk claiming the wrong parent) cannot happen, while a chunk
-    # retrieved on its own still says which document it came from. Without this
-    # fallback, flat documents left 21% of one corpus with no attribution.
-    do_crumbs = flatness(sections) < MAX_FLATNESS
-    crumb_mode = "walk" if do_crumbs else "title"
-    crumbs = (
-        build_breadcrumbs(sections, manifest["title"], toc_titles(manifest.get("toc")))
-        if do_crumbs
-        else [manifest["title"]] * len(sections)
-    )
+    # Without a bookmark TOC nothing can confirm an ancestor, so every chunk
+    # gets the title alone: it still says which document it came from.
+    toc = manifest.get("toc") or []
+    crumb_mode = "walk" if toc else "title"
+    crumbs = build_breadcrumbs(texts, manifest["title"], toc)
 
     changed = 0
     lines_dropped = 0
@@ -324,11 +360,8 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
     for idx, (s, text) in enumerate(zip(sections, texts)):
         new, dropped = strip_furniture(text, furniture)
         lines_dropped += dropped
-        # Never overwrite a breadcrumb a page-aware converter wrote, and never
-        # trade one with ancestors for a title-only one.
-        keep_existing = converter_owns_breadcrumb(s) or (
-            crumb_mode == "title" and has_richer_breadcrumb(new, manifest["title"])
-        )
+        # Never overwrite a breadcrumb a page-aware converter wrote.
+        keep_existing = converter_owns_breadcrumb(s)
         if not keep_existing:
             new = apply_breadcrumb(new, crumbs[idx], manifest["title"])
         if new != text:
@@ -354,7 +387,6 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
         "lines_dropped": lines_dropped,
         "furniture_patterns": len(furniture),
         "breadcrumbs": crumb_mode,
-        "flatness": flatness(sections),
         "furniture_sample": sorted(furniture, key=len, reverse=True)[:4],
     }
 
