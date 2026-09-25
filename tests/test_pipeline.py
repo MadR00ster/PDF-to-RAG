@@ -30,6 +30,9 @@ here, not a coverage percentage:
     OCR could not read stays unread, so a rerun retries it.
   * optional-dependency gating -- convert_docling.py must fail with
     instructions, not a traceback, when Docling is absent.
+  * the contract checker -- check_corpus.py passes the pipeline's own output,
+    passes a document written by hand to the contract with warnings counted,
+    and catches each defect it claims to when that defect is planted alone.
 """
 from __future__ import annotations
 
@@ -175,6 +178,44 @@ def figure_fixture(path: Path) -> None:
     doc.set_toc([[1, "Wiring", 1], [1, "Front Panel", 2]])
     doc.save(str(path))
     doc.close()
+
+
+def handmade_document(collection: Path, slug: str = "hand") -> None:
+    """A document written the way any converter might write one, with no
+    script from this repo involved, so check_corpus.py is tested on the
+    contract alone. Six pages with their own vocabulary, one chunk per page,
+    two chapters' worth of TOC nesting per pair."""
+    toc = [[1, "Alpha", 1], [2, "Alpha Setup", 2], [1, "Beta", 3],
+           [2, "Beta Tuning", 4], [1, "Gamma", 5], [2, "Gamma Limits", 6]]
+    doc_dir = collection / "docs" / slug
+    (doc_dir / "sections").mkdir(parents=True)
+    pdf = pymupdf.open()
+    sections, texts, chapter = [], [], None
+    for n, (level, heading, page_no) in enumerate(toc, start=1):
+        vocab = [f"{heading.split()[0].lower()}{n}term{chr(97 + i % 26)}{chr(97 + i * 7 % 26)}"
+                 for i in range(36)]
+        lines = [" ".join(vocab[i:i + 6]) for i in range(0, len(vocab), 6)]
+        page = pdf.new_page()
+        page.insert_text((72, 72), heading, fontsize=18)
+        for i, line in enumerate(lines):
+            page.insert_text((72, 110 + i * 18), line, fontsize=11)
+        chapter = heading if level == 1 else chapter
+        crumb = " › ".join(["Hand Guide", chapter] + ([heading] if level == 2 else []))
+        text = f"*{crumb}*\n\n## {heading}\n\n" + "\n".join(lines) + "\n"
+        name = f"sections/{n:03d}-{heading.lower().replace(' ', '-')}.md"
+        (doc_dir / name).write_text(text, encoding="utf-8")
+        texts.append(text)
+        sections.append({"file": name, "heading": heading, "level": level, "chars": len(text),
+                         "page_start": page_no, "page_end": page_no, "breadcrumb": crumb})
+    pdf.set_toc(toc)
+    pdf.save(str(collection / "hand.pdf"))
+    pdf.close()
+    full = "\n\n".join(texts)
+    (doc_dir / "full.md").write_text(full, encoding="utf-8")
+    manifest = {"source_pdf": "hand.pdf", "title": "Hand Guide", "slug": slug, "page_count": 6,
+                "toc": [{"level": l, "title": t, "page": p} for l, t, p in toc],
+                "sections": sections, "full_md_chars": len(full)}
+    (doc_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def words(text: str) -> str:
@@ -523,6 +564,123 @@ class PipelineTest(unittest.TestCase):
         after = json.loads(index.read_text(encoding="utf-8"))["figures"]
         self.assertFalse([f for f in after if "ocr" in f],
                          "a figure Tesseract could not read was recorded as read")
+
+    # --------------------------------------------------------- contract check
+
+    def check(self, path: Path, *extra: str) -> tuple[subprocess.CompletedProcess, set[str]]:
+        """Run check_corpus.py and return the names of the checks it raised."""
+        out = self.tmp / "check.json"
+        out.unlink(missing_ok=True)
+        r = run("check_corpus.py", str(path), "--json", str(out), *extra)
+        if not out.is_file():
+            self.fail(f"check_corpus.py wrote no report:\n{r.stdout}{r.stderr}")
+        report = json.loads(out.read_text(encoding="utf-8"))
+        raised = {p["check"] for d in report["documents"] for p in d["problems"]}
+        raised |= {p["check"] for ps in report["collections"].values() for p in ps}
+        return r, raised
+
+    def test_16_checker_accepts_what_the_pipeline_writes(self):
+        """Everything the earlier tests converted, enriched and linked passes.
+
+        Warnings are allowed here -- the prose path writes no page numbers, and
+        test_11 added a document after test_08 built index.json -- failures
+        are not.
+        """
+        r, raised = self.check(self.corpus)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("no-pages", raised, "the prose path's missing pages went unreported")
+
+    def test_17_checker_accepts_a_handmade_document_strictly(self):
+        """A document no script here wrote, following only the contract, passes
+        with warnings counted as failures. This is the control for test_18:
+        each planted defect below starts from exactly this."""
+        corpus = self.tmp / "HandCorpus"
+        handmade_document(corpus)
+        r = run("build_index.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r, raised = self.check(corpus, "--strict")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(raised, f"a clean document raised {raised}")
+
+    def test_18_checker_catches_planted_defects(self):
+        """Each defect the checker claims to catch, planted one at a time.
+
+        Most are ones that happened here: a breadcrumb naming the wrong parent,
+        an owner from the wrong page, a crumb written twice by a pass that was
+        not idempotent, a backup left in docs/, footers left in chunks.
+        """
+        import shutil
+        clean = self.tmp / "HandCorpus"
+        self.assertTrue(clean.is_dir(), "test_17 builds the document this test damages")
+
+        def relabel(d, m, i, crumb):
+            s = m["sections"][i]
+            s["breadcrumb"] = crumb
+            f = d / s["file"]
+            lines = f.read_text(encoding="utf-8").split("\n")
+            lines[0] = f"*{crumb}*"
+            f.write_text("\n".join(lines), encoding="utf-8")
+            s["chars"] = len("\n".join(lines))
+
+        def wrong_owner(d, m):
+            m["sections"][1]["command"] = "Gamma Limits"
+            relabel(d, m, 1, "Hand Guide › Gamma › Gamma Limits")
+
+        def unnested(d, m):
+            for s in m["sections"]:
+                s.pop("page_start"), s.pop("page_end")
+            relabel(d, m, 3, "Hand Guide › Alpha › Beta Tuning")
+
+        def doubled(d, m):
+            f = d / m["sections"][2]["file"]
+            f.write_text(f"*{m['sections'][2]['breadcrumb']}*\n\n" + f.read_text(encoding="utf-8"),
+                         encoding="utf-8")
+
+        def shifted(d, m):
+            for s in m["sections"]:
+                s["page_start"] = s["page_end"] = min(6, s["page_start"] + 2)
+
+        def dropped(d, m):
+            s = m["sections"][2]
+            (d / s["file"]).write_text(f"*{s['breadcrumb']}*\n\n## Beta\n\nSee the next page.\n",
+                                       encoding="utf-8")
+
+        def feedback(d, m):
+            f = d / m["sections"][1]["file"]
+            f.write_text(f.read_text(encoding="utf-8") + "\n**Feedback**\n", encoding="utf-8")
+
+        def backup(d, m):
+            shutil.copytree(d, d.with_name("hand.old"))
+
+        plants = [
+            # name, damage, check expected, whether it must fail the run
+            ("parent from another chapter", lambda d, m: relabel(d, m, 1, "Hand Guide › Beta › Beta Tuning"),
+             "ancestor-contradicts-pages", True),
+            ("owner from another page", wrong_owner, "entity-contradicts-pages", True),
+            ("parent that does not contain the child", unnested, "ancestor-not-nested", True),
+            ("breadcrumb written twice", doubled, "breadcrumb-doubled", True),
+            ("section file gone", lambda d, m: (d / m["sections"][3]["file"]).unlink(),
+             "section-missing-file", True),
+            ("page past the end", lambda d, m: m["sections"][5].update(page_end=9), "page-invalid", True),
+            ("backup left in docs/", backup, "hidden-document", True),
+            ("backup left in docs/", backup, "duplicate-slug", True),
+            # Caught twice over: the PDF's words, and the TOC spans (which fail it).
+            ("pages numbered two too high", shifted, "content-gap", True),
+            ("pages numbered two too high", shifted, "ancestor-contradicts-pages", True),
+            ("a page's text dropped", dropped, "content-gap", False),
+            ("Feedback link left in", feedback, "furniture", False),
+        ]
+        for i, (name, damage, expected, fails) in enumerate(plants):
+            with self.subTest(defect=name, check=expected):
+                corpus = self.tmp / f"Planted{i}"
+                shutil.copytree(clean, corpus)
+                d = corpus / "docs" / "hand"
+                m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+                damage(d, m)
+                (d / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
+                r, raised = self.check(corpus)
+                self.assertIn(expected, raised, f"{name} went unreported; raised {raised}\n{r.stdout}")
+                self.assertEqual(r.returncode, 1 if fails else 0, r.stdout)
 
 
 if __name__ == "__main__":
