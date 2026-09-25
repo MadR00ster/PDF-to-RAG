@@ -30,6 +30,9 @@ here, not a coverage percentage:
     OCR could not read stays unread, so a rerun retries it.
   * optional-dependency gating -- convert_docling.py must fail with
     instructions, not a traceback, when Docling is absent.
+  * the contract checker -- check_corpus.py passes the pipeline's own output,
+    passes a document written by hand to the contract with warnings counted,
+    and catches each defect it claims to when that defect is planted alone.
 """
 from __future__ import annotations
 
@@ -97,6 +100,19 @@ def prose_fixture(path: Path) -> None:
             pages.append([(sec, 16)] + body)
             toc.append([2, sec, page_no])
             page_no += 1
+    write_pdf(path, pages, toc)
+
+
+def inverted_fixture(path: Path) -> None:
+    """A preface set larger than the chapter after it, as real manuals do.
+    The chapter heading comes out as ### inside the preface's chunk, so a walk
+    by heading level keeps the preface as the parent of the whole chapter."""
+    pages, toc = [], []
+    for title, size, level in [("About This Guide", 22, 1), ("Normalized Formats", 14, 1),
+                               ("Data Loading", 16, 2), ("Parametric Data", 16, 2)]:
+        pages.append([(title, size),
+                      (f"This part explains {title.lower()} and how its pages are laid out.", 11)])
+        toc.append([level, title, len(pages)])
     write_pdf(path, pages, toc)
 
 
@@ -177,6 +193,44 @@ def figure_fixture(path: Path) -> None:
     doc.close()
 
 
+def handmade_document(collection: Path, slug: str = "hand") -> None:
+    """A document written the way any converter might write one, with no
+    script from this repo involved, so check_corpus.py is tested on the
+    contract alone. Six pages with their own vocabulary, one chunk per page,
+    two chapters' worth of TOC nesting per pair."""
+    toc = [[1, "Alpha", 1], [2, "Alpha Setup", 2], [1, "Beta", 3],
+           [2, "Beta Tuning", 4], [1, "Gamma", 5], [2, "Gamma Limits", 6]]
+    doc_dir = collection / "docs" / slug
+    (doc_dir / "sections").mkdir(parents=True)
+    pdf = pymupdf.open()
+    sections, texts, chapter = [], [], None
+    for n, (level, heading, page_no) in enumerate(toc, start=1):
+        vocab = [f"{heading.split()[0].lower()}{n}term{chr(97 + i % 26)}{chr(97 + i * 7 % 26)}"
+                 for i in range(36)]
+        lines = [" ".join(vocab[i:i + 6]) for i in range(0, len(vocab), 6)]
+        page = pdf.new_page()
+        page.insert_text((72, 72), heading, fontsize=18)
+        for i, line in enumerate(lines):
+            page.insert_text((72, 110 + i * 18), line, fontsize=11)
+        chapter = heading if level == 1 else chapter
+        crumb = " › ".join(["Hand Guide", chapter] + ([heading] if level == 2 else []))
+        text = f"*{crumb}*\n\n## {heading}\n\n" + "\n".join(lines) + "\n"
+        name = f"sections/{n:03d}-{heading.lower().replace(' ', '-')}.md"
+        (doc_dir / name).write_text(text, encoding="utf-8")
+        texts.append(text)
+        sections.append({"file": name, "heading": heading, "level": level, "chars": len(text),
+                         "page_start": page_no, "page_end": page_no, "breadcrumb": crumb})
+    pdf.set_toc(toc)
+    pdf.save(str(collection / "hand.pdf"))
+    pdf.close()
+    full = "\n\n".join(texts)
+    (doc_dir / "full.md").write_text(full, encoding="utf-8")
+    manifest = {"source_pdf": "hand.pdf", "title": "Hand Guide", "slug": slug, "page_count": 6,
+                "toc": [{"level": l, "title": t, "page": p} for l, t, p in toc],
+                "sections": sections, "full_md_chars": len(full)}
+    (doc_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
 def words(text: str) -> str:
     """Lowercase alphanumerics, so markdown emphasis cannot hide a caption."""
     return " ".join(re.findall(r"[0-9a-z]+", text.lower()))
@@ -234,20 +288,99 @@ class PipelineTest(unittest.TestCase):
         missing = [s["file"] for s in m["sections"] if not s.get("breadcrumb")]
         self.assertFalse(missing, f"chunks left with no attribution: {missing[:3]}")
 
-    def test_04_enrich_never_downgrades_a_richer_breadcrumb(self):
-        """A title-only pass must not replace a breadcrumb that names ancestors."""
+    def test_04_enrich_replaces_a_parent_the_toc_does_not_give(self):
+        """A breadcrumb enrich did not get from a converter is rewritten from
+        the TOC, however many ancestors it names.
+
+        This used to assert the opposite: never trade a breadcrumb naming
+        ancestors for a title-only one. That guard dated from before converter
+        breadcrumbs were marked in the manifest (test_12 covers those), and it
+        would have kept every wrong parent the old heading walk wrote.
+        """
         slug_dir = self.corpus / "docs" / "prose"
         m = self.manifest("prose")
         target = slug_dir / m["sections"][0]["file"]
-        rich = "*Widget Guide › Installation › Unpacking*"
         body = target.read_text(encoding="utf-8").split("\n")
-        body[0] = rich
+        body[0] = "*Widget Guide › Installation › Unpacking*"   # Installation has no parent
         target.write_text("\n".join(body), encoding="utf-8")
 
         r = run("enrich_chunks.py", str(self.corpus))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(target.read_text(encoding="utf-8").split("\n")[0], rich,
-                         "a richer breadcrumb naming ancestors was overwritten")
+        self.assertEqual(target.read_text(encoding="utf-8").split("\n")[0], "*Widget Guide*",
+                         "a parent the TOC does not give survived")
+        self.assertEqual(self.manifest("prose")["sections"][0]["breadcrumb"], "Widget Guide")
+
+    def test_04b_enrich_takes_parents_from_the_toc_not_font_sizes(self):
+        """The heading walk kept a larger-set preface as the parent of the
+        chapter after it: measured against located pages, 14-23% of the
+        parents it gave across 13 real manuals were right.
+
+        First the shape of silicon-da-loc-data-intg, written by hand: heading
+        levels from font size put the preface at 2 and the chapter's own
+        opening chunk, marked (intro), at 4, so the walk never popped the
+        preface. Then the same inversion end to end, where the small-set
+        chapter heading lands inside the preface's chunk.
+        """
+        corpus = self.tmp / "SiliconCorpus"
+        doc_dir = corpus / "docs" / "silicon"
+        (doc_dir / "sections").mkdir(parents=True)
+        shape = [("About This Guide", 2), ("1 Normalized File Formats (intro)", 4),
+                 ("Data Loading Modes", 4), ("Example", 5), ("Parametric Data", 4),
+                 ("Header", 5), ("Table", 6)]
+        sections = []
+        for n, (heading, level) in enumerate(shape, start=1):
+            name = f"sections/{n:03d}.md"
+            text = f"## {heading.replace(' (intro)', '')}\n\nText of {heading}.\n"
+            (doc_dir / name).write_text(text, encoding="utf-8")
+            sections.append({"file": name, "heading": heading, "level": level, "chars": len(text)})
+        toc = [[1, "About This Guide", 1], [1, "1 Normalized File Formats", 2],
+               [2, "Data Loading Modes", 3], [2, "Parametric Data", 4], [3, "Header", 4]]
+        (doc_dir / "manifest.json").write_text(json.dumps({
+            "source_pdf": "silicon.pdf", "title": "Data Integration Guide", "slug": "silicon",
+            "page_count": 4, "toc": [{"level": l, "title": t, "page": p} for l, t, p in toc],
+            "sections": sections}), encoding="utf-8")
+        r = run("enrich_chunks.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        crumbs = [s["breadcrumb"] for s in
+                  json.loads((doc_dir / "manifest.json").read_text(encoding="utf-8"))["sections"]]
+        self.assertFalse([c for c in crumbs if "About This Guide" in c],
+                         f"the preface is still a parent: {crumbs}")
+        self.assertEqual(crumbs[2], "Data Integration Guide › 1 Normalized File Formats")
+        self.assertEqual(crumbs[5], "Data Integration Guide › 1 Normalized File Formats › Parametric Data")
+        self.assertEqual(crumbs[3], "Data Integration Guide",
+                         "a heading the TOC does not list inherited a parent")
+
+        # The same entry matched again further on must not displace the chunk
+        # that opens it: a sub-heading repeating its section's title, or a
+        # passing mention before the section starts.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("enrich_chunks", SCRIPTS / "enrich_chunks.py")
+        ec = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ec)
+        two = [{"level": 1, "title": "Setup", "page": 1}, {"level": 2, "title": "Topic", "page": 2}]
+        for texts in (["## Setup\n\nIntro.\n", "## Topic\n\nText.\n\n### Topic\n\nMore.\n"],
+                      ["## Setup\n\nIntro.\n", "## Topic\n\nText.\n", "More.\n\n**Topic**\n\nLater.\n"],
+                      ["## Setup\n\nSee below.\n\n**Topic**\n\nx\n", "## Topic\n\nText.\n"]):
+            self.assertEqual(ec.build_breadcrumbs(texts, "Guide", two)[1], "Guide › Setup",
+                             f"a repeated match displaced the opener: {texts}")
+
+        corpus = self.tmp / "InvertedCorpus"
+        (corpus / "docs").mkdir(parents=True)
+        pdf = corpus / "formats.pdf"
+        inverted_fixture(pdf)
+        r = run("convert_manual.py", str(pdf), "--title", "Formats Guide", "--slug", "formats")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = run("enrich_chunks.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+        m = json.loads((corpus / "docs" / "formats" / "manifest.json").read_text(encoding="utf-8"))
+        crumbs = {s["heading"]: s["breadcrumb"] for s in m["sections"]}
+        self.assertEqual(crumbs.get("Data Loading"), "Formats Guide › Normalized Formats",
+                         f"parent not taken from the TOC: {crumbs}")
+        self.assertEqual(crumbs.get("Parametric Data"), "Formats Guide › Normalized Formats")
+        self.assertEqual(crumbs.get("About This Guide"), "Formats Guide")
+        r = run("enrich_chunks.py", str(corpus))
+        self.assertIn("0 changed", r.stdout, "a second run changed something")
 
     # ------------------------------------------------------------ reference
 
@@ -331,6 +464,42 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(nocrumb, 0, "chunks reached the index with no attribution")
 
     # ---------------------------------------------------- optional dependency
+
+    def test_09b_docling_anchors_only_to_an_entry_on_its_pages(self):
+        """A heading that matches a TOC title elsewhere in the document anchors
+        nothing. Titles repeat ("Syntax" under every construct) and overviews
+        name features chapters before their own section; the nearest-title
+        rule labelled 114 production chunks with ancestry from up to 1,200
+        pages away, as `anchored`. Runs without Docling: resolution is plain
+        TOC and page arithmetic."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("convert_docling", SCRIPTS / "convert_docling.py")
+        cd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cd)
+
+        toc = [[1, "Commands", 1], [2, "alpha", 1], [3, "Syntax", 1], [2, "beta", 3],
+               [3, "Syntax", 3], [1, "HyperGrid", 8], [2, "Setup", -1]]
+        pdf = pymupdf.open()
+        for _ in range(9):
+            pdf.new_page()
+        by_title: dict = {}
+        for i, (_l, t, _p) in enumerate(toc):
+            by_title.setdefault(cd.normalize(t), []).append(i)
+        spans = cd.toc_spans(toc, pdf.page_count)
+        toc_pos = cd.build_toc_positions(pdf, toc)
+
+        def resolve(heading, pages):
+            c = {"headings": [heading], "pages": pages, "text": ""}
+            return cd.resolve_ancestors(c, toc, toc_pos, by_title, spans, pdf)
+
+        self.assertEqual(resolve("Syntax", [4]), (["Commands", "beta"], "anchored"),
+                         "the Syntax entry covering the page should anchor it")
+        self.assertEqual(resolve("Syntax", [2]), (["Commands", "alpha"], "anchored"))
+        ancestors, how = resolve("HyperGrid", [2])
+        self.assertEqual(how, "page", "anchored to a same-titled entry six pages on")
+        self.assertEqual(ancestors, ["Commands", "alpha", "Syntax"])
+        self.assertEqual(resolve("Setup", [9])[1], "page", "anchored to a bookmark with no page")
+        pdf.close()
 
     def test_09_docling_path_gates_cleanly(self):
         try:
@@ -523,6 +692,168 @@ class PipelineTest(unittest.TestCase):
         after = json.loads(index.read_text(encoding="utf-8"))["figures"]
         self.assertFalse([f for f in after if "ocr" in f],
                          "a figure Tesseract could not read was recorded as read")
+
+    # --------------------------------------------------------- contract check
+
+    def check(self, path: Path, *extra: str) -> tuple[subprocess.CompletedProcess, set[str]]:
+        """Run check_corpus.py and return the names of the checks it raised."""
+        out = self.tmp / "check.json"
+        out.unlink(missing_ok=True)
+        r = run("check_corpus.py", str(path), "--json", str(out), *extra)
+        if not out.is_file():
+            self.fail(f"check_corpus.py wrote no report:\n{r.stdout}{r.stderr}")
+        report = json.loads(out.read_text(encoding="utf-8"))
+        raised = {p["check"] for d in report["documents"] for p in d["problems"]}
+        raised |= {p["check"] for ps in report["collections"].values() for p in ps}
+        return r, raised
+
+    def test_16_checker_accepts_what_the_pipeline_writes(self):
+        """Everything the earlier tests converted, enriched and linked passes.
+
+        Warnings are allowed here -- the prose path writes no page numbers, and
+        test_11 added a document after test_08 built index.json -- failures
+        are not.
+        """
+        r, raised = self.check(self.corpus)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("no-pages", raised, "the prose path's missing pages went unreported")
+
+    def test_17_checker_accepts_a_handmade_document_strictly(self):
+        """A document no script here wrote, following only the contract, passes
+        with warnings counted as failures. This is the control for test_18:
+        each planted defect below starts from exactly this."""
+        corpus = self.tmp / "HandCorpus"
+        handmade_document(corpus)
+        r = run("build_index.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r, raised = self.check(corpus, "--strict")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(raised, f"a clean document raised {raised}")
+
+    def test_18_checker_catches_planted_defects(self):
+        """Each defect the checker claims to catch, planted one at a time.
+
+        Most are ones that happened here: a breadcrumb naming the wrong parent,
+        an owner from the wrong page, a crumb written twice by a pass that was
+        not idempotent, a backup left in docs/, footers left in chunks.
+        """
+        import shutil
+        clean = self.tmp / "HandCorpus"
+        self.assertTrue(clean.is_dir(), "test_17 builds the document this test damages")
+
+        def relabel(d, m, i, crumb):
+            s = m["sections"][i]
+            s["breadcrumb"] = crumb
+            f = d / s["file"]
+            lines = f.read_text(encoding="utf-8").split("\n")
+            lines[0] = f"*{crumb}*"
+            f.write_text("\n".join(lines), encoding="utf-8")
+            s["chars"] = len("\n".join(lines))
+
+        def wrong_owner(d, m):
+            m["sections"][1]["command"] = "Gamma Limits"
+            relabel(d, m, 1, "Hand Guide › Gamma › Gamma Limits")
+
+        def unnested(d, m):
+            for s in m["sections"]:
+                s.pop("page_start"), s.pop("page_end")
+            relabel(d, m, 3, "Hand Guide › Alpha › Beta Tuning")
+
+        def doubled(d, m):
+            f = d / m["sections"][2]["file"]
+            f.write_text(f"*{m['sections'][2]['breadcrumb']}*\n\n" + f.read_text(encoding="utf-8"),
+                         encoding="utf-8")
+
+        def shifted(d, m):
+            for s in m["sections"]:
+                s["page_start"] = s["page_end"] = min(6, s["page_start"] + 2)
+
+        def dropped(d, m):
+            s = m["sections"][2]
+            (d / s["file"]).write_text(f"*{s['breadcrumb']}*\n\n## Beta\n\nSee the next page.\n",
+                                       encoding="utf-8")
+
+        def feedback(d, m):
+            f = d / m["sections"][1]["file"]
+            f.write_text(f.read_text(encoding="utf-8") + "\n**Feedback**\n", encoding="utf-8")
+
+        def backup(d, m):
+            shutil.copytree(d, d.with_name("hand.old"))
+
+        def stale_index(d, m):
+            index = d.parent / "index.json"
+            data = json.loads(index.read_text(encoding="utf-8"))
+            data["manuals"][0]["title"] = "Hand Guide, First Edition"
+            index.write_text(json.dumps(data), encoding="utf-8")
+
+        plants = [
+            # name, damage, check expected, whether it must fail the run
+            ("parent from another chapter", lambda d, m: relabel(d, m, 1, "Hand Guide › Beta › Beta Tuning"),
+             "ancestor-contradicts-pages", True),
+            ("owner from another page", wrong_owner, "entity-contradicts-pages", True),
+            ("parent that does not contain the child", unnested, "ancestor-not-nested", True),
+            ("breadcrumb written twice", doubled, "breadcrumb-doubled", True),
+            ("section file gone", lambda d, m: (d / m["sections"][3]["file"]).unlink(),
+             "section-missing-file", True),
+            ("page past the end", lambda d, m: m["sections"][5].update(page_end=9), "page-invalid", True),
+            ("backup left in docs/", backup, "hidden-document", True),
+            ("backup left in docs/", backup, "duplicate-slug", True),
+            # Caught twice over: the PDF's words, and the TOC spans (which fail it).
+            ("pages numbered two too high", shifted, "content-gap", True),
+            ("pages numbered two too high", shifted, "ancestor-contradicts-pages", True),
+            ("a page's text dropped", dropped, "content-gap", False),
+            ("Feedback link left in", feedback, "furniture", False),
+            # Present is not valid: each of these passed a key check once.
+            ("slug set to null", lambda d, m: m.update(slug=None), "manifest-invalid-field", True),
+            ("sections not a list", lambda d, m: m.update(sections={}), "manifest-invalid-field", True),
+            ("section path leaving the document", lambda d, m: m["sections"][0].update(file="../../hand.pdf"),
+             "section-bad-path", True),
+            ("section path a number", lambda d, m: m["sections"][0].update(file=5), "section-bad-path", True),
+            ("page count not the PDF's", lambda d, m: m.update(page_count=7), "page-count-mismatch", True),
+            ("source PDF that will not open", lambda d, m: (d.parents[1] / "hand.pdf").write_bytes(b"not a pdf"),
+             "content-unchecked", False),
+            ("index.json title out of date", stale_index, "index-stale", False),
+        ]
+        for i, (name, damage, expected, fails) in enumerate(plants):
+            with self.subTest(defect=name, check=expected):
+                corpus = self.tmp / f"Planted{i}"
+                shutil.copytree(clean, corpus)
+                d = corpus / "docs" / "hand"
+                m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+                damage(d, m)
+                (d / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
+                r, raised = self.check(corpus)
+                self.assertIn(expected, raised, f"{name} went unreported; raised {raised}\n{r.stdout}")
+                self.assertEqual(r.returncode, 1 if fails else 0, r.stdout)
+
+    def test_19_checker_order_prefers_the_enclosing_entry(self):
+        """A repeated title must not send the order check ahead to a later
+        copy when the one enclosing the reading position fits. Breadcrumbs
+        name parents only, so a chunk's deepest ancestor is often shallower
+        than the last chunk's; resolving it to the next "Simulating the Design"
+        1,300 entries on flagged 195 correct chunks in one manual."""
+        corpus = self.tmp / "RepeatCorpus"
+        doc_dir = corpus / "docs" / "rep"
+        (doc_dir / "sections").mkdir(parents=True)
+        toc = [[1, "Simulating", 1], [2, "Setup", 1], [3, "Options", 1], [2, "Runtime", 2],
+               [3, "Tuning", 2], [1, "Reference", 3], [2, "Simulating", 3]]
+        # Chunks opening with: Simulating, Setup, Options, Runtime, Tuning.
+        crumbs = ["Guide", "Guide › Simulating", "Guide › Simulating › Setup",
+                  "Guide › Simulating", "Guide › Simulating › Runtime"]
+        sections = []
+        for n, crumb in enumerate(crumbs, start=1):
+            text = f"*{crumb}*\n\n## Part {n}\n\nText of part {n}.\n"
+            name = f"sections/{n:03d}.md"
+            (doc_dir / name).write_text(text, encoding="utf-8")
+            sections.append({"file": name, "heading": f"Part {n}", "level": 2,
+                             "chars": len(text), "breadcrumb": crumb})
+        (doc_dir / "full.md").write_text("x", encoding="utf-8")
+        (doc_dir / "manifest.json").write_text(json.dumps({
+            "source_pdf": "rep.pdf", "title": "Guide", "slug": "rep", "page_count": 3,
+            "toc": [{"level": l, "title": t, "page": p} for l, t, p in toc],
+            "sections": sections}), encoding="utf-8")
+        r, raised = self.check(corpus, "--no-pdf")
+        self.assertNotIn("ancestor-out-of-order", raised, r.stdout)
 
 
 if __name__ == "__main__":

@@ -78,7 +78,8 @@ Three shapes seen so far:
   skill, the deleted `update.ps1` (which moved PDFs and deleted `docs/<slug>`
   folders), an HTML-based RAG skill, or hand edits. An agent asked to update one
   such corpus reported that the layout matched this skill's for none of its
-  documents.
+  documents. `scripts/check_corpus.py` is read-only, so run it first: it says
+  which documents meet the contract and where the rest fall short.
 
 What breaks, and what it damages:
 
@@ -134,7 +135,9 @@ build and test against.
 6. **Extract figures** with `scripts/extract_figures.py <collection>`, then
    `scripts/ocr_figures.py <collection>` where Tesseract is installed — see
    "Figures". Both only add files, so they run on a corpus converted long ago.
-7. **Verify** with the protocol below before declaring done.
+7. **Verify.** `scripts/check_corpus.py <corpus>` checks every document
+   against the output contract, then use the protocol below for what it
+   cannot see. See "The output contract".
 8. **Serve it.** A corpus nobody can query is a folder of markdown. Build the
    search index and wire it into the user's editor — see "Serving the corpus
    over MCP". Do this as part of delivering, not as a follow-up they have to
@@ -199,7 +202,7 @@ regions of the same manual.
 ## Two document shapes
 
 **Prose manuals** have a real heading hierarchy. Chunk on headings; breadcrumbs
-come from the heading stack.
+come from the TOC entries the headings match.
 
 **Reference/dictionary documents** are a flat list of entries. Their heading
 levels are often meaningless (one corpus measured 95% of chunks at a single
@@ -236,13 +239,25 @@ bailing to paragraph packing whenever a split fails to yield 2+ pieces.
 Prepend `*Document › Chapter › Section*`. It helps the embedding and the reader
 equally.
 
-Build ancestors from the heading stack, **but verify each against the PDF's
-bookmark TOC**. Heading levels from font-size heuristics routinely promote a
-procedure step or a stray running footer into a fake chapter — one corpus
-produced `Design Compiler® User Guide › Specify the libraries`, where that is a
-step in a numbered list, not a chapter. Roughly half of headings survive TOC
-verification; the rest fall back to document-title-only. That coverage loss is
-the correct trade.
+**Take ancestors from the PDF's bookmark TOC, never from heading levels.**
+Heading levels from font-size heuristics routinely promote a procedure step or
+a stray running footer into a fake chapter. One corpus produced
+`Design Compiler® User Guide › Specify the libraries`, where that is a step in
+a numbered list, not a chapter.
+
+Checking each heading against the TOC is not enough on its own. A walk that
+kept a stack of TOC-confirmed headings, nested by font-size level, still got
+parents wrong. One chapter heading set smaller than the preface, or one never
+matched, left the previous section as the parent of everything after it.
+Against each chunk's page located in the PDF, 14–23% of the parents it gave
+across 13 manuals were right.
+
+`enrich_chunks.py` instead matches heading lines to TOC entries and keeps the
+longest set of matches that runs forward through both. A chunk that opens with
+a kept match gets that entry's TOC parents. Every other chunk gets the title
+alone. That is 99.3–99.9% right across 22 manuals, and gives a parent to about
+half of chunks. Letting the other chunks inherit the section they follow would
+reach 93–96% of chunks at 89–95% right: a wrong parent in one chunk of ten.
 
 ### Page range — so answers can cite
 
@@ -356,6 +371,54 @@ out of it. Noisy OCR is enough; search needs only some of the words. With that
 in place, written figure descriptions had one question left to win and were not
 generated — the model looks at the figure itself through `get_figure`.
 
+## The output contract
+
+`docs/<slug>/` is the interface, not any converter. A document may come from a
+script here, a newer library, a converter written for one awkward manual, or
+a hand repair. Any document is fit to index once `check_corpus.py` reports no
+failures. A new way of converting is fit to replace an existing one when:
+
+1. `python scripts/check_corpus.py <collection> --only <slug> --strict` exits 0.
+2. `scripts/eval_search.py` scores no worse on the same questions.
+
+That is how a converter gets replaced: on evidence, not because its output
+looks right. `check_corpus.py` shares no code with the converters, so a bug in
+one cannot pass itself.
+
+It checks what the index builders and server read, and whether the metadata
+is right, not just present:
+
+- **Breadcrumb ancestors must be TOC entries that contain one another.** Where
+  a chunk has pages, each ancestor's TOC page span must also overlap them.
+- **An owning entity must be a TOC entry** whose span overlaps the chunk's
+  pages, and whose name appears in the chunk's text.
+- **Sampled PDF pages must find their words in the chunks that claim them.**
+  That tests the page numbers and catches dropped text together.
+- **Page furniture must be gone**, including page-numbered footers.
+
+On its first run the checker found real mislabels, all in chunks that passed
+every earlier test:
+
+- A Docling `anchored` breadcrumb matched a same-titled TOC entry 100 pages
+  away.
+- The heading walk kept a preface as the parent of chapter 1.
+- 3,070 chunks of one reference still carried Tessent's page footer.
+
+It cannot test idempotency. That needs a converter run twice, which
+`tests/test_pipeline.py` does.
+
+Without page numbers it is much weaker:
+
+- The content check compares against the whole document, so it catches only
+  text lost wholesale.
+- Wrong breadcrumbs mostly pass. On the old heading walk, the nesting and
+  order checks flagged 768 chunks. Locating each chunk's page in the PDF showed
+  about 1,700 with a wrong parent: most wrong parents still nest correctly in
+  the TOC.
+
+`--strict` therefore rejects documents without pages, and it should: they
+cannot be cited or audited.
+
 ## Verification protocol
 
 Text you delete is gone unless someone reconverts the PDF, which can take
@@ -389,6 +452,7 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |
 | `convert_docling.py` | One prose PDF → `docs/<slug>/` with page numbers and TOC-anchored breadcrumbs. Needs Docling. |
 | `pick_extractor.py` | Pre-flight a PDF: text layer, shape, bookmark density, expected confidence, runtime. |
+| `check_corpus.py` | Read-only check of any `docs/<slug>/` against the output contract: the fields consumers read, and breadcrumbs, owners and pages checked against the TOC and the PDF text. `--strict`, `--json`, `--only`, `--no-pdf`. |
 | `extract_figures.py` | Crops every figure from the source PDFs into `docs/<slug>/figures/` and ties each to its section. Additive; `--dry-run`, `--jobs N`. |
 | `ocr_figures.py` | Reads the words in figures that have no text of their own (raster images) into `figures.json`, so search can find them. Needs Tesseract's language data. |
 | `build_search_db.py` | Corpus → one stemmed SQLite FTS5 index, figures included. `--emit-vscode-config` also wires up VS Code. |
@@ -412,6 +476,7 @@ python scripts/enrich_chunks.py "<collection>" --only <slug>             # prose
 python scripts/extract_figures.py "<collection>" --only <slug>
 python scripts/ocr_figures.py "<collection>" --only <slug>
 python scripts/build_index.py "<collection>"
+python scripts/check_corpus.py "<collection>" --only <slug>             # no FAIL lines
 python scripts/build_search_db.py --root "<corpus>"
 python scripts/mcp_smoke_test.py --db "<corpus>/mcp-index.sqlite3"
 ```
