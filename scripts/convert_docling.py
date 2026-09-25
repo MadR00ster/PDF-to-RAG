@@ -21,8 +21,10 @@ shape you have.
 
 How ancestors are resolved, and why there are two confidences:
 
-  anchored  The chunk's own heading is confirmed by the TOC, so we know exactly
-            which entry it belongs to and walk that entry's level stack.
+  anchored  The chunk's own heading is confirmed by a TOC entry whose pages
+            overlap the chunk's, so we know exactly which entry it belongs to
+            and walk that entry's level stack. A same-titled entry elsewhere
+            confirms nothing.
   page      The heading is unconfirmed (a real sub-bookmark heading, or an
             artifact). Fall back to the heading stack in force at the chunk's
             position. Held out, that is 60.5% correct at page granularity and
@@ -160,17 +162,40 @@ def chain_at(toc_pos, page, y):
     return [t for _, t in stack]
 
 
-def resolve_ancestors(c, toc, toc_pos, by_title, doc):
-    """Ancestors for one Docling chunk, plus how confidently they were derived."""
+def toc_spans(toc, page_count):
+    """(first page, last page) each TOC entry covers: from its own page to the
+    page where the next entry at its level or shallower starts, inclusive,
+    since that entry may start mid-page."""
+    spans = []
+    for i, (lvl, _title, page) in enumerate(toc):
+        if page < 1:                  # a bookmark with no target covers nothing
+            spans.append((page_count + 1, 0))
+            continue
+        end = next((p for l, _t, p in toc[i + 1:] if l <= lvl and p >= 1), page_count)
+        spans.append((page, max(page, end)))
+    return spans
+
+
+def resolve_ancestors(c, toc, toc_pos, by_title, spans, doc):
+    """Ancestors for one Docling chunk, plus how confidently they were derived.
+
+    A heading matching a TOC title anchors the chunk only to an entry whose
+    pages overlap the chunk's. Titles repeat -- "Syntax" and "Examples" under
+    every construct, a feature named in an overview chapters before its own --
+    and taking the nearest match regardless labelled a page-180 chunk with a
+    section on page 190, and a page-83 overview with chapter 5 on page 150,
+    both as `anchored`: the confidence consumers trust most.
+    """
     pages = sorted(c["pages"])
     first = pages[0] if pages else None
     norm = normalize((c["headings"] or [""])[0])
 
-    if norm and norm in by_title:
-        idxs = by_title[norm]
-        best = (min(idxs, key=lambda j: abs(toc[j][2] - first))
-                if first is not None and len(idxs) > 1 else idxs[0])
-        return chain_for_entry(toc, best)[:-1], "anchored"
+    if norm and norm in by_title and first is not None:
+        last = pages[-1]
+        fits = [j for j in by_title[norm] if spans[j][0] <= last and first <= spans[j][1]]
+        if fits:
+            best = min(fits, key=lambda j: abs(toc[j][2] - first))
+            return chain_for_entry(toc, best)[:-1], "anchored"
     if first is not None and 1 <= first <= doc.page_count:
         y = locate(doc[first - 1], probe_text(c["text"]))
         return chain_at(toc_pos, first, y), "page"
@@ -282,8 +307,9 @@ def convert(pdf_path: Path, title: str, slug: str, out_root: Path, max_chars: in
     for i, (_lvl, t, _p) in enumerate(toc):
         by_title.setdefault(normalize(t), []).append(i)
 
+    spans = toc_spans(toc, doc.page_count)
     for c in raw:
-        c["ancestors"], c["confidence"] = resolve_ancestors(c, toc, toc_pos, by_title, doc)
+        c["ancestors"], c["confidence"] = resolve_ancestors(c, toc, toc_pos, by_title, spans, doc)
 
     chunks = merge_sections(raw, max_chars)
     print(f"Merged {len(raw)} Docling chunks into {len(chunks)} sections "

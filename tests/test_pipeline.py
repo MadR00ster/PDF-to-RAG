@@ -373,6 +373,42 @@ class PipelineTest(unittest.TestCase):
 
     # ---------------------------------------------------- optional dependency
 
+    def test_09b_docling_anchors_only_to_an_entry_on_its_pages(self):
+        """A heading that matches a TOC title elsewhere in the document anchors
+        nothing. Titles repeat ("Syntax" under every construct) and overviews
+        name features chapters before their own section; the nearest-title
+        rule labelled 114 production chunks with ancestry from up to 1,200
+        pages away, as `anchored`. Runs without Docling: resolution is plain
+        TOC and page arithmetic."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("convert_docling", SCRIPTS / "convert_docling.py")
+        cd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cd)
+
+        toc = [[1, "Commands", 1], [2, "alpha", 1], [3, "Syntax", 1], [2, "beta", 3],
+               [3, "Syntax", 3], [1, "HyperGrid", 8], [2, "Setup", -1]]
+        pdf = pymupdf.open()
+        for _ in range(9):
+            pdf.new_page()
+        by_title: dict = {}
+        for i, (_l, t, _p) in enumerate(toc):
+            by_title.setdefault(cd.normalize(t), []).append(i)
+        spans = cd.toc_spans(toc, pdf.page_count)
+        toc_pos = cd.build_toc_positions(pdf, toc)
+
+        def resolve(heading, pages):
+            c = {"headings": [heading], "pages": pages, "text": ""}
+            return cd.resolve_ancestors(c, toc, toc_pos, by_title, spans, pdf)
+
+        self.assertEqual(resolve("Syntax", [4]), (["Commands", "beta"], "anchored"),
+                         "the Syntax entry covering the page should anchor it")
+        self.assertEqual(resolve("Syntax", [2]), (["Commands", "alpha"], "anchored"))
+        ancestors, how = resolve("HyperGrid", [2])
+        self.assertEqual(how, "page", "anchored to a same-titled entry six pages on")
+        self.assertEqual(ancestors, ["Commands", "alpha", "Syntax"])
+        self.assertEqual(resolve("Setup", [9])[1], "page", "anchored to a bookmark with no page")
+        pdf.close()
+
     def test_09_docling_path_gates_cleanly(self):
         try:
             import docling  # noqa: F401
