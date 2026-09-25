@@ -76,10 +76,19 @@ import statistics
 import sys
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 BREADCRUMB_SEP = " › "
 REQUIRED_FIELDS = ("slug", "title", "source_pdf", "page_count", "sections")
+# Present is not enough: `"slug": null` passes a key check and then fails
+# build_search_db.py's NOT NULL primary key.
+FIELD_VALID = {
+    "slug": lambda v: isinstance(v, str) and bool(v.strip()),
+    "title": lambda v: isinstance(v, str) and bool(v.strip()),
+    "source_pdf": lambda v: isinstance(v, str) and bool(v.strip()),
+    "page_count": lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
+    "sections": lambda v: isinstance(v, list),
+}
 
 # Reading thousands of section files is filesystem-bound, and on a synced
 # folder (OneDrive) network-bound while placeholders hydrate. Same reasoning
@@ -132,9 +141,11 @@ CHECKS = {
     # contract: what the index builders and the server read
     "manifest-unreadable": (FAIL, "manifest.json is not readable JSON, so every tool skips or stops on this document"),
     "manifest-missing-field": (FAIL, "manifest.json lacks a field build_index.py or build_search_db.py reads"),
+    "manifest-invalid-field": (FAIL, "a required manifest field is null, empty or the wrong type; build_search_db.py rejects it or reads it wrongly"),
     "slug-mismatch": (WARN, "the manifest's slug is not its folder's name; build_index.py lists the folder, build_search_db.py the slug"),
     "toc-missing": (WARN, "no bookmark TOC in the manifest: get_toc has nothing to serve and no breadcrumb can be verified"),
     "section-without-file": (FAIL, "a section names no file; build_search_db.py drops it without a word"),
+    "section-bad-path": (FAIL, "a section's file is not a relative path inside sections/: a reader would leave the document, or crash on it"),
     "section-missing-file": (FAIL, "a section's file is not on disk, so its text is not searchable"),
     "section-unreadable": (FAIL, "a section file that cannot be read as UTF-8 text"),
     "section-duplicate-file": (WARN, "two sections name the same file, so its text is indexed twice"),
@@ -175,6 +186,8 @@ CHECKS = {
     "figure-outside-section": (WARN, "a figure whose page is outside its section's pages"),
     # content
     "content-gap": (WARN, f"sampled PDF pages with under {CONTENT_MIN:.0%} of their words in the chunks that claim them"),
+    "content-unchecked": (WARN, "the content check could not run -- PyMuPDF is missing or the PDF would not open -- so text and page numbers went unchecked"),
+    "page-count-mismatch": (FAIL, "the manifest's page_count is not the source PDF's: page numbers are checked against a document that is not this one"),
     # collection
     "duplicate-slug": (FAIL, "two documents share a slug; build_search_db.py stops on the second (documents.slug is its primary key)"),
     "hidden-document": (FAIL, "a manifest in a docs/ folder build_index.py skips (.old, .new, dot, underscore) that build_search_db.py still indexes; keep backups outside docs/"),
@@ -373,6 +386,19 @@ def read_text(path: Path):
         return None
 
 
+def section_path(doc_dir: Path, name) -> Path | None:
+    """Where a section's `file` points, or None unless it is a relative path
+    inside sections/. build_search_db.py reads doc_dir / file as given: an
+    absolute or `..` path would put a file from outside the document in the
+    index, and a number would crash it."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    parts = PurePosixPath(name.replace("\\", "/")).parts
+    if len(parts) < 2 or parts[0] != "sections" or ".." in parts:
+        return None
+    return doc_dir.joinpath(*parts)
+
+
 def valid_pages(sec: dict, page_count) -> tuple[str, tuple[int, int] | None]:
     ps, pe = sec.get("page_start"), sec.get("page_end")
     if ps is None and pe is None:
@@ -401,12 +427,14 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
     for field in REQUIRED_FIELDS:
         if field not in m:
             f.add("manifest-missing-field", field)
+        elif not FIELD_VALID[field](m[field]):
+            f.add("manifest-invalid-field", f"{field}: {m[field]!r}"[:120])
     result["slug"] = m.get("slug")
     if m.get("slug") is not None and m.get("slug") != doc_dir.name:
         f.add("slug-mismatch", f"folder {doc_dir.name!r}, manifest {m.get('slug')!r}")
     sections = m.get("sections")
     if not isinstance(sections, list):
-        return result
+        return result                 # reported above: missing or invalid
 
     title = str(m.get("title") or "").strip()
     page_count = m.get("page_count")
@@ -418,12 +446,16 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
 
     # ---- section files
     files = [s.get("file") if isinstance(s, dict) else None for s in sections]
+    paths = [section_path(doc_dir, name) for name in files]
     with ThreadPoolExecutor(READ_THREADS) as pool:
-        texts = list(pool.map(lambda p: read_text(doc_dir / p) if p else None, files))
+        texts = list(pool.map(lambda p: read_text(p) if p else None, paths))
     listed = set()
-    for s, name, text in zip(sections, files, texts):
+    for s, name, path, text in zip(sections, files, paths, texts):
         if not name:
             f.add("section-without-file", str(s.get("heading") if isinstance(s, dict) else s)[:80])
+            continue
+        if path is None:
+            f.add("section-bad-path", repr(name)[:120])
             continue
         if name in listed:
             f.add("section-duplicate-file", name)
@@ -616,7 +648,7 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
     if not m.get("source_pdf") or not pdf.is_file():
         f.add("source-pdf-missing", str(m.get("source_pdf")))
     elif pdf_pages > 0:
-        check_content(pdf, chunks, page_of, pdf_pages, f, metrics)
+        check_content(pdf, page_count, chunks, page_of, pdf_pages, f, metrics)
     return result
 
 
@@ -658,7 +690,8 @@ def check_figures(doc_dir: Path, page_count, page_of: dict, listed: set, f: Find
 _pymupdf = None
 
 
-def check_content(pdf: Path, chunks: list, page_of: dict, n_sample: int, f: Findings, metrics: dict) -> None:
+def check_content(pdf: Path, page_count, chunks: list, page_of: dict, n_sample: int,
+                  f: Findings, metrics: dict) -> None:
     """Sample PDF pages and look for their words in the chunks.
 
     With pages on the chunks, a page is compared with the chunks claiming it,
@@ -672,15 +705,22 @@ def check_content(pdf: Path, chunks: list, page_of: dict, n_sample: int, f: Find
             _pymupdf = pymupdf
         except ImportError:
             _pymupdf = False
+    # A check that did not run is reported, so --strict cannot pass what it
+    # never looked at.
+    metrics["content"] = None
     if not _pymupdf:
-        metrics["content"] = None
+        f.add("content-unchecked", "PyMuPDF is not installed")
         return
     try:
         doc = _pymupdf.open(str(pdf))
-    except Exception as exc:  # a damaged or encrypted PDF is a finding elsewhere, not a crash here
-        metrics["content"] = None
-        metrics["content_error"] = str(exc)[:200]
+        if doc.needs_pass:
+            raise ValueError("encrypted")
+    except Exception as exc:  # damaged or encrypted: a finding, not a crash
+        f.add("content-unchecked", f"{pdf.name} would not open: {str(exc)[:120]}")
         return
+    # valid_pages trusts the manifest's page_count, so check it against the PDF.
+    if isinstance(page_count, int) and page_count != doc.page_count:
+        f.add("page-count-mismatch", f"manifest {page_count}, {pdf.name} {doc.page_count}")
 
     chunk_words = [words(t) for _, _, t in chunks]
     everything = set().union(*chunk_words) if chunk_words else set()
@@ -753,11 +793,20 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
                 f.add("index-stale", f"{folder} is on disk but not in index.json")
             for slug in sorted(set(listed) - {d.name for d in doc_dirs}):
                 f.add("index-stale", f"{slug} is in index.json but not on disk")
+            # Every field build_index.py writes, so an edited title or page
+            # count is caught as well as a changed number of sections.
             for folder, m in sorted(manifests.items()):
                 e = listed.get(folder)
-                if e and isinstance(m.get("sections"), list) and e.get("section_count") != len(m["sections"]):
-                    f.add("index-stale", f"{folder}: index.json says {e.get('section_count')} sections, "
-                                         f"manifest has {len(m['sections'])}")
+                if not e:
+                    continue
+                expected = {"title": m.get("title"), "source_pdf": m.get("source_pdf"),
+                            "page_count": m.get("page_count"),
+                            "section_count": len(m["sections"]) if isinstance(m.get("sections"), list) else None,
+                            "full_md": f"{folder}/full.md", "sections_dir": f"{folder}/sections/"}
+                for field, want in expected.items():
+                    if e.get(field) != want:
+                        f.add("index-stale", f"{folder}: index.json {field} {e.get(field)!r}, "
+                                             f"on disk {want!r}"[:160])
 
     superseded, sup_path = [], collection_dir / "superseded.json"
     if sup_path.is_file():

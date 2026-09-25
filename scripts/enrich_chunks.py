@@ -223,15 +223,24 @@ def toc_chains(toc: list[tuple[int, str]], manual_norm: str) -> list[list[str]]:
     return chains
 
 
-def longest_in_order(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+def longest_in_order(pairs: list[tuple[int, int]], opening: set[int]) -> list[tuple[int, int]]:
     """The longest run of (heading line, TOC entry) matches increasing in
     both, pairs given in line order with each line's entries descending so a
-    line matches at most one entry. Patience sorting, O(n log n)."""
+    line matches at most one entry. Patience sorting, O(n log n).
+
+    When a later line matches an entry already ending a run, the earlier
+    match is kept unless only the later line opens a chunk (`opening`). Only
+    an opening match gives a breadcrumb, so a section's `### Topic` further
+    down must not displace the `## Topic` that opens it, and a passing
+    mention before a section must not displace the section itself."""
     tails: list[int] = []
     tail_at: list[int] = []
     prev: list[int | None] = [None] * len(pairs)
-    for n, (_, entry) in enumerate(pairs):
+    for n, (line, entry) in enumerate(pairs):
         pos = bisect.bisect_left(tails, entry)
+        if pos < len(tails) and tails[pos] == entry:
+            if pairs[tail_at[pos]][0] in opening or line not in opening:
+                continue
         if pos == len(tails):
             tails.append(entry)
             tail_at.append(n)
@@ -289,7 +298,8 @@ def build_breadcrumbs(texts: list[str], manual_title: str, toc: list[dict]) -> l
             for j in sorted(by_title.get(normalize_title(raw), []), reverse=True):
                 pairs.append((line, j))
 
-    own = {opens[line][0]: j for line, j in longest_in_order(pairs) if opens[line][1]}
+    opening = {line for line, (_, first) in enumerate(opens) if first}
+    own = {opens[line][0]: j for line, j in longest_in_order(pairs, opening) if opens[line][1]}
     return [BREADCRUMB_SEP.join([manual_title] + (chains[own[k]][:-1] if k in own else []))
             for k in range(len(texts))]
 

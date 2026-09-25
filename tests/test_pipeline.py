@@ -350,6 +350,20 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(crumbs[3], "Data Integration Guide",
                          "a heading the TOC does not list inherited a parent")
 
+        # The same entry matched again further on must not displace the chunk
+        # that opens it: a sub-heading repeating its section's title, or a
+        # passing mention before the section starts.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("enrich_chunks", SCRIPTS / "enrich_chunks.py")
+        ec = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ec)
+        two = [{"level": 1, "title": "Setup", "page": 1}, {"level": 2, "title": "Topic", "page": 2}]
+        for texts in (["## Setup\n\nIntro.\n", "## Topic\n\nText.\n\n### Topic\n\nMore.\n"],
+                      ["## Setup\n\nIntro.\n", "## Topic\n\nText.\n", "More.\n\n**Topic**\n\nLater.\n"],
+                      ["## Setup\n\nSee below.\n\n**Topic**\n\nx\n", "## Topic\n\nText.\n"]):
+            self.assertEqual(ec.build_breadcrumbs(texts, "Guide", two)[1], "Guide › Setup",
+                             f"a repeated match displaced the opener: {texts}")
+
         corpus = self.tmp / "InvertedCorpus"
         (corpus / "docs").mkdir(parents=True)
         pdf = corpus / "formats.pdf"
@@ -766,6 +780,12 @@ class PipelineTest(unittest.TestCase):
         def backup(d, m):
             shutil.copytree(d, d.with_name("hand.old"))
 
+        def stale_index(d, m):
+            index = d.parent / "index.json"
+            data = json.loads(index.read_text(encoding="utf-8"))
+            data["manuals"][0]["title"] = "Hand Guide, First Edition"
+            index.write_text(json.dumps(data), encoding="utf-8")
+
         plants = [
             # name, damage, check expected, whether it must fail the run
             ("parent from another chapter", lambda d, m: relabel(d, m, 1, "Hand Guide › Beta › Beta Tuning"),
@@ -783,6 +803,16 @@ class PipelineTest(unittest.TestCase):
             ("pages numbered two too high", shifted, "ancestor-contradicts-pages", True),
             ("a page's text dropped", dropped, "content-gap", False),
             ("Feedback link left in", feedback, "furniture", False),
+            # Present is not valid: each of these passed a key check once.
+            ("slug set to null", lambda d, m: m.update(slug=None), "manifest-invalid-field", True),
+            ("sections not a list", lambda d, m: m.update(sections={}), "manifest-invalid-field", True),
+            ("section path leaving the document", lambda d, m: m["sections"][0].update(file="../../hand.pdf"),
+             "section-bad-path", True),
+            ("section path a number", lambda d, m: m["sections"][0].update(file=5), "section-bad-path", True),
+            ("page count not the PDF's", lambda d, m: m.update(page_count=7), "page-count-mismatch", True),
+            ("source PDF that will not open", lambda d, m: (d.parents[1] / "hand.pdf").write_bytes(b"not a pdf"),
+             "content-unchecked", False),
+            ("index.json title out of date", stale_index, "index-stale", False),
         ]
         for i, (name, damage, expected, fails) in enumerate(plants):
             with self.subTest(defect=name, check=expected):
