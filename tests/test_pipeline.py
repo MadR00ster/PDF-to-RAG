@@ -33,6 +33,11 @@ here, not a coverage percentage:
   * the contract checker -- check_corpus.py passes the pipeline's own output,
     passes a document written by hand to the contract with warnings counted,
     and catches each defect it claims to when that defect is planted alone.
+  * editions -- a PDF dropped in new_docs/ is filed under source/ with its
+    release in the manifest, a second release of the same filename does not
+    overwrite the first, search answers from one edition per manual, a version
+    that is not there is refused rather than approximated, and a comparison
+    reads the whole entry, past the point where a lookup is cut.
 """
 from __future__ import annotations
 
@@ -234,6 +239,48 @@ def handmade_document(collection: Path, slug: str = "hand") -> None:
 def words(text: str) -> str:
     """Lowercase alphanumerics, so markdown emphasis cannot hide a caption."""
     return " ".join(re.findall(r"[0-9a-z]+", text.lower()))
+
+
+def gadget_fixture(path: Path, version: str, sections: list[str]) -> None:
+    """One release of a prose manual, its version printed on the cover the
+    way a vendor prints it and nowhere in the filename."""
+    pages = [[("Gadget Guide", 24), (f"Software Version {version}", 11)]]
+    toc = [[1, "Gadget Guide", 1]]
+    for sec in sections:
+        pages.append([(sec, 18), (f"This section covers {sec.lower()} for the gadget in release {version}.", 11),
+                      ("Keep the gadget dry and check the seals before every use.", 11)])
+        toc.append([1, sec, len(pages)])
+    write_pdf(path, pages, toc)
+
+
+LONG_ENTRY = "set_widget_option_05"
+LONG_LINES = 600      # at ~75 characters a line, well past the server's 40,000-character cut
+
+
+def edition_reference_fixture(path: Path, numbers: list[int], last_line: str) -> None:
+    """One release of a command reference. One entry runs to twenty pages, and
+    `last_line` is its final line: the only place two releases' text differs."""
+    pages, toc = [], []
+    for i in numbers:
+        name = f"set_widget_option_{i:02d}"
+        toc.append([1, name, len(pages) + 1])
+        if name != LONG_ENTRY:
+            pages.append(command_page(name))
+            continue
+        lines = [f"Setting {n:03d} of the long option is described on this line in full detail."
+                 for n in range(LONG_LINES)]
+        lines[-1] = last_line
+        for start in range(0, LONG_LINES, 30):
+            pages.append(([(name, 20)] if start == 0 else []) + [(l, 11) for l in lines[start:start + 30]])
+    write_pdf(path, pages, toc)
+
+
+def load_script(name: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class PipelineTest(unittest.TestCase):
@@ -854,6 +901,270 @@ class PipelineTest(unittest.TestCase):
             "sections": sections}), encoding="utf-8")
         r, raised = self.check(corpus, "--no-pdf")
         self.assertNotIn("ancestor-out-of-order", raised, r.stdout)
+
+
+class EditionsTest(unittest.TestCase):
+    """Several releases of one manual in one collection."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.tmp = Path(cls._tmp.name)
+        cls.root = cls.tmp / "Root"
+        cls.coll = cls.root / "Gadgets"
+        for folder in ("new_docs", "source", "docs"):
+            (cls.coll / folder).mkdir(parents=True)
+        cls.db = cls.tmp / "editions.sqlite3"
+        cls.server = load_script("mcp_server")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def manifest(self, slug: str) -> dict:
+        return json.loads((self.coll / "docs" / slug / "manifest.json").read_text(encoding="utf-8"))
+
+    def build(self) -> subprocess.CompletedProcess:
+        return run("build_search_db.py", "--root", str(self.root), "--out", str(self.db))
+
+    def serve(self):
+        """Point the in-process server at the index, closed again afterwards:
+        an open connection would stop the next rebuild replacing the file."""
+        corpus = self.server.Corpus(self.db)
+        self.server.CORPUS = corpus
+        self.addCleanup(lambda: corpus._db and corpus._db.close())
+        return self.server
+
+    def test_20_a_pdf_from_new_docs_is_filed_under_source(self):
+        """The inbox empties into source/, and the release comes off the cover.
+
+        Vendors reuse a filename from one release to the next (ptug.pdf), so
+        the second gadget.pdf must not overwrite the first: it takes its
+        version on the end. The same file dropped in twice is not an edition.
+        """
+        inbox, source = self.coll / "new_docs", self.coll / "source"
+        gadget_fixture(inbox / "gadget.pdf", "2025.1", ["Unpacking", "Mounting", "Legacy Mode"])
+        r = run("convert_manual.py", str(inbox / "gadget.pdf"), "--title", "Gadget Guide")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        m = self.manifest("gadget-2025-1")
+        self.assertEqual((m["doc_id"], m["version"], m["source_pdf"]), ("gadget", "2025.1", "gadget.pdf"))
+        self.assertTrue((source / "gadget.pdf").is_file(), "the converted PDF was not moved to source/")
+        self.assertFalse((inbox / "gadget.pdf").exists(), "the converted PDF is still in new_docs/")
+
+        gadget_fixture(inbox / "gadget.pdf", "2026.1", ["Unpacking", "Mounting", "Cloud Sync"])
+        r = run("convert_manual.py", str(inbox / "gadget.pdf"), "--title", "Gadget Guide")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        m = self.manifest("gadget-2026-1")
+        self.assertEqual((m["doc_id"], m["version"], m["source_pdf"]), ("gadget", "2026.1", "gadget_2026.1.pdf"))
+        self.assertTrue((source / "gadget_2026.1.pdf").is_file(), "the second release was not filed by version")
+        self.assertEqual(self.manifest("gadget-2025-1")["source_pdf"], "gadget.pdf")
+        first = pymupdf.open(str(source / "gadget.pdf"))
+        self.assertIn("2025.1", first[0].get_text(), "the first release's PDF was overwritten")
+        first.close()
+
+        import shutil
+        shutil.copy(source / "gadget.pdf", inbox / "again.pdf")
+        r = run("convert_manual.py", str(inbox / "again.pdf"), "--title", "Gadget Guide")
+        self.assertNotEqual(r.returncode, 0, "a PDF already filed was converted a second time")
+        self.assertIn("byte for byte", r.stdout + r.stderr)
+        (inbox / "again.pdf").unlink()
+
+        for step in ("enrich_chunks.py", "build_index.py"):
+            r = run(step, str(self.coll))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        index = json.loads((self.coll / "docs" / "index.json").read_text(encoding="utf-8"))
+        self.assertEqual({e["slug"]: e["current"] for e in index["manuals"]},
+                         {"gadget-2025-1": False, "gadget-2026-1": True})
+        r = run("check_corpus.py", str(self.coll))
+        self.assertEqual(r.returncode, 0, "the checker failed a corpus whose PDFs are in source/:\n" + r.stdout)
+        self.assertNotIn("source-pdf-missing", r.stdout)
+        self.assertNotIn("pdf-unaccounted", r.stdout)
+
+    def test_21_search_answers_from_one_edition_per_manual(self):
+        """Two releases indexed, one answering -- and never a stand-in.
+
+        Both editions say almost the same thing, so without the filter every
+        question is answered twice with nothing to say which hit is in use.
+        """
+        r = self.build()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        s = self.serve()
+        hits = s.search("gadget seals")
+        self.assertTrue(hits, "nothing found in the current edition")
+        self.assertEqual({h["slug"] for h in hits}, {"gadget-2026-1"}, "an older edition answered a plain search")
+
+        old = s.tool_search_docs({"query": "gadget seals", "document": "gadget", "version": "2025.1"})
+        self.assertIn("gadget-2025-1", old)
+        self.assertIn("not the current edition", old, "an older edition was served without saying so")
+        self.assertNotIn("gadget-2026-1", old, "a search of one edition returned another's sections")
+        self.assertIn("gadget-2025-1", s.tool_search_docs({"query": "seals", "document": "gadget", "version": "v2025_1"}),
+                      "a version typed differently was not recognised")
+
+        with self.assertRaises(ValueError) as missing:
+            s.tool_search_docs({"query": "seals", "document": "gadget", "version": "2024.1"})
+        self.assertIn("2025.1", str(missing.exception), "the refusal does not list the editions that exist")
+        self.assertIn("2026.1", str(missing.exception))
+        with self.assertRaises(ValueError):
+            s.tool_search_docs({"query": "seals", "version": "2025.1"})
+
+        headings = s.tool_compare_versions({"document": "gadget"})
+        added, removed = headings.split("## Removed since")
+        self.assertIn("Cloud Sync", added)
+        self.assertIn("Legacy Mode", removed)
+        self.assertNotIn("Mounting", added.split("## Added in")[1] + removed, "a heading in both was listed")
+        # A template that renumbers its chapters has not renamed them.
+        self.assertEqual(s.heading_key("Chapter 3 A Typical Flow"), s.heading_key("3. A Typical Flow"))
+        self.assertEqual(s.heading_key("Appendix A  Getting Help"), s.heading_key("A. Getting Help"))
+        self.assertNotEqual(s.heading_key("A Typical Flow"), s.heading_key("Typical Flow"))
+        s.CORPUS._db.close()
+
+        # A pin makes the older release the one in use; a pin on a release
+        # that is not here stops the build and leaves the old index standing.
+        pins = self.coll / "current_versions.json"
+        pins.write_text(json.dumps({"gadget": "2025.1"}), encoding="utf-8")
+        r = self.build()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        s = self.serve()
+        self.assertEqual({h["slug"] for h in s.search("gadget seals")}, {"gadget-2025-1"}, "the pin was ignored")
+        s.CORPUS._db.close()
+
+        before = self.db.read_bytes()
+        pins.write_text(json.dumps({"gadget": "2024.1"}), encoding="utf-8")
+        r = self.build()
+        self.assertNotEqual(r.returncode, 0, "a pin on a version that is not here was accepted")
+        self.assertEqual(self.db.read_bytes(), before, "a failed build replaced the index")
+        r = run("check_corpus.py", str(self.coll), "--no-pdf")
+        self.assertIn("pin-invalid", r.stdout)
+        pins.unlink()
+
+    def test_22_comparison_reads_the_whole_entry(self):
+        """A difference past the lookup's cut must still be found.
+
+        lookup_entity returns the first 40,000 characters of an entry. Two
+        releases of a long entry that differ only in its last line look the
+        same that far in, so a comparison made by reading both lookups says
+        "no difference". compare_versions reads every line.
+        """
+        source = self.coll / "source"
+        edition_reference_fixture(source / "widget-ref-1.pdf", list(range(25)),
+                                  "The final setting accepts values from 1 to 8.")
+        edition_reference_fixture(source / "widget-ref-2.pdf", [n for n in range(27) if n != 3],
+                                  "The final setting accepts values from 1 to 64.")
+        for n in ("1", "2"):
+            r = run("rebuild_reference.py", str(source / f"widget-ref-{n}.pdf"), "--title", "Widget Reference",
+                    "--slug", f"widget-ref-v{n}", "--doc-id", "widget-ref", "--version", f"{n}.0")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue((source / f"widget-ref-{n}.pdf").is_file(), "a PDF already in source/ was moved")
+        m = self.manifest("widget-ref-v2")
+        self.assertEqual((m["doc_id"], m["version"]), ("widget-ref", "2.0"))
+        long_chars = sum(sec["chars"] for sec in m["sections"] if sec.get("command") == LONG_ENTRY)
+        self.assertGreater(long_chars, 40_000, "the fixture's long entry is not past the lookup cut")
+
+        r = self.build()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        s = self.serve()
+
+        looked_up = s.tool_lookup_entity({"name": LONG_ENTRY})
+        self.assertIn("widget-ref-v2", looked_up)
+        self.assertNotIn("widget-ref-v1", looked_up, "lookup returned an older edition's entry as well")
+        self.assertNotIn("from 1 to 64", looked_up, "the fixture's difference is inside the lookup cut")
+
+        diff = s.tool_compare_versions({"document": "widget-ref", "name": LONG_ENTRY})
+        self.assertIn("from 1 to 8.", diff, "the old wording of the changed line is missing")
+        self.assertIn("from 1 to 64.", diff, "a difference past the lookup cut was not found")
+        self.assertNotIn("Setting 010", diff, "a line that is in both editions was reported")
+
+        same = s.tool_compare_versions({"document": "widget-ref", "name": "set_widget_option_07"})
+        self.assertIn("No differences", same)
+
+        listing = s.tool_compare_versions({"document": "widget-ref", "from_version": "1.0", "to_version": "2.0"})
+        added, removed = listing.split("## Removed since")
+        self.assertIn("set_widget_option_25", added)
+        self.assertIn("set_widget_option_26", added)
+        self.assertIn("set_widget_option_03", removed)
+        self.assertNotIn("set_widget_option_07", listing, "an entry in both editions was listed")
+
+        self.assertIn("removed between them",
+                      s.tool_compare_versions({"document": "widget-ref", "name": "set_widget_option_03"}))
+        gone = s.tool_lookup_entity({"name": "set_widget_option_03"})
+        self.assertIn("widget-ref-v1", gone, "an entry dropped in the current edition was not traced to the older one")
+        self.assertNotIn("SYNTAX", gone, "an older edition's entry was served as if it were current")
+        self.assertIn("SYNTAX", s.tool_lookup_entity({"name": "set_widget_option_03", "document": "widget-ref",
+                                                      "version": "1.0"}).upper())
+        s.CORPUS._db.close()
+
+        r = run("mcp_smoke_test.py", "--db", str(self.db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("compare_versions", r.stdout)
+
+    def test_23_checker_catches_edition_defects(self):
+        """Each way a set of editions can be undecidable, planted alone."""
+        import shutil
+        clean = self.tmp / "HandClean"
+        handmade_document(clean)
+
+        def plant(name: str, first: dict, second: dict, pins: dict | None = None) -> tuple[int, str]:
+            corpus = self.tmp / f"Hand-{name}"
+            shutil.copytree(clean, corpus)
+            docs = corpus / "docs"
+            shutil.copytree(docs / "hand", docs / "hand2")
+            for slug, extra in (("hand", first), ("hand2", {"slug": "hand2", **second})):
+                path = docs / slug / "manifest.json"
+                m = json.loads(path.read_text(encoding="utf-8"))
+                m.update(extra)
+                path.write_text(json.dumps(m, indent=2), encoding="utf-8")
+            if pins is not None:
+                (corpus / "current_versions.json").write_text(json.dumps(pins), encoding="utf-8")
+            r = run("check_corpus.py", str(corpus), "--no-pdf")
+            return r.returncode, r.stdout
+
+        both = {"doc_id": "hand"}
+        cases = [
+            ("ungrouped", {}, {}, None, "edition-ungrouped", 0),
+            ("unordered", {**both, "version": "1.0"}, both, None, "edition-unordered", 1),
+            ("duplicate", {**both, "version": "1.0"}, {**both, "version": "1.0"}, None, "edition-duplicate-version", 1),
+            ("badpin", {**both, "version": "1.0"}, {**both, "version": "2.0"}, {"hand": "3.0"}, "pin-invalid", 1),
+        ]
+        for name, first, second, pins, expected, code in cases:
+            with self.subTest(defect=name):
+                rc, out = plant(name, first, second, pins)
+                self.assertIn(expected, out, f"{name} went unreported\n{out}")
+                self.assertEqual(rc, code, out)
+        rc, out = plant("clean", {**both, "version": "1.0"}, {**both, "version": "2.0"}, {"hand": "1.0"})
+        for check in ("edition-", "pin-invalid"):
+            self.assertNotIn(check, out, f"two well-formed editions raised {check}\n{out}")
+
+    def test_24_an_older_corpus_is_stamped_and_migrated(self):
+        """A corpus converted before editions existed: PDFs beside docs/, no
+        doc_id or version in any manifest. `stamp` adds them and keeps the
+        originals; `migrate` moves the PDFs; nothing downstream breaks."""
+        corpus = self.tmp / "Legacy"
+        handmade_document(corpus)
+        manifest = corpus / "docs" / "hand" / "manifest.json"
+        original = manifest.read_text(encoding="utf-8")
+
+        r = run("editions.py", "stamp", str(corpus), "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(manifest.read_text(encoding="utf-8"), original, "--dry-run wrote a manifest")
+
+        r = run("editions.py", "stamp", str(corpus), "--set", "hand=3.1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        m = json.loads(manifest.read_text(encoding="utf-8"))
+        self.assertEqual((m["doc_id"], m["version"]), ("hand", "3.1"))
+        kept = list((corpus / ".rebuild-backup").glob("manifests-*/hand.manifest.json"))
+        self.assertTrue(kept, "the manifest was rewritten without keeping the original")
+        self.assertEqual(kept[0].read_text(encoding="utf-8"), original)
+
+        r = run("editions.py", "migrate", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((corpus / "source" / "hand.pdf").is_file())
+        self.assertFalse((corpus / "hand.pdf").exists())
+        self.assertTrue((corpus / "new_docs").is_dir(), "migrate did not leave an inbox")
+
+        r = run("build_index.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run("check_corpus.py", str(corpus), "--strict")
+        self.assertEqual(r.returncode, 0, "a migrated corpus no longer passes strictly:\n" + r.stdout)
 
 
 if __name__ == "__main__":

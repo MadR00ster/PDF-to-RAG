@@ -58,6 +58,9 @@ try:
 except ImportError:
     sys.exit("Missing dependency. Run: pip install -r scripts/requirements.txt")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
+
 BREADCRUMB_SEP = " › "
 DEFAULT_MAX_CHARS = 9000        # matches the chunk target used elsewhere here
 WS = re.compile(r"\s+")
@@ -276,7 +279,8 @@ def merge_sections(resolved, max_chars):
     return merged
 
 
-def convert(pdf_path: Path, title: str, slug: str, out_root: Path, max_chars: int) -> None:
+def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
+    pdf_path, slug, out_root = plan.pdf, plan.slug, plan.out_root
     (DocumentConverter, PdfFormatOption, InputFormat,
      PdfPipelineOptions, HybridChunker) = require_docling()
 
@@ -348,8 +352,8 @@ def convert(pdf_path: Path, title: str, slug: str, out_root: Path, max_chars: in
     full_md = "\n\n".join(full_parts)
     (out_dir / "full.md").write_text(full_md, encoding="utf-8")
 
-    manifest = {
-        "source_pdf": pdf_path.name,
+    manifest = editions.with_edition_fields({
+        "source_pdf": plan.source_name,
         "title": title,
         "slug": slug,
         "page_count": doc.page_count,
@@ -357,7 +361,7 @@ def convert(pdf_path: Path, title: str, slug: str, out_root: Path, max_chars: in
         "toc": [{"level": lvl, "title": t.strip(), "page": pg} for lvl, t, pg in toc],
         "sections": entries,
         "full_md_chars": len(full_md),
-    }
+    }, plan.doc_id, plan.version)
     # ensure_ascii=True: a non-UTF-8 default locale would otherwise mangle this
     # for any tool that opens it without an explicit encoding= argument.
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -370,7 +374,9 @@ def convert(pdf_path: Path, title: str, slug: str, out_root: Path, max_chars: in
           f"{fell_back} page-fallback ({fell_back / n * 100:.0f}%)")
     if not toc:
         print("  !! no bookmark TOC: every ancestor is unverified")
-    print(f'Next: python scripts/build_index.py "{pdf_path.parent}"')
+    doc.close()
+    editions.finish(plan)
+    print(f'Next: python scripts/build_index.py "{plan.collection}"')
 
 
 def main() -> int:
@@ -379,19 +385,20 @@ def main() -> int:
     ap.add_argument("pdf", type=Path)
     ap.add_argument("--title", required=True, help="Title as it should appear in index.json/README.md")
     ap.add_argument("--slug", help="docs/<slug> folder name (default: from the filename)")
-    ap.add_argument("--out-root", type=Path, help="Where to write docs/<slug>/ (default: <pdf's folder>/docs)")
+    ap.add_argument("--out-root", type=Path,
+                    help="Where to write docs/<slug>/ (default: docs/ in the PDF's collection)")
     ap.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
                     help=f"Chunk size target when merging (default {DEFAULT_MAX_CHARS})")
+    editions.add_arguments(ap)
     args = ap.parse_args()
 
     if not args.pdf.is_file():
         sys.exit(f"No such PDF: {args.pdf}")
-    slug = args.slug or slugify(args.pdf.stem)
-    out_root = args.out_root or (args.pdf.parent / "docs")
-    if (out_root / slug).exists():
-        sys.exit(f"{out_root / slug} already exists -- pick a different --slug or remove it first")
+    plan = editions.plan(args.pdf, args.slug, args.out_root, args.version, args.doc_id)
+    if (plan.out_root / plan.slug).exists():
+        sys.exit(f"{plan.out_root / plan.slug} already exists -- pick a different --slug or remove it first")
 
-    convert(args.pdf, args.title, slug, out_root, args.max_chars)
+    convert(plan, args.title, args.max_chars)
     return 0
 
 

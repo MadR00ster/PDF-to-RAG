@@ -76,7 +76,12 @@ def probes(db: Path) -> dict:
     """Pull real terms out of the index so the checks suit this corpus."""
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    out = {"entity": None, "collection": None, "figure": None}
+    out = {"entity": None, "collection": None, "figure": None, "editions": False, "manual": None}
+    if "doc_id" in {r["name"] for r in con.execute("PRAGMA table_info(documents)")}:
+        out["editions"] = True
+        row = con.execute("SELECT doc_id FROM documents GROUP BY collection, doc_id"
+                          " HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+        out["manual"] = row["doc_id"] if row else None
     row = con.execute("SELECT slug, title FROM documents ORDER BY section_count DESC LIMIT 1").fetchone()
     out["document"], out["title_word"] = row["slug"], (row["title"].split() or ["the"])[0]
     row = con.execute("SELECT name FROM entities LIMIT 1").fetchone()
@@ -146,7 +151,7 @@ def main() -> int:
 
         names = {t["name"] for t in (client.call("tools/list").get("result") or {}).get("tools", [])}
         check("tools/list", {"search_docs", "get_section", "lookup_entity", "list_documents", "get_toc",
-                             "get_figure", "get_page_image"} <= names,
+                             "compare_versions", "get_figure", "get_page_image"} <= names,
               f"got {sorted(names)}")
 
         print("\nTools:")
@@ -169,6 +174,22 @@ def main() -> int:
         else:
             print("  n/a   get_figure (this index has no figures)")
         image_tool("get_page_image", {"document": p["document"], "page": 1})
+
+        print("\nEditions:")
+        if not p["editions"]:
+            print("  n/a   this index was built before editions were recorded")
+        else:
+            # A version is per manual, and one that is not here is refused
+            # with the list of those that are -- never answered from another.
+            tool("search_docs", {"query": p["title_word"], "version": "1.0"}, "needs `document`", expect_error=True)
+            tool("search_docs", {"query": p["title_word"], "document": p["document"], "version": "0.0.0.1"},
+                 "nothing was substituted", expect_error=True)
+            if p["manual"]:
+                tool("list_documents", {}, "not current")
+                tool("compare_versions", {"document": p["manual"]}, "in both")
+                tool("get_toc", {"document": p["manual"], "max_level": 1}, "pages")
+            else:
+                tool("compare_versions", {"document": p["document"]}, "only one edition", expect_error=True)
 
         print("\nError handling:")
         tool("search_docs", {"query": "((("}, "no searchable words", expect_error=True)

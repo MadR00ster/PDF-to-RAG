@@ -44,6 +44,12 @@ Per collection:
   slugs two documents share (build_search_db.py stops on one), document
   folders build_index.py skips but build_search_db.py indexes, a stale
   index.json, PDFs neither converted nor marked superseded.
+  editions     documents sharing a `doc_id` are releases of one manual. Each
+               needs a version the others can be ordered against, no two the
+               same, and a pin in current_versions.json has to name one of
+               them -- build_search_db.py stops on any of these. Two documents
+               with one title and different doc_ids are reported too: both
+               would answer every search.
 
 Two of these are the independent signals SKILL.md's verification protocol
 asks for, because coverage is not correctness: TOC page spans checked against
@@ -154,7 +160,7 @@ CHECKS = {
     "empty-chunk": (WARN, "a chunk with no text besides its breadcrumb"),
     "oversized-chunk": (WARN, f"a chunk over {OVERSIZED:,} chars: chunking never split it"),
     "full-md-missing": (FAIL, "no full.md, the un-chunked fallback for when a chunk boundary lands badly"),
-    "source-pdf-missing": (WARN, "the source PDF is not beside docs/; figures, page images and the content check cannot reach it"),
+    "source-pdf-missing": (WARN, "the source PDF is in neither source/ nor the collection folder; figures, page images and the content check cannot reach it"),
     # pages
     "no-pages": (WARN, "no chunk carries a page number, so no answer from this document can cite one"),
     "pages-partial": (WARN, "some chunks carry page numbers and some do not"),
@@ -193,7 +199,12 @@ CHECKS = {
     "hidden-document": (FAIL, "a manifest in a docs/ folder build_index.py skips (.old, .new, dot, underscore) that build_search_db.py still indexes; keep backups outside docs/"),
     "index-missing": (WARN, "no docs/index.json; run build_index.py"),
     "index-stale": (WARN, "docs/index.json disagrees with the manifests on disk; run build_index.py"),
-    "pdf-unaccounted": (WARN, "a PDF neither converted nor listed in superseded.json"),
+    "pdf-unaccounted": (WARN, "a PDF in source/ or the collection folder that is neither converted nor listed in superseded.json"),
+    # editions
+    "edition-unordered": (FAIL, "a manual with several editions where one has no version with a number in it: which is newest cannot be told, and build_search_db.py stops"),
+    "edition-duplicate-version": (FAIL, "two editions of one manual with the same version; build_search_db.py stops"),
+    "pin-invalid": (FAIL, "current_versions.json is unreadable, or pins a doc_id or a version that is not in this collection; build_search_db.py stops"),
+    "edition-ungrouped": (WARN, "two documents with the same title and different doc_ids: if they are editions of one manual, both answer every search"),
     "superseded-invalid": (WARN, "superseded.json is unreadable, an entry lacks file/superseded_by, or it names a slug that is not here"),
 }
 
@@ -644,8 +655,8 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
 
     check_figures(doc_dir, page_count, page_of, listed, f, metrics)
 
-    pdf = collection_dir / str(m.get("source_pdf") or "")
-    if not m.get("source_pdf") or not pdf.is_file():
+    pdf = find_source_pdf(collection_dir, m.get("source_pdf"))
+    if pdf is None:
         f.add("source-pdf-missing", str(m.get("source_pdf")))
     elif pdf_pages > 0:
         check_content(pdf, page_count, chunks, page_of, pdf_pages, f, metrics)
@@ -763,6 +774,80 @@ def index_skips(name: str) -> bool:
     return name.endswith((".old", ".new")) or name.startswith((".", "_"))
 
 
+def find_source_pdf(collection_dir: Path, name) -> Path | None:
+    """Where a collection keeps a PDF: source/, the collection folder itself
+    (every PDF's place before source/ existed), or new_docs/ while its own
+    conversion is still running."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    for folder in (collection_dir / "source", collection_dir, collection_dir / "new_docs"):
+        if (folder / name).is_file():
+            return folder / name
+    return None
+
+
+def version_numbers(version) -> tuple | None:
+    """The numbers editions are ordered by, or None when a version has none.
+    Year, release and service pack where there is a year ("Y-2026.03-SP2",
+    "2026.2"); otherwise the numbers as written."""
+    v = re.sub(r"\s+", "", str(version or "")).upper().replace("_", ".")
+    m = re.search(r"(20\d\d)\.(\d{1,2})", v)
+    if m:
+        sp = re.search(r"SP(\d+)(?:-(\d+))?", v)
+        return (int(m.group(1)), int(m.group(2)), int(sp.group(1)) if sp else 0,
+                int(sp.group(2)) if sp and sp.group(2) else 0)
+    return tuple(int(n) for n in re.findall(r"\d+", v)) or None
+
+
+def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> None:
+    lines: dict[str, list[tuple[str, object]]] = {}
+    titles: dict[str, list[tuple[str, str]]] = {}
+    for folder, m in sorted(manifests.items()):
+        doc_id = str(m.get("doc_id") or m.get("slug") or folder)
+        lines.setdefault(doc_id, []).append((folder, m.get("version")))
+        # The release is part of some titles ("VCS User Guide, Version
+        # T-2022.06") and is exactly what two editions' titles differ by.
+        title = str(m.get("title") or "")
+        if m.get("version"):
+            title = title.replace(str(m["version"]), " ")
+        if key(title):
+            titles.setdefault(key(title), []).append((folder, doc_id))
+
+    for doc_id, editions in lines.items():
+        if len(editions) < 2:
+            continue
+        seen: dict[tuple, str] = {}
+        for folder, version in editions:
+            numbers = version_numbers(version)
+            if numbers is None:
+                f.add("edition-unordered", f"{doc_id}: {folder} has version {version!r}")
+            elif numbers in seen:
+                f.add("edition-duplicate-version", f"{doc_id}: {seen[numbers]} and {folder} are both {version}")
+            else:
+                seen[numbers] = folder
+    for same in titles.values():
+        if len({doc_id for _folder, doc_id in same}) > 1:
+            f.add("edition-ungrouped", ", ".join(f"{folder} (doc_id {doc_id})" for folder, doc_id in same)[:200])
+
+    pins_path = collection_dir / "current_versions.json"
+    if not pins_path.is_file():
+        return
+    try:
+        pins = load_json(pins_path)
+        if not isinstance(pins, dict):
+            raise ValueError("not an object")
+    except (OSError, ValueError) as exc:
+        f.add("pin-invalid", str(exc)[:100])
+        return
+    for doc_id, version in pins.items():
+        if doc_id not in lines:
+            f.add("pin-invalid", f"{doc_id!r} is not a doc_id here")
+        elif version_numbers(version) is None or version_numbers(version) not in {
+                version_numbers(v) for _folder, v in lines[doc_id]}:
+            have = ", ".join(str(v) for _folder, v in lines[doc_id])
+            f.add("pin-invalid", f"{doc_id} pinned to {version!r}; editions here: {have}")
+
+
 def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Path], reports: list[dict]) -> Findings:
     f = Findings()
     for h in hidden:
@@ -803,6 +888,9 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
                             "page_count": m.get("page_count"),
                             "section_count": len(m["sections"]) if isinstance(m.get("sections"), list) else None,
                             "full_md": f"{folder}/full.md", "sections_dir": f"{folder}/sections/"}
+                # Only where the manifest says: an index written before
+                # editions were recorded is not stale for lacking them.
+                expected.update({k: m[k] for k in ("doc_id", "version") if m.get(k)})
                 for field, want in expected.items():
                     if e.get(field) != want:
                         f.add("index-stale", f"{folder}: index.json {field} {e.get(field)!r}, "
@@ -826,9 +914,12 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
 
     accounted = {str(m.get("source_pdf")) for m in manifests.values()} | \
                 {str(e.get("file")) for e in superseded if isinstance(e, dict)}
-    for pdf in sorted(collection_dir.glob("*.pdf")):
+    # new_docs/ is where PDFs wait to be converted, so nothing there is amiss.
+    for pdf in sorted((collection_dir / "source").glob("*.pdf")) + sorted(collection_dir.glob("*.pdf")):
         if pdf.name not in accounted:
-            f.add("pdf-unaccounted", pdf.name)
+            f.add("pdf-unaccounted", str(pdf.relative_to(collection_dir)))
+
+    check_editions(collection_dir, manifests, f)
     return f
 
 

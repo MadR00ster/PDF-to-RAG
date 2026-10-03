@@ -28,27 +28,35 @@ recall for anything destructive.
 
 ```
 <corpus>/
-  <source>.pdf                     originals stay put
+  new_docs/                        PDFs waiting to be converted; new ones go here
+  source/                          PDFs that have been converted
+  current_versions.json            optional {"<doc_id>": "<version>"} pins
   superseded.json                  [{"file": old.pdf, "superseded_by": slug}]
   vendor.json                      optional {"label": "Siemens Tessent"}
   docs/
     index.json                     machine-readable manifest of all documents
     README.md                      human-readable version of the same
-    <slug>/
-      manifest.json                title, page_count, PDF TOC, section list
+    <slug>/                        one edition of one manual
+      manifest.json                title, doc_id, version, page_count, PDF TOC, section list
       full.md                      whole document, un-chunked fallback
       sections/NNN-slug.md         retrieval chunks, ~2-9 KB
       figures.json                 figures: page, box, caption, owning section
       figures/pNNNNN-K.png         one crop per figure
 ```
 
+A corpus holding several collections (one per vendor, say) repeats this under
+each collection folder. A converter moves a PDF from `new_docs/` to `source/`
+as its last step, so what is left in `new_docs/` is what has not been
+converted. A collection that still has its PDFs beside `docs/` works unchanged;
+`scripts/editions.py migrate` moves them.
+
 `full.md` matters more than it looks: it's the escape hatch whenever a chunk
 boundary lands badly, so never drop it.
 
 ## When the input does not look like this
 
-The scripts were written for one input shape: a flat folder of PDFs, converted
-in place, with `docs/` beside them and nothing else writing there. Real inputs
+The scripts were written for one input shape: PDFs dropped into a collection's
+`new_docs/`, with `docs/` beside it and nothing else writing there. Real inputs
 are often something else, and nothing here detects it yet. **Before running any
 script that writes, check the input against the layout above.** If it differs,
 tell the user what you found and choose an approach with them. Don't force the
@@ -83,13 +91,16 @@ Three shapes seen so far:
 
 What breaks, and what it damages:
 
-- **Source PDFs are looked for only beside `docs/`.** Each manifest records
-  `source_pdf` as a bare filename, and `build_index.py`, `extract_figures.py`,
-  `ocr_figures.py` and `get_page_image` all resolve it against the collection
-  folder. When the PDFs live elsewhere, every document looks unaccounted for,
-  and figures and page images fail.
-- **Converters write to `<pdf's folder>/docs` by default.** In a help folder
-  that means inside the vendor's install tree. Pass `--out-root`.
+- **Source PDFs are looked for only in `source/` and beside `docs/`.** Each
+  manifest records `source_pdf` as a bare filename, and `build_index.py`,
+  `extract_figures.py`, `ocr_figures.py`, `check_corpus.py` and
+  `get_page_image` all resolve it against those two places. When the PDFs live
+  elsewhere, every document looks unaccounted for, and figures and page images
+  fail.
+- **Converters write to `docs/` in the PDF's collection by default**: the
+  folder the PDF is in, or the one above when that folder is `new_docs/` or
+  `source/`. In a help folder that means inside the vendor's install tree.
+  Pass `--out-root`.
 - **`enrich_chunks.py` rewrites section files and `manifest.json` in place, with
   no backup.** Its furniture pass deletes any line repeated across 5% of
   sections (at least 10), which is right for PDF page headers and can delete real content in
@@ -112,9 +123,10 @@ build and test against.
 
 1. **Inventory.** If the input is not a flat folder of PDFs, or a corpus
    already exists, read "When the input does not look like this" first.
-   List the PDFs. Identify superseded versions (same document,
-   older release) — convert only the newest, record the rest in
-   `superseded.json`, keep the old PDFs on disk.
+   List the PDFs. Identify releases of the same manual: each one converted
+   becomes an edition (see "Editions"), and search answers from one of them.
+   A release nobody will ask about can stay a PDF: record it in
+   `superseded.json` and leave it in `source/`.
 2. **Classify each document.** Prose manual or reference/dictionary (one entry
    per command, function, part number, error code)? This single call drives
    everything downstream — see "Two document shapes".
@@ -128,7 +140,8 @@ build and test against.
    reference documents.
 4. **Index.** `scripts/build_index.py <corpus>` regenerates `index.json` and
    `README.md` from what's actually on disk, and reports any PDF that is
-   neither converted nor marked superseded.
+   neither converted nor marked superseded, and any still waiting in
+   `new_docs/`.
 5. **Enrich** prose documents with `scripts/enrich_chunks.py` (strips page
    furniture, adds breadcrumbs). Reference documents get this during their
    own conversion, so don't run both over the same document.
@@ -198,6 +211,66 @@ numbers and the harness bugs found along the way are in
 `references/extractor-benchmark.md`. Check the bands against your own sample:
 the anchoring rate swung 16–88% between documents, and 20 points between two
 regions of the same manual.
+
+## Editions
+
+A manual released every year is several PDFs saying nearly the same thing.
+Index two of them side by side and every question is answered twice, with
+nothing in the ranking to say which answer is the release the user runs.
+Convert only the newest and nobody can ask about the one they are still on.
+
+So each converted release is its own document, an **edition**, and two manifest
+fields tie them together:
+
+- `doc_id` names the manual every edition shares (`tshell-ref`). It defaults
+  to the slug without its release (`tshell-ref-2026-2`); `--doc-id` sets it.
+- `version` is the release, as the PDF's cover prints it.
+
+**Read the version from the cover, not the filename.** On one corpus of 44
+PDFs, twelve filenames carried no version and two named a release their cover
+did not. The converters read the first three pages and record a version only when
+it is unambiguous. When the cover names two, qualifies one ("2023.1 and
+later", which is where support starts, not what this document is), or
+disagrees with the filename, `version` is left out and the converter says why.
+Set it with `--version`. A manual with one edition does not need one; a second
+edition cannot be ordered without it, and the index build stops.
+
+**One edition per manual is current**: the newest, unless
+`<collection>/current_versions.json` pins another by `doc_id`. Search and
+`lookup_entity` read current editions only, so the default result is what it
+was with one release converted. Any other edition is read when a call names
+it: `document` (a slug, or a doc_id) with `version`. Every result names its
+version, and one from a non-current edition says so.
+
+**A version that is not in the corpus is refused, never approximated.** The
+server answers with the editions it does have. The release nearest the one
+asked for is a different document, and serving it would be a guess the caller
+cannot see. The same goes for a pin: one that names a version not on disk
+stops the index build and leaves the previous index in place.
+
+**Vendors reuse filenames** (`ptug.pdf` every release). A PDF from `new_docs/`
+whose name is already in `source/` is filed with its version on the end
+(`ptug_Y-2027.03.pdf`), and the manifest records that name. The same file
+dropped in twice is refused: it is not an edition.
+
+**Comparing editions is done by the server, on the whole text.**
+`compare_versions` lists the entries (or, for prose, the headings) added and
+removed between two editions, and with `name` compares one entry line by line.
+Do not compare by reading two lookups: `lookup_entity` returns the first
+40,000 characters of an entry, 29 entries in one reference are longer, and two
+of those that differ near the end look identical that far in. What it reports
+is what the manuals say. That is not a release note: a manual reworded is not
+a tool changed, and a tool can change without its manual. Say which it is.
+
+Two things it does not do yet. It compares exact lines, so an edition whose
+page footers survived conversion shows them as differences. And for prose it
+compares headings only; to compare a topic, search each edition.
+
+`scripts/editions.py status <corpus>` shows every manual, its editions, which
+is current and what is waiting. For a corpus converted before any of this,
+`editions.py stamp <collection>` adds `doc_id` and `version` to the manifests
+(originals kept under `.rebuild-backup/`), and `editions.py migrate` moves the
+PDFs into `source/`.
 
 ## Two document shapes
 
@@ -385,6 +458,12 @@ That is how a converter gets replaced: on evidence, not because its output
 looks right. `check_corpus.py` shares no code with the converters, so a bug in
 one cannot pass itself.
 
+Editions are part of it. A manual with two editions needs a version on each
+that orders them, no two the same, and any pin has to name one of them; each
+of those fails the check because each stops the index build. Two documents
+with one title and different `doc_id`s are warned about: if they are releases
+of one manual, both answer every search.
+
 It checks what the index builders and server read, and whether the metadata
 is right, not just present:
 
@@ -449,13 +528,14 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `convert_manual.py` | One prose PDF → `docs/<slug>/`. `--dictionary` for bold-delimited entries. |
 | `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
+| `editions.py` | `status`: manuals, editions, pins, waiting PDFs. `stamp`: add `doc_id`/`version` to older manifests. `migrate`: move root PDFs into `source/`. The converters import it. |
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |
 | `convert_docling.py` | One prose PDF → `docs/<slug>/` with page numbers and TOC-anchored breadcrumbs. Needs Docling. |
 | `pick_extractor.py` | Pre-flight a PDF: text layer, shape, bookmark density, expected confidence, runtime. |
 | `check_corpus.py` | Read-only check of any `docs/<slug>/` against the output contract: the fields consumers read, and breadcrumbs, owners and pages checked against the TOC and the PDF text. `--strict`, `--json`, `--only`, `--no-pdf`. |
 | `extract_figures.py` | Crops every figure from the source PDFs into `docs/<slug>/figures/` and ties each to its section. Additive; `--dry-run`, `--jobs N`. |
 | `ocr_figures.py` | Reads the words in figures that have no text of their own (raster images) into `figures.json`, so search can find them. Needs Tesseract's language data. |
-| `build_search_db.py` | Corpus → one stemmed SQLite FTS5 index, figures included. `--emit-vscode-config` also wires up VS Code. |
+| `build_search_db.py` | Corpus → one stemmed SQLite FTS5 index, figures and every edition included; marks one edition per manual current. `--emit-vscode-config` also wires up VS Code. |
 | `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only; `get_page_image` also needs PyMuPDF. |
 | `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
 | `sample_sections.py` | Stratified sample of sections to write test questions from; `--figures` for sections with figures. |
@@ -467,11 +547,11 @@ isn't. Read the module docstrings — each records why it works the way it does.
 
 ## Adding one document later
 
-Once `pick_extractor.py` has said what shape the document is, the rest is a
-fixed sequence:
+Put the PDF in the collection's `new_docs/`. Once `pick_extractor.py` has said
+what shape the document is, the rest is a fixed sequence:
 
 ```bash
-python scripts/convert_manual.py new.pdf --title "Widget User's Manual"  # or rebuild_reference.py / convert_docling.py
+python scripts/convert_manual.py "<collection>/new_docs/new.pdf" --title "Widget User's Manual"  # or rebuild_reference.py / convert_docling.py
 python scripts/enrich_chunks.py "<collection>" --only <slug>             # prose only
 python scripts/extract_figures.py "<collection>" --only <slug>
 python scripts/ocr_figures.py "<collection>" --only <slug>
@@ -484,9 +564,16 @@ python scripts/mcp_smoke_test.py --db "<corpus>/mcp-index.sqlite3"
 The last two are the ones people skip: without them the server keeps answering
 from the corpus as it used to be.
 
-To retire the edition this one replaces, add `{"file": "old.pdf",
-"superseded_by": "<new slug>"}` to the collection's `superseded.json` and delete
-`docs/<old slug>/` — `build_index.py` then lists it as superseded instead of
+Read what the converter prints first: the version it took from the cover, the
+`doc_id`, and whether that makes this a new manual or an edition of one already
+here. A new release of a manual already converted needs nothing more — it
+becomes the current edition when the index is rebuilt, and the older one stays
+answerable by version. Convert it with the same converter as the edition it
+joins, or a comparison between them measures the converters.
+
+To keep an edition as a PDF only, delete `docs/<its slug>/` and add
+`{"file": "old.pdf", "superseded_by": "<current slug>"}` to the collection's
+`superseded.json` — `build_index.py` then lists it as superseded instead of
 reporting its PDF as unaccounted for.
 
 There is deliberately no wrapper script for this. One existed, and it drifted
@@ -505,7 +592,9 @@ runs the pipeline over them: `python tests/test_pipeline.py`. It covers the
 things that have actually broken here -- idempotency, never downgrading
 metadata a better-informed pass wrote, declining to attribute entities from too
 little evidence, entity regions ending at chapters, figures tied to a section
-only on evidence, and the output contract the index and search builders read.
+only on evidence, the output contract the index and search builders read, and
+editions: one answering per manual, a missing version refused, a comparison
+that reads past the lookup's cut.
 Run it before changing a converter.
 
 `references/extractor-benchmark.md` measures pymupdf4llm, Docling and a
@@ -527,7 +616,8 @@ python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
 The first writes one SQLite FTS5 index plus a `.vscode/mcp.json`; the second
 drives a real handshake and every tool. Collections are discovered from disk,
 so nothing is hardcoded per corpus. Tools: `search_docs`, `get_section`,
-`lookup_entity`, `list_documents`, `get_toc`, `get_figure`, `get_page_image`.
+`lookup_entity`, `list_documents`, `get_toc`, `compare_versions`, `get_figure`,
+`get_page_image`.
 The index is a **snapshot** —
 rebuild after any conversion or enrichment, or the server keeps answering from
 the corpus as it used to be.
@@ -553,6 +643,9 @@ from watching bad results or measuring them rather than from theory:
 - **Demote front matter.** A contents page lists every heading in the document,
   so it outranks the real one — "DRC Rule K23 . . . 151" beating rule K23.
 - **Cap hits per document**, or one large reference fills every result page.
+- **Search one edition per manual.** The cap is per document and editions are
+  separate documents, so it does nothing to stop three releases of one manual
+  taking fifteen places with the same answer. See "Editions".
 
 **A partial index must say so.** This is the failure that looks like a correct
 answer: search returns "no matches" for something the corpus does cover, and

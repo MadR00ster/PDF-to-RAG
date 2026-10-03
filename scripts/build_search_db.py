@@ -10,6 +10,13 @@ Figures come along once extract_figures.py has run: each document's
 figures.json becomes rows get_figure serves, and each figure's caption and
 drawn labels are indexed with the section it illustrates.
 
+Editions: documents sharing a `doc_id` are releases of one manual. All of them
+are indexed, and exactly one per manual is marked current -- the newest, or
+the one <collection>/current_versions.json pins. The server answers from the
+current ones unless asked for another by version. A manual whose editions
+cannot be ordered, or a pin on a version that is not here, stops the build:
+answering from an edition nobody chose is worse than not rebuilding.
+
 Standard library only -- FTS5 ships inside Python's bundled SQLite, so a
 corpus becomes queryable from an editor with no packages, no API key and no
 network.
@@ -40,6 +47,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
+
 DEFAULT_DB_NAME = "mcp-index.sqlite3"
 
 # Reads are dominated by the filesystem, and on a cloud-synced corpus
@@ -58,7 +68,13 @@ CREATE TABLE documents (
     collection    TEXT NOT NULL,
     collection_dir TEXT NOT NULL,
     title         TEXT NOT NULL,
+    doc_id        TEXT NOT NULL,   -- the manual this is an edition of
+    version       TEXT,            -- the release it documents, as its cover prints it
+    version_sort  TEXT,            -- the same, as text that orders a manual's editions
+    is_latest     INTEGER NOT NULL DEFAULT 1,
+    is_current    INTEGER NOT NULL DEFAULT 1,   -- the edition search answers from
     source_pdf    TEXT,
+    source_path   TEXT,            -- the PDF relative to the corpus root, if it was found
     page_count    INTEGER,
     section_count INTEGER,   -- sections this document has on disk
     indexed_count INTEGER,   -- how many of them made it into the index
@@ -247,6 +263,27 @@ def load_figures(doc_dir: Path) -> list[dict]:
         return []
 
 
+def resolve_editions(documents: list) -> tuple[dict[str, dict], list[str]]:
+    """{slug: doc_id, version, is_latest, is_current} for every document, and
+    whatever stops that being decided. Editions are grouped within a
+    collection: two vendors may both have a `user-guide`."""
+    by_collection: dict[Path, list[dict]] = {}
+    for _key, _display, manifest_path, manifest in documents:
+        slug = manifest["slug"]
+        by_collection.setdefault(manifest_path.parent.parent.parent, []).append(
+            {"slug": slug, "doc_id": manifest.get("doc_id") or slug, "version": manifest.get("version")})
+    resolved, problems = {}, []
+    for collection_dir, docs in by_collection.items():
+        try:
+            pins = editions.load_pins(collection_dir)
+        except ValueError as exc:
+            pins = {}
+            problems.append(str(exc))
+        problems += [f"{collection_dir.name}: {p}" for p in editions.resolve_editions(docs, pins)]
+        resolved.update((d["slug"], d) for d in docs)
+    return resolved, problems
+
+
 def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: bool = True) -> int:
     documents = list(load_documents(root))
     if not documents:
@@ -258,12 +295,23 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         )
         return 1
 
+    edition_of, problems = resolve_editions(documents)
+    if problems:
+        print("Editions that cannot be ordered, or pins that match nothing:", file=sys.stderr)
+        for p in problems:
+            print(f"  !! {p}", file=sys.stderr)
+        print("Nothing was written. Set the missing versions (editions.py stamp --set) or fix "
+              f"{editions.PINS_FILE}, then rerun.", file=sys.stderr)
+        return 1
+
     if stats_only:
         total = 0
         for key, _display, _mpath, manifest in documents:
             n = len(manifest.get("sections", []))
             total += n
-            print(f"{key:20s} {manifest['slug']:42s} {n:5d} chunks")
+            e = edition_of[manifest["slug"]]
+            note = "" if e["is_current"] else "  (not current)"
+            print(f"{key:20s} {manifest['slug']:42s} {str(e['version'] or '-'):16s} {n:5d} chunks{note}")
         print(f"\n{len(documents)} documents, {total} chunks")
         return 0
 
@@ -350,12 +398,19 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
+        edition = edition_of[slug]
+        pdf = editions.find_source_pdf(doc_dir.parent.parent, manifest.get("source_pdf"))
         db.execute(
-            "INSERT INTO documents (slug, collection, collection_dir, title, source_pdf,"
+            "INSERT INTO documents (slug, collection, collection_dir, title, doc_id, version,"
+            " version_sort, is_latest, is_current, source_pdf, source_path,"
             " page_count, section_count, indexed_count, char_count, has_pages,"
-            " has_entities, figure_count, toc_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " has_entities, figure_count, toc_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                slug, key, display, title, manifest.get("source_pdf"),
+                slug, key, display, title, edition["doc_id"], edition["version"],
+                editions.version_sort(edition["version"]),
+                1 if edition["is_latest"] else 0, 1 if edition["is_current"] else 0,
+                manifest.get("source_pdf"),
+                pdf.relative_to(root).as_posix() if pdf else None,
                 manifest.get("page_count"), len(wanted), len(rows), chars_here,
                 1 if has_pages else 0,
                 1 if entity_spans else 0,
@@ -384,6 +439,8 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         gap = len(wanted) - len(rows)
         note = f"  !! {gap} unreadable" if gap else ""
         figs = f"  {len(figure_rows):>5} figures" if figure_rows else ""
+        if not edition["is_current"]:
+            note += "  (not current)"
         print(f"  {key:18s} {slug:40s} {len(rows):5d} chunks  {chars_here:>10,} chars{figs}{note}")
 
     for k, v in (
@@ -394,7 +451,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         ("figures", str(total_figures)),
         ("figure_text", "1" if figure_text else "0"),
         ("unreadable", str(len(unreadable))),
-        ("schema_version", "2"),
+        ("schema_version", "3"),
     ):
         db.execute("INSERT INTO meta (key, value) VALUES (?,?)", (k, v))
 

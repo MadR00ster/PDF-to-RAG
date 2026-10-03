@@ -59,6 +59,9 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
+
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
@@ -564,7 +567,7 @@ def report(r: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("collection", type=Path, help="folder holding the source PDFs and docs/")
+    ap.add_argument("collection", type=Path, help="folder holding source/ and docs/")
     ap.add_argument("--only", action="append", default=[], help="restrict to this slug (repeatable)")
     ap.add_argument("--skip", action="append", default=[], help="exclude this slug (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="detect and link, write nothing")
@@ -588,9 +591,10 @@ def main() -> int:
         if slug in args.skip or (args.only and slug not in args.only):
             continue
         source = json.loads(mp.read_text(encoding="utf-8-sig")).get("source_pdf") or ""
-        pdf = coll / source
-        if not pdf.is_file():
-            print(f"  !! {slug}: source PDF {source!r} is not beside docs/ -- skipped")
+        pdf = editions.find_source_pdf(coll, source)
+        if pdf is None:
+            print(f"  !! {slug}: source PDF {source!r} is in neither {editions.SOURCE_DIR}/ nor "
+                  f"{coll.name}/ -- skipped")
             continue
         jobs.append((str(mp.parent), str(pdf), args.dry_run, args.dpi, args.max_px))
 

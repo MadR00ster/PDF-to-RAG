@@ -3,10 +3,14 @@
 Regenerate a vendor folder's docs/index.json and docs/README.md from the
 docs/<slug>/manifest.json files actually on disk, plus that folder's
 superseded.json (hand-maintained list of {"file": <old pdf>, "superseded_by":
-<slug>}).
+<slug>}) for editions kept as PDFs only.
 
 Run this after convert_manual.py adds or replaces a manual, so the index
 never drifts out of sync with what's actually converted.
+
+Each manual is listed with the `doc_id` and `version` from its manifest and
+whether it is the edition search answers from -- the newest of its doc_id
+unless current_versions.json pins another (see editions.py).
 
 Usage:
   python scripts/build_index.py "Synopsys Manual"
@@ -17,6 +21,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
 
 
 def load_manuals(docs_dir: Path) -> list[dict]:
@@ -31,6 +38,8 @@ def load_manuals(docs_dir: Path) -> list[dict]:
         manuals.append(
             {
                 "slug": slug,
+                "doc_id": m.get("doc_id") or slug,
+                "version": m.get("version"),
                 "title": m["title"],
                 "source_pdf": m["source_pdf"],
                 "page_count": m["page_count"],
@@ -41,6 +50,21 @@ def load_manuals(docs_dir: Path) -> list[dict]:
         )
     manuals.sort(key=lambda x: x["slug"])
     return manuals
+
+
+def mark_current(vendor_dir: Path, manuals: list[dict]) -> list[str]:
+    """Add `current` to each manual; returns what makes that undecidable."""
+    try:
+        pins = editions.load_pins(vendor_dir)
+    except ValueError as exc:
+        pins, problems = {}, [str(exc)]
+    else:
+        problems = []
+    problems += editions.resolve_editions(manuals, pins)
+    for m in manuals:
+        m["current"] = bool(m.pop("is_current"))
+        m.pop("is_latest")
+    return problems
 
 
 def load_superseded(vendor_dir: Path) -> list[dict]:
@@ -78,25 +102,35 @@ def write_readme(vendor_dir: Path, docs_dir: Path, manuals: list[dict], supersed
     lines = [
         f"# {vendor_dir.name} Docs (Markdown, RAG-ready)",
         "",
-        f"Converted from the {vendor_label} EDA tool PDFs in the parent folder. Each manual "
+        f"Converted from the {vendor_label} EDA tool PDFs in `../{editions.SOURCE_DIR}/`. Each manual "
         "has its own folder with a full markdown dump plus per-section files for "
         "finer-grained retrieval.",
         "",
         "## Manuals",
         "",
-        "| Manual | Slug | Pages | Sections | Full doc |",
-        "|---|---|---|---|---|",
+        "| Manual | Version | Slug | Pages | Sections | Full doc |",
+        "|---|---|---|---|---|---|",
     ]
     for m in manuals:
+        version = (m["version"] or "-") + ("" if m["current"] else " (not current)")
         lines.append(
-            f"| {m['title']} | `{m['slug']}` | {m['page_count']} | {m['section_count']} "
+            f"| {m['title']} | {version} | `{m['slug']}` | {m['page_count']} | {m['section_count']} "
             f"| [{m['full_md']}]({m['full_md']}) |"
         )
+    if not all(m["current"] for m in manuals):
+        lines += [
+            "",
+            "Search answers from one edition of each manual: the newest, unless "
+            f"`{editions.PINS_FILE}` pins another. The others are read only when asked for by "
+            "version.",
+        ]
     lines += [
         "",
         "## Folder layout",
         "",
         "```",
+        "source/              <- the PDFs these were converted from",
+        "new_docs/            <- PDFs waiting to be converted",
         "docs/",
         "  index.json          <- machine-readable index of all manuals",
         "  <manual-slug>/",
@@ -118,23 +152,26 @@ def write_readme(vendor_dir: Path, docs_dir: Path, manuals: list[dict], supersed
         lines += [f"- `{s['file']}` -> see `{s['superseded_by']}`" for s in superseded]
         lines += [
             "",
-            "The original PDFs remain in the parent folder if you need to look up "
-            "version-specific behavior later.",
+            "The original PDFs remain in `source/` if you need to look up "
+            "version-specific behavior later, or to convert one as an edition of its own.",
         ]
     (docs_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def report_orphans(vendor_dir: Path, manuals: list[dict], superseded: list[dict]) -> None:
     accounted_for = {m["source_pdf"] for m in manuals} | {s["file"] for s in superseded}
-    orphans = [p.name for p in sorted(vendor_dir.glob("*.pdf")) if p.name not in accounted_for]
+    orphans = [p for p in editions.filed_pdfs(vendor_dir) if p.name not in accounted_for]
     if orphans:
-        print("PDFs at the root with no docs/ folder and no superseded.json entry:")
+        print("PDFs with no docs/ folder and no superseded.json entry:")
         for o in orphans:
-            print(f"  - {o}")
+            print(f"  - {o.relative_to(vendor_dir)}")
         print("Convert them, add a superseded.json entry, or ignore if intentional.")
+    waiting = editions.inbox_pdfs(vendor_dir)
+    if waiting:
+        print(f"Waiting in {editions.INBOX_DIR}/: " + ", ".join(p.name for p in waiting))
     print(
         f"{len(manuals)} converted manuals, {len(superseded)} superseded, "
-        f"{len(orphans)} unaccounted-for PDF(s) at root."
+        f"{len(orphans)} unaccounted-for PDF(s), {len(waiting)} waiting."
     )
 
 
@@ -148,10 +185,16 @@ def main() -> None:
 
     manuals = load_manuals(docs_dir)
     superseded = load_superseded(vendor_dir)
+    problems = mark_current(vendor_dir, manuals)
 
     write_index_json(docs_dir, manuals, superseded)
     write_readme(vendor_dir, docs_dir, manuals, superseded)
     report_orphans(vendor_dir, manuals, superseded)
+    if problems:
+        print("\nEditions that could not be ordered -- build_search_db.py stops on these:")
+        for p in problems:
+            print(f"  !! {p}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

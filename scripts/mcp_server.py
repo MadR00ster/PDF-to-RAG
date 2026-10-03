@@ -17,10 +17,17 @@ Tools:
   search_docs      full-text search across the corpus, BM25-ranked, with citations
   get_section      full text of one chunk, optionally with its neighbours
   lookup_entity    assemble a whole entry from a reference document
-  list_documents   the catalog: slugs, titles, sizes, coverage
+  list_documents   the catalog: slugs, titles, versions, sizes, coverage
   get_toc          table of contents for one document
+  compare_versions what differs between two editions of one manual
   get_figure       a figure's image, with its caption and the section it illustrates
   get_page_image   one page of a source PDF as an image (needs PyMuPDF)
+
+A manual can be in the index in several editions. Search and lookup answer
+from one edition of each -- the one the index marks current -- so two releases
+never compete for a question. Any other is read only when a call names it:
+`document` with `version`. A version that is not in the index is refused with
+the list of those that are; nothing is substituted for it.
 """
 from __future__ import annotations
 
@@ -33,6 +40,8 @@ import re
 import sqlite3
 import sys
 import traceback
+import unicodedata
+from collections import Counter
 from pathlib import Path
 
 SERVER_VERSION = "1.0.0"
@@ -57,6 +66,8 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 BM25_WEIGHTS = (10.0, 8.0, 3.0, 1.0, 1.0)
 
 MAX_SECTION_CHARS = 40_000
+# Names listed per side by compare_versions before it says how many more.
+MAX_LISTED = 300
 
 # get_page_image renders: body text stays readable at about 1,800 image tokens
 # a page, and the long edge stays under every current model's native limit.
@@ -89,6 +100,8 @@ class Corpus:
         self._entity_names: list[str] | None = None
         self._root: Path | None = None
         self._has_figures: bool | None = None
+        self._has_editions: bool | None = None
+        self._documents: dict[str, sqlite3.Row] | None = None
         self.name = db_path.stem
 
     @property
@@ -156,6 +169,21 @@ class Corpus:
             ).fetchone())
         return self._has_figures
 
+    @property
+    def has_editions(self) -> bool:
+        """False for an index built before documents carried doc_id and
+        version. There every document is its own manual and all are searched,
+        as they always were."""
+        if self._has_editions is None:
+            columns = {r["name"] for r in self.db.execute("PRAGMA table_info(documents)")}
+            self._has_editions = "doc_id" in columns
+        return self._has_editions
+
+    def document(self, slug: str) -> sqlite3.Row | None:
+        if self._documents is None:
+            self._documents = {r["slug"]: r for r in self.db.execute("SELECT * FROM documents")}
+        return self._documents.get(slug)
+
 
 class CorpusMissing(Exception):
     def __init__(self, path: Path):
@@ -217,6 +245,98 @@ def to_match_terms(query: str) -> list[str]:
     return phrases + singles
 
 
+def norm_version(version) -> str:
+    """A version as people type it, comparable: "v2025_2" is "2025.2"."""
+    v = re.sub(r"\s+", "", str(version or "")).upper().replace("_", ".")
+    return v[1:] if re.match(r"V\d", v) else v
+
+
+def current_only() -> str:
+    """SQL limiting chunks or entities to the current edition of each manual."""
+    return " AND slug IN (SELECT slug FROM documents WHERE is_current = 1)" if CORPUS.has_editions else ""
+
+
+def editions_of(doc_id: str, collection: str | None = None) -> list[sqlite3.Row]:
+    sql, params = "SELECT * FROM documents WHERE doc_id = ?", [doc_id]
+    if collection:
+        sql += " AND collection = ?"
+        params.append(collection)
+    return CORPUS.db.execute(sql + " ORDER BY collection, version_sort, slug", params).fetchall()
+
+
+def edition_name(row: sqlite3.Row) -> str:
+    return row["version"] or row["slug"]
+
+
+def describe_editions(rows: list[sqlite3.Row]) -> str:
+    return ", ".join(f"{edition_name(r)} (`{r['slug']}`{', current' if r['is_current'] else ''})" for r in rows)
+
+
+def resolve_document(name, version=None, collection: str | None = None) -> sqlite3.Row:
+    """The one edition a call means by `document` and `version`.
+
+    `document` is an edition's slug or a manual's doc_id. A slug alone is that
+    edition; a doc_id alone is the manual's current edition; either with a
+    version is that release of the manual. A version the index does not hold
+    is an error naming the ones it does -- the nearest one is a different
+    document, and answering from it would be a guess the caller cannot see.
+    """
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("`document` (a slug or doc_id from `list_documents`) is required.")
+    version = str(version).strip() if version not in (None, "") else None
+    unknown = f"Unknown document slug '{name}'. Call `list_documents` for valid slugs."
+    row = CORPUS.db.execute("SELECT * FROM documents WHERE slug = ?", (name,)).fetchone()
+    if not CORPUS.has_editions:
+        if not row:
+            raise ValueError(unknown)
+        if version:
+            raise ValueError("This index was built before editions were recorded, so it cannot "
+                             "select a version. Rebuild it with build_search_db.py.")
+        return row
+    if row and not version:
+        return row
+    doc_id = row["doc_id"] if row else name
+    editions = editions_of(doc_id, row["collection"] if row else collection)
+    if not editions:
+        raise ValueError(unknown)
+    if len({e["collection"] for e in editions}) > 1:
+        raise ValueError(f"'{doc_id}' is a manual in more than one collection "
+                         f"({', '.join(sorted({e['collection'] for e in editions}))}); pass `collection`.")
+    if version is None:
+        return next(e for e in editions if e["is_current"])
+    for e in editions:
+        if e["version"] and norm_version(e["version"]) == norm_version(version):
+            return e
+    raise ValueError(
+        f"No {version} edition of `{doc_id}` is in this corpus. Editions here: "
+        f"{describe_editions(editions)}. Nothing was substituted: use one of these, or say that "
+        f"{version} is not available."
+    )
+
+
+def version_needs_document(args: dict) -> None:
+    if args.get("version") not in (None, "") and not args.get("document"):
+        raise ValueError("`version` needs `document`: versions belong to one manual, and two "
+                         "manuals' releases are not comparable. `list_documents` shows each "
+                         "manual's editions.")
+
+
+def document_label(slug: str, title: str | None = None) -> str:
+    """A document as it is cited: its title, its release, its slug -- and a
+    flag when it is not the edition search answers from."""
+    doc = CORPUS.document(slug)
+    title = title or (doc["title"] if doc else slug)
+    if doc is None or not CORPUS.has_editions:
+        return f"{title} ({slug})"
+    version = f", {doc['version']}" if doc["version"] and doc["version"] not in title else ""
+    if doc["is_current"]:
+        return f"{title}{version} ({slug})"
+    current = next((e for e in editions_of(doc["doc_id"], doc["collection"]) if e["is_current"]), None)
+    return (f"{title}{version} ({slug}) — not the current edition"
+            + (f" (current: {edition_name(current)})" if current else ""))
+
+
 def run_match(match_expr: str, collection: str | None, document: str | None, limit: int) -> list[sqlite3.Row]:
     sql = [
         "SELECT rowid AS id, heading, entity, breadcrumb, slug, collection, title, file,",
@@ -232,6 +352,11 @@ def run_match(match_expr: str, collection: str | None, document: str | None, lim
     if document:
         sql.append("AND slug = ?")
         params.append(document)
+    else:
+        # One edition per manual. Without this a manual held in three releases
+        # answers every question three times, and nothing in the ranking says
+        # which hit is the release in use.
+        sql.append(current_only().removeprefix(" "))
     # Over-fetch generously: the per-document cap discards a lot when one big
     # reference dominates the head of the ranking, and re-ranking a few hundred
     # rows in Python costs nothing next to a second query.
@@ -312,7 +437,7 @@ def rank_adjust(row: sqlite3.Row, query: str) -> float:
 
 def cite(row: sqlite3.Row) -> str:
     """One-line provenance for a chunk: where it came from, and where to look."""
-    bits = [f"{row['title']} ({row['slug']})"]
+    bits = [document_label(row["slug"], row["title"])]
     if row["breadcrumb"]:
         bits.append(row["breadcrumb"].strip("*").strip())
     ps, pe = row["page_start"], row["page_end"]
@@ -395,9 +520,10 @@ def tool_search_docs(args: dict) -> str:
     if not query:
         raise ValueError("`query` is required.")
     collection = normalize_collection(args.get("collection"))
+    version_needs_document(args)
     document = args.get("document") or None
-    if document and not CORPUS.db.execute("SELECT 1 FROM documents WHERE slug = ?", (document,)).fetchone():
-        raise ValueError(f"Unknown document slug '{document}'. Call `list_documents` for valid slugs.")
+    if document:
+        document = resolve_document(document, args.get("version"), collection)["slug"]
     return format_results(
         search(
             query,
@@ -444,14 +570,23 @@ def tool_lookup_entity(args: dict) -> str:
     if not name:
         raise ValueError("`name` is required, e.g. 'set_scan_configuration'.")
     collection = normalize_collection(args.get("collection"))
+    version_needs_document(args)
+    document = None
+    if args.get("document"):
+        document = resolve_document(args["document"], args.get("version"), collection)["slug"]
 
     where, params = "WHERE name_lower = ?", [name.lower()]
     if collection:
         where += " AND collection = ?"
         params.append(collection)
+    if document:
+        where += " AND slug = ?"
+        params.append(document)
+    else:
+        where += current_only()
     hits = CORPUS.db.execute(f"SELECT * FROM entities {where} ORDER BY slug", params).fetchall()
     if not hits:
-        return suggest_entities(name, collection)
+        return suggest_entities(name, collection, document)
 
     out = []
     for hit in hits:
@@ -460,14 +595,13 @@ def tool_lookup_entity(args: dict) -> str:
         ).fetchall()
         if not chunks:
             continue
-        doc = CORPUS.db.execute("SELECT title FROM documents WHERE slug = ?", (hit["slug"],)).fetchone()
         pages = ""
         if hit["page_start"] is not None:
             pages = (
-                f", p. {hit['page_start']}" if hit["page_end"] in (None, hit["page_start"])
-                else f", pp. {hit['page_start']}–{hit['page_end']}"
+                f" · p. {hit['page_start']}" if hit["page_end"] in (None, hit["page_start"])
+                else f" · pp. {hit['page_start']}–{hit['page_end']}"
             )
-        out.append(f"# `{hit['name']}`\n{doc['title']} ({hit['slug']}{pages}) · {len(chunks)} chunk(s)\n")
+        out.append(f"# `{hit['name']}`\n{document_label(hit['slug'])}{pages} · {len(chunks)} chunk(s)\n")
         budget = MAX_SECTION_CHARS
         for c in chunks:
             body = c["body"]
@@ -478,15 +612,51 @@ def tool_lookup_entity(args: dict) -> str:
                 body = body[:budget] + "\n…[truncated]"
             budget -= len(body)
             out.append(f"<!-- section_id: {c['id']} · {c['file']} -->\n{body}")
-    return "\n\n".join(out) if out else suggest_entities(name, collection)
+    return "\n\n".join(out) if out else suggest_entities(name, collection, document)
 
 
-def suggest_entities(name: str, collection: str | None) -> str:
-    """No exact hit: offer prefix matches, then fuzzy ones, then full-text."""
+def other_editions_with(name: str, collection: str | None, document: str | None) -> str:
+    """Where an entry missing from the edition asked about does exist.
+
+    An entry dropped in a later release, or not yet added in an earlier one,
+    is in the index under another edition. Saying which is the answer to
+    "where did this command go"; a list of similar names is not.
+    """
+    if not CORPUS.has_editions:
+        return ""
+    sql = ("SELECT d.* FROM entities e JOIN documents d ON d.slug = e.slug WHERE e.name_lower = ?")
+    params: list = [name.lower()]
+    if document:
+        doc = CORPUS.document(document)
+        sql += " AND d.doc_id = ? AND d.collection = ? AND d.slug != ?"
+        params += [doc["doc_id"], doc["collection"], document]
+    elif collection:
+        sql += " AND d.collection = ?"
+        params.append(collection)
+    rows = CORPUS.db.execute(sql + " ORDER BY d.collection, d.doc_id, d.version_sort", params).fetchall()
+    if not rows:
+        return ""
+    scope = document_label(document) if document else "the current edition of any manual"
+    listing = "\n".join(f"- {document_label(r['slug'])}" for r in rows)
+    return (f"`{name}` is not an entry in {scope}. It is an entry in:\n\n{listing}\n\n"
+            "Pass one of these slugs as `document` to read it there.")
+
+
+def suggest_entities(name: str, collection: str | None, document: str | None = None) -> str:
+    """No exact hit: say which other edition has it, else offer prefix
+    matches, then fuzzy ones, then full-text."""
+    elsewhere = other_editions_with(name, collection, document)
+    if elsewhere:
+        return elsewhere
     where, params = "WHERE name_lower LIKE ?", [name.lower() + "%"]
     if collection:
         where += " AND collection = ?"
         params.append(collection)
+    if document:
+        where += " AND slug = ?"
+        params.append(document)
+    else:
+        where += current_only()
     prefix = CORPUS.db.execute(
         f"SELECT name, slug FROM entities {where} ORDER BY name LIMIT 25", params
     ).fetchall()
@@ -500,7 +670,7 @@ def suggest_entities(name: str, collection: str | None) -> str:
     return (
         f"`{name}` is not in any reference document's entry index. It may still be "
         "discussed in prose -- falling back to full-text search:\n\n"
-        + format_results(search(name, collection=collection, limit=8), name)
+        + format_results(search(name, collection=collection, document=document, limit=8), name)
     )
 
 
@@ -510,7 +680,10 @@ def tool_list_documents(args: dict) -> str:
     if collection:
         sql += " WHERE collection = ?"
         params.append(collection)
-    rows = CORPUS.db.execute(sql + " ORDER BY collection, slug", params).fetchall()
+    versioned = CORPUS.has_editions
+    order = "collection, doc_id, version_sort, slug" if versioned else "collection, slug"
+    rows = CORPUS.db.execute(f"{sql} ORDER BY {order}", params).fetchall()
+    per_manual = Counter((r["collection"], r["doc_id"]) for r in rows) if versioned else Counter()
 
     out = [f"{len(rows)} document(s) in the corpus:\n"]
     current = None
@@ -519,6 +692,9 @@ def tool_list_documents(args: dict) -> str:
             current = r["collection"]
             out.append(f"\n## {current}")
         flags = []
+        if versioned and per_manual[(r["collection"], r["doc_id"])] > 1:
+            flags.append(f"manual `{r['doc_id']}`, "
+                         + ("the current edition" if r["is_current"] else "not current: read only when named"))
         if r["has_pages"]:
             flags.append("page numbers")
         if r["has_entities"]:
@@ -532,23 +708,25 @@ def tool_list_documents(args: dict) -> str:
             if gap else f"{r['section_count']} sections"
         )
         pages = f", {r['page_count']} PDF pages" if r["page_count"] else ""
-        out.append(f"- `{r['slug']}` — {r['title']}\n  {coverage}{pages}, {r['char_count']:,} chars{extra}")
+        version = f", {r['version']}" if versioned and r["version"] and r["version"] not in r["title"] else ""
+        out.append(f"- `{r['slug']}` — {r['title']}{version}\n"
+                   f"  {coverage}{pages}, {r['char_count']:,} chars{extra}")
     out.append("\nPass a slug as `document` to `search_docs` to search just that one.")
+    if any(n > 1 for n in per_manual.values()):
+        out.append("Where a manual has several editions, search and lookup_entity answer from the "
+                   "current one. To read another, pass its slug as `document`, or the manual's "
+                   "name with `version`; `compare_versions` says what differs between two.")
     return "\n".join(out) + CORPUS.coverage_warning()
 
 
 def tool_get_toc(args: dict) -> str:
-    slug = (args.get("document") or "").strip()
-    if not slug:
-        raise ValueError("`document` (a slug from `list_documents`) is required.")
-    row = CORPUS.db.execute("SELECT * FROM documents WHERE slug = ?", (slug,)).fetchone()
-    if not row:
-        raise ValueError(f"Unknown document slug '{slug}'. Call `list_documents` for valid slugs.")
+    row = resolve_document(args.get("document"), args.get("version"))
+    slug = row["slug"]
 
     max_level = clamp_int(args.get("max_level"), 2, 1, 6)
     contains = (args.get("contains") or "").strip().lower()
 
-    lines = [f"# {row['title']} ({slug})", f"{row['page_count']} pages, {row['section_count']} sections"]
+    lines = [f"# {document_label(slug)}", f"{row['page_count']} pages, {row['section_count']} sections"]
     gap = (row["section_count"] or 0) - (row["indexed_count"] or 0)
     if gap:
         # The TOC comes from the manifest and is always complete; the text
@@ -605,7 +783,7 @@ def tool_get_figure(args: dict) -> list[dict]:
                          "Rerun extract_figures.py, then build_search_db.py.") from exc
 
     lines = [row["caption"] or "(figure without a caption)",
-             f"{row['title']} ({row['slug']}) · p. {row['page']}"]
+             f"{document_label(row['slug'])} · p. {row['page']}"]
     if row["section_ord"] is not None:
         sec = CORPUS.db.execute(
             "SELECT rowid AS id, heading FROM chunks WHERE slug = ? AND ord = ?",
@@ -621,10 +799,8 @@ def tool_get_figure(args: dict) -> list[dict]:
 
 
 def tool_get_page_image(args: dict) -> list[dict]:
-    slug = (args.get("document") or "").strip()
-    row = CORPUS.db.execute("SELECT * FROM documents WHERE slug = ?", (slug,)).fetchone()
-    if not row:
-        raise ValueError(f"Unknown document slug '{slug}'. Call `list_documents` for valid slugs.")
+    row = resolve_document(args.get("document"), args.get("version"))
+    slug = row["slug"]
     page_no = clamp_int(args.get("page"), 0, 0, 1_000_000)
     if not 1 <= page_no <= (row["page_count"] or 0):
         raise ValueError(f"`page` must be between 1 and {row['page_count']} for {slug}.")
@@ -633,15 +809,218 @@ def tool_get_page_image(args: dict) -> list[dict]:
     except ImportError:
         raise ValueError("Rendering pages needs PyMuPDF in the server's Python: pip install pymupdf. "
                          "get_figure works without it.") from None
-    pdf = CORPUS.root / row["collection_dir"] / (row["source_pdf"] or "")
-    if not pdf.is_file():
-        raise ValueError(f"The source PDF for {slug} is not at {pdf}.")
+    pdf = source_pdf_path(row)
+    if pdf is None:
+        raise ValueError(f"The source PDF for {slug} ({row['source_pdf']}) is not in its collection's "
+                         "source/ folder, nor beside docs/.")
     with pymupdf.open(pdf) as doc:
         page = doc[page_no - 1]
         zoom = min(PAGE_DPI / 72, IMAGE_MAX_PX / max(page.rect.width, page.rect.height))
         png = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False).tobytes("png")
-    return [{"type": "text", "text": f"{row['title']} ({slug}) · p. {page_no} of {row['page_count']}"},
+    return [{"type": "text", "text": f"{document_label(slug)} · p. {page_no} of {row['page_count']}"},
             image_block(png)]
+
+
+def source_pdf_path(row: sqlite3.Row) -> Path | None:
+    """A document's PDF: where the index build found it, else the places a
+    collection keeps PDFs -- they may have been moved into source/ since."""
+    name = row["source_pdf"] or ""
+    collection = CORPUS.root / row["collection_dir"]
+    recorded = row["source_path"] if "source_path" in row.keys() else None
+    candidates = ([CORPUS.root / recorded] if recorded else []) + [collection / "source" / name, collection / name]
+    return next((p for p in candidates if name and p.is_file()), None)
+
+
+# -------------------------------------------------------- compare_versions
+
+HEADING_KEY_RE = re.compile(r"[0-9a-z]+")
+# "Chapter 3 ", "Appendix A ", "3. ", "A. ": how a heading is numbered changes
+# with the vendor's template. One manual went from "Chapter 3 A Typical PDL
+# Retargeting Flow" to "3. A Typical PDL Retargeting Flow" between releases,
+# which listed every chapter as both removed and added.
+HEADING_NUMBER_RE = re.compile(
+    r"^\s*(?:(?:chapter|appendix|part|section)\s+[0-9A-Za-z]+[.:]?|\d+(?:\.\d+)*[.:)]?|[A-Za-z][.:)])\s+", re.I)
+DIFF_QUOTES = str.maketrans({"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
+                             "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-"})
+
+
+def diff_key(line: str) -> str:
+    """A line as compared between editions. Emphasis marks, quote style,
+    dash style and spacing change with the vendor's template from one release
+    to the next and say nothing about the product, so they are not compared.
+    Everything else is: case, numbers, every word."""
+    text = unicodedata.normalize("NFKC", line).translate(DIFF_QUOTES)
+    return " ".join(re.sub(r"[*_`\\]", "", text).split())
+
+
+def entry_lines(slug: str, name: str) -> tuple[list[tuple[str, str]], str]:
+    """Every line of one entry in one edition as (key, text), and its pages.
+    The whole entry, however long: a comparison cut where a lookup is cut
+    would report two long entries as identical whenever they differ late."""
+    chunks = CORPUS.db.execute(
+        "SELECT body, breadcrumb, page_start, page_end FROM chunks WHERE slug = ? AND entity = ? ORDER BY ord",
+        (slug, name),
+    ).fetchall()
+    lines = []
+    for c in chunks:
+        crumb = (c["breadcrumb"] or "").strip("*").strip()
+        for i, line in enumerate(c["body"].splitlines()):
+            if i == 0 and crumb and line.strip().strip("*").strip() == crumb:
+                continue                      # the chunk's own label, not the entry's text
+            key = diff_key(line)
+            if key and re.search(r"[0-9A-Za-z]", key):
+                lines.append((key, line.strip()))
+    starts = [c["page_start"] for c in chunks if c["page_start"] is not None]
+    ends = [c["page_end"] for c in chunks if c["page_end"] is not None]
+    pages = ""
+    if starts:
+        first, last = min(starts), max(ends or starts)
+        pages = f"p. {first}" if first == last else f"pp. {first}–{last}"
+    return lines, pages
+
+
+def only_in(mine: list[tuple[str, str]], theirs: list[tuple[str, str]]) -> list[str]:
+    """Lines of `mine` with no counterpart in `theirs`, in reading order. A
+    line there twice and here once is matched once."""
+    available = Counter(key for key, _ in theirs)
+    out = []
+    for key, text in mine:
+        if available[key]:
+            available[key] -= 1
+        else:
+            out.append(text)
+    return out
+
+
+def listed(items: list[str], budget: int, what: str) -> list[str]:
+    """Items as a list that fits, saying how many it left out."""
+    out, used = [], 0
+    for n, item in enumerate(items):
+        if n >= MAX_LISTED or used + len(item) > budget:
+            out.append(f"- …and {len(items) - n} more {what} not shown")
+            break
+        out.append(f"- {item}")
+        used += len(item) + 3
+    return out
+
+
+def compare_entry(old: sqlite3.Row, new: sqlite3.Row, name: str) -> str:
+    def entity(slug: str):
+        return CORPUS.db.execute(
+            "SELECT name FROM entities WHERE slug = ? AND name_lower = ?", (slug, name.lower())).fetchone()
+
+    in_old, in_new = entity(old["slug"]), entity(new["slug"])
+    v_old, v_new = edition_name(old), edition_name(new)
+    if not in_old and not in_new:
+        has_entries = CORPUS.db.execute(
+            "SELECT 1 FROM entities WHERE slug IN (?, ?)", (old["slug"], new["slug"])).fetchone()
+        raise ValueError(
+            f"`{name}` is not an entry in the {v_old} or the {v_new} edition of `{new['doc_id']}`."
+            if has_entries else
+            f"`{new['doc_id']}` has no per-entry attribution, so `name` cannot select part of it. "
+            "Leave `name` out to compare its headings, or search each edition with `search_docs` "
+            "and `document`/`version`.")
+    if not in_old or not in_new:
+        there, missing = (new, v_old) if in_new else (old, v_new)
+        return (f"`{name}` is an entry in the {edition_name(there)} edition of `{new['doc_id']}` and "
+                f"not in the {missing} edition: it was {'added' if in_new else 'removed'} between them.\n\n"
+                f"Read it with `lookup_entity` and `document`: `{there['slug']}`.")
+
+    old_lines, old_pages = entry_lines(old["slug"], in_old["name"])
+    new_lines, new_pages = entry_lines(new["slug"], in_new["name"])
+    removed, added = only_in(old_lines, new_lines), only_in(new_lines, old_lines)
+    same = len(new_lines) - len(added)
+    head = [
+        f"# `{in_new['name']}`: {v_old} → {v_new}",
+        f"{document_label(old['slug'])}" + (f" · {old_pages}" if old_pages else ""),
+        f"{document_label(new['slug'])}" + (f" · {new_pages}" if new_pages else ""),
+        "",
+    ]
+    scope = (f"All {len(old_lines)} and {len(new_lines)} lines of the entry were compared, not only the "
+             "part a lookup returns. Emphasis marks, quote style and spacing are ignored; line order "
+             "is not compared.")
+    if not removed and not added:
+        return "\n".join(head + [f"No differences: every line of this entry is in both editions. {scope}"])
+    out = head + [f"{same} line(s) are in both editions, {len(removed)} only in {v_old}, "
+                  f"{len(added)} only in {v_new}. {scope} A reworded line appears on both sides.", ""]
+    half = MAX_SECTION_CHARS // 2
+    if removed:
+        out += [f"## Only in {v_old}"] + listed(removed, half, f"line(s) only in {v_old}") + [""]
+    if added:
+        out += [f"## Only in {v_new}"] + listed(added, half, f"line(s) only in {v_new}") + [""]
+    return "\n".join(out).rstrip()
+
+
+def heading_key(title: str) -> str:
+    title = unicodedata.normalize("NFKC", title)
+    unnumbered = HEADING_NUMBER_RE.sub("", title, count=1)
+    return " ".join(HEADING_KEY_RE.findall((unnumbered if unnumbered.strip() else title).lower()))
+
+
+def compare_listing(old: sqlite3.Row, new: sqlite3.Row) -> str:
+    v_old, v_new = edition_name(old), edition_name(new)
+    out = [f"# `{new['doc_id']}`: {v_old} → {v_new}", document_label(old["slug"]),
+           document_label(new["slug"]), ""]
+
+    def names(slug: str) -> dict[str, str]:
+        return {r["name_lower"]: r["name"] for r in CORPUS.db.execute(
+            "SELECT name, name_lower FROM entities WHERE slug = ?", (slug,))}
+
+    def headings(row: sqlite3.Row) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for e in json.loads(row["toc_json"] or "[]"):
+            title = (e.get("title") or "").strip()
+            if heading_key(title):
+                found.setdefault(heading_key(title), title)
+        return found
+
+    e_old, e_new = names(old["slug"]), names(new["slug"])
+    if e_old and e_new:
+        a, b, what = e_old, e_new, "entries"
+        caveat = ("Names only. An entry in both editions may still have changed: pass `name` to "
+                  "compare one entry's text.")
+    else:
+        a, b, what = headings(old), headings(new), "headings"
+        caveat = ("Headings only, from the two PDFs' bookmark outlines, chapter numbering aside. A "
+                  "renamed heading shows as one removed and one added, and text under a heading that "
+                  "is in both may still have changed: search each edition with `search_docs` and "
+                  "`document`/`version` to compare a topic.")
+        if not a or not b:
+            return "\n".join(out + ["One of these editions has no bookmark outline, so there are no "
+                                    "headings to compare. Search each edition with `search_docs` and "
+                                    "`document`/`version` instead."])
+    added = sorted((b[k] for k in b.keys() - a.keys()), key=str.lower)
+    removed = sorted((a[k] for k in a.keys() - b.keys()), key=str.lower)
+    out.append(f"{len(b):,} {what} in {v_new} and {len(a):,} in {v_old}: {len(added)} added, "
+               f"{len(removed)} removed, {len(a.keys() & b.keys()):,} in both. {caveat}")
+    half = MAX_SECTION_CHARS // 2
+    out += ["", f"## Added in {v_new}"] + (listed(added, half, f"{what} added") or ["(none)"])
+    out += ["", f"## Removed since {v_old}"] + (listed(removed, half, f"{what} removed") or ["(none)"])
+    return "\n".join(out)
+
+
+def tool_compare_versions(args: dict) -> str:
+    if not CORPUS.has_editions:
+        raise ValueError("This index was built before editions were recorded. Rebuild it with "
+                         "build_search_db.py.")
+    collection = normalize_collection(args.get("collection"))
+    new = resolve_document(args.get("document"), args.get("to_version"), collection)
+    editions = editions_of(new["doc_id"], new["collection"])
+    if len(editions) < 2:
+        raise ValueError(f"Only one edition of `{new['doc_id']}` is in this corpus "
+                         f"({edition_name(new)}), so there is nothing to compare it with.")
+    if args.get("from_version") not in (None, ""):
+        old = resolve_document(new["doc_id"], args["from_version"], new["collection"])
+    else:
+        earlier = [e for e in editions if (e["version_sort"] or "") < (new["version_sort"] or "")]
+        if not earlier:
+            raise ValueError(f"{edition_name(new)} is the earliest edition of `{new['doc_id']}` here. "
+                             f"Pass `from_version` and `to_version`. Editions: {describe_editions(editions)}.")
+        old = earlier[-1]
+    if old["slug"] == new["slug"]:
+        raise ValueError("`from_version` and `to_version` name the same edition.")
+    name = (args.get("name") or "").strip().strip("`")
+    return compare_entry(old, new, name) if name else compare_listing(old, new)
 
 
 def build_tools() -> list[dict]:
@@ -661,6 +1040,11 @@ def build_tools() -> list[dict]:
     coll_schema = {"type": "string", "description": coll_desc}
     if collections:
         coll_schema["enum"] = collections
+    doc_schema = {"type": "string", "description": "An edition's slug, or a manual's name to mean its "
+                                                   "current edition (see list_documents)."}
+    version_schema = {"type": "string", "description": "Read this release of the manual instead, e.g. "
+                                                       "'2025.2'. Needs `document`. A release that is "
+                                                       "not in the corpus is refused, not approximated."}
 
     return [
         {
@@ -668,15 +1052,17 @@ def build_tools() -> list[dict]:
             "description": (
                 "Full-text search across the whole corpus. Use this first for any question "
                 "about what these documents cover. Results are BM25-ranked and cite document, "
-                "breadcrumb and page; each carries a section_id for get_section. Prefer this "
-                "over answering from memory, and cite what you used."
+                "version, breadcrumb and page; each carries a section_id for get_section. Prefer "
+                "this over answering from memory, and cite what you used. It searches the current "
+                "edition of each manual; name `document` and `version` when the user is on another."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Words, an identifier, or a \"quoted phrase\". Underscores and hyphens are handled."},
                     "collection": coll_schema,
-                    "document": {"type": "string", "description": "Restrict to one document slug (see list_documents)."},
+                    "document": {"type": "string", "description": "Restrict to one document: an edition's slug, or a manual's name for its current edition (see list_documents)."},
+                    "version": version_schema,
                     "limit": {"type": "integer", "description": "Max results, 1-40 (default 10)."},
                     "max_per_document": {"type": "integer", "description": "Cap results per document so one big reference cannot crowd out the rest (default 5, 0 = no cap)."},
                 },
@@ -706,13 +1092,16 @@ def build_tools() -> list[dict]:
                 "Look up one entry by exact name in a reference document -- a command, API "
                 "function, part number, error code -- and return its whole entry reassembled "
                 "from every chunk that belongs to it, with its page. Prefer this over search "
-                "when you know the name: it will not attach one entry's details to another."
+                "when you know the name: it will not attach one entry's details to another. It "
+                "reads the current edition of each manual unless `document` names another."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Exact entry name, e.g. 'set_scan_configuration'."},
                     "collection": coll_schema,
+                    "document": doc_schema,
+                    "version": version_schema,
                 },
                 "required": ["name"],
             },
@@ -720,9 +1109,10 @@ def build_tools() -> list[dict]:
         {
             "name": "list_documents",
             "description": (
-                "List the documents in the corpus with slugs, titles, sizes and whether they "
-                "carry page numbers and entity attribution. Call this to find the right slug "
-                "for a filtered search, or to say what is actually covered."
+                "List the documents in the corpus with slugs, titles, versions, sizes and whether "
+                "they carry page numbers and entity attribution. Call this to find the right slug "
+                "for a filtered search, to see which editions of a manual are here, or to say "
+                "what is actually covered."
             ),
             "inputSchema": {"type": "object", "properties": {"collection": coll_schema}},
         },
@@ -735,9 +1125,32 @@ def build_tools() -> list[dict]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "document": {"type": "string", "description": "Document slug."},
+                    "document": doc_schema,
+                    "version": version_schema,
                     "max_level": {"type": "integer", "description": "Deepest heading level to show, 1-6 (default 2)."},
                     "contains": {"type": "string", "description": "Only entries whose title contains this text (any level)."},
+                },
+                "required": ["document"],
+            },
+        },
+        {
+            "name": "compare_versions",
+            "description": (
+                "What differs between two editions of one manual. Without `name`: the entries (in "
+                "a reference document) or headings added and removed. With `name`: that entry's "
+                "text in both editions, compared in full, returning the lines only one of them "
+                "has. Use this for any question about what changed between releases instead of "
+                "reading both and comparing by eye. It reports what the manuals say, which is not "
+                "a release note: behaviour can change without the manual changing."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "document": doc_schema,
+                    "from_version": {"type": "string", "description": "The earlier release (default: the edition just before `to_version`)."},
+                    "to_version": {"type": "string", "description": "The later release (default: the manual's current edition)."},
+                    "name": {"type": "string", "description": "Compare this one entry's text, e.g. 'set_scan_configuration'."},
+                    "collection": coll_schema,
                 },
                 "required": ["document"],
             },
@@ -767,7 +1180,8 @@ def build_tools() -> list[dict]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "document": {"type": "string", "description": "Document slug (see list_documents)."},
+                    "document": doc_schema,
+                    "version": version_schema,
                     "page": {"type": "integer", "description": "1-based page number in the PDF."},
                 },
                 "required": ["document", "page"],
@@ -782,6 +1196,7 @@ HANDLERS = {
     "lookup_entity": tool_lookup_entity,
     "list_documents": tool_list_documents,
     "get_toc": tool_get_toc,
+    "compare_versions": tool_compare_versions,
     "get_figure": tool_get_figure,
     "get_page_image": tool_get_page_image,
 }
@@ -805,9 +1220,12 @@ def handle_request(method: str, params: dict) -> dict:
             "serverInfo": {"name": f"{CORPUS.name}-docs", "version": SERVER_VERSION},
             "instructions": (
                 f"Authoritative documentation for {CORPUS.name} ({scope}). Answer questions "
-                "about it from these tools rather than from memory, and cite the document and "
-                "page you used. When a section lists figures, look at the ones that matter with "
-                "get_figure rather than guessing what a diagram shows."
+                "about it from these tools rather than from memory, and cite the document, its "
+                "version and the page you used. A manual may be here in several editions: answers "
+                "come from its current one unless you name another with `document` and `version`, "
+                "and `compare_versions` says what changed between two. When a section lists "
+                "figures, look at the ones that matter with get_figure rather than guessing what "
+                "a diagram shows."
             ),
         }
     if method == "ping":
