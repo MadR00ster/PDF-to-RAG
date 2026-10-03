@@ -25,6 +25,13 @@ The index is a snapshot, not a live view: rerun this after converting,
 reconverting or enriching anything. The build is atomic (temp file, then
 rename), so a failed run leaves the previous index in place.
 
+--emit-vscode-config also copies mcp_server.py beside the index and writes
+.vscode/mcp.json with paths relative to the corpus folder. The server is one
+standard-library file, so index and server then travel together: the folder
+can be synced to another machine and served there with nothing but Python,
+and no path in its config names the machine that built it. Later builds
+refresh the copy, so the server always matches the index it reads.
+
 Layout it expects -- either shape works, and both are auto-detected:
 
     corpus/docs/<slug>/manifest.json                 single collection
@@ -41,6 +48,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import time
@@ -51,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
 
 DEFAULT_DB_NAME = "mcp-index.sqlite3"
+SERVER_NAME = "mcp_server.py"
 
 # Reads are dominated by the filesystem, and on a cloud-synced corpus
 # (OneDrive, Dropbox, iCloud) by hydrating placeholder files -- network
@@ -483,13 +492,37 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
     return 0
 
 
+COPY_NOTE = (
+    "# A copy, placed here by PDF-to-RAG's build_search_db.py so this folder can be\n"
+    "# served from any machine it is synced to. Do not edit it: the next index\n"
+    "# build replaces it. The original is scripts/mcp_server.py in that repo.\n"
+)
+
+
+def install_server(root: Path) -> Path:
+    """Copy mcp_server.py to the corpus root, beside the index it serves.
+
+    A config that names this checkout by path works on one machine. The
+    server needs nothing but the standard library and the index, so a copy
+    beside the index makes the corpus folder self-contained instead.
+    """
+    source = Path(__file__).resolve().parent / SERVER_NAME
+    first, rest = source.read_text(encoding="utf-8").split("\n", 1)
+    target = root / SERVER_NAME
+    target.write_text(f"{first}\n{COPY_NOTE}{rest}", encoding="utf-8")
+    shutil.copymode(source, target)
+    return target
+
+
 def emit_vscode_config(root: Path, db_path: Path) -> Path:
     """Write .vscode/mcp.json so VS Code picks the corpus up on folder open.
 
-    Points at this checkout's mcp_server.py with an explicit --db, because the
-    scripts are shared across corpora while each index belongs to one.
+    Every path is relative to the workspace folder -- the server copy
+    install_server() places at the corpus root, and the index when it is
+    inside the corpus -- so the file is right on any machine the corpus is
+    opened on. `python` rather than this interpreter's path, for the same
+    reason.
     """
-    server = (Path(__file__).resolve().parent / "mcp_server.py")
     config_path = root / ".vscode" / "mcp.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -501,11 +534,21 @@ def emit_vscode_config(root: Path, db_path: Path) -> Path:
             print(f"  !! {config_path} is not valid JSON; leaving it alone", file=sys.stderr)
             return config_path
 
+    try:
+        db_arg = "${workspaceFolder}/" + db_path.relative_to(root).as_posix()
+    except ValueError:
+        db_arg = str(db_path)             # --out put the index outside the corpus
+
     servers = existing.setdefault("servers", {})
-    servers[slugify(root.name) + "-docs"] = {
+    # An entry that already runs mcp_server.py is this corpus's server under
+    # whatever name it was given: rewrite it rather than add a second one.
+    mine = [name for name, cfg in servers.items() if isinstance(cfg, dict)
+            and any(str(a).replace("\\", "/").endswith(SERVER_NAME) for a in cfg.get("args") or [])]
+    name = mine[0] if len(mine) == 1 else slugify(root.name) + "-docs"
+    servers[name] = {
         "type": "stdio",
         "command": "python",
-        "args": [str(server), "--db", str(db_path)],
+        "args": ["${workspaceFolder}/" + SERVER_NAME, "--db", db_arg],
     }
     config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     return config_path
@@ -527,7 +570,8 @@ def main() -> int:
     ap.add_argument(
         "--emit-vscode-config",
         action="store_true",
-        help="also write <root>/.vscode/mcp.json so VS Code finds the server",
+        help="also copy mcp_server.py to <root> and write <root>/.vscode/mcp.json, "
+             "with paths relative to the corpus, so VS Code finds the server",
     )
     ap.add_argument(
         "--no-figure-text",
@@ -546,9 +590,14 @@ def main() -> int:
     print(f"Indexing corpus at {root}")
     code = build(root, out_path, stats_only=args.stats_only, figure_text=not args.no_figure_text)
 
-    if args.emit_vscode_config and not args.stats_only and out_path.exists():
+    built = not args.stats_only and code != 1 and out_path.exists()
+    # A copy already at the root is refreshed by every build: an index and a
+    # server from different versions of this repo need not agree on the schema.
+    if built and (args.emit_vscode_config or (root / SERVER_NAME).is_file()):
+        print(f"\nServer copy -> {install_server(root)}")
+    if built and args.emit_vscode_config:
         written = emit_vscode_config(root, out_path)
-        print(f"\nVS Code config -> {written}\nReload the window; the server appears in Agent mode's tool picker.")
+        print(f"VS Code config -> {written}\nReload the window; the server appears in Agent mode's tool picker.")
     return code
 
 

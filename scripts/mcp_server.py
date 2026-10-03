@@ -152,12 +152,23 @@ class Corpus:
 
     @property
     def root(self) -> Path:
-        """The corpus root recorded at build time, or the index's own folder if
-        the corpus has moved since -- the index is built at the root by default."""
+        """The corpus root: the index's own folder when the corpus is there,
+        as it is by default, otherwise the root recorded at build time.
+
+        The index's folder first, so a corpus synced or copied to another
+        machine reads its own figures and PDFs. The recorded path names the
+        machine that built the index, and where it still exists it may be an
+        older copy.
+        """
         if self._root is None:
+            here = self.db_path.parent
+            doc = self.db.execute("SELECT collection_dir FROM documents LIMIT 1").fetchone()
             row = self.db.execute("SELECT value FROM meta WHERE key = 'root'").fetchone()
             recorded = Path(row["value"]) if row and row["value"] else None
-            self._root = recorded if recorded and recorded.is_dir() else self.db_path.parent
+            if doc and (here / doc["collection_dir"] / "docs").is_dir():
+                self._root = here
+            else:
+                self._root = recorded if recorded and recorded.is_dir() else here
         return self._root
 
     @property
@@ -1259,17 +1270,22 @@ def call_tool(params: dict) -> dict:
 
 
 def resolve_db(explicit: str | None) -> Path:
-    """--db wins, then $PDF_TO_RAG_DB, then an index beside the working directory.
+    """--db wins, then $PDF_TO_RAG_DB, then an index beside this file, then
+    one in the working directory.
 
     The scripts are shared across corpora while an index belongs to exactly one,
-    so the server has to be told which. The cwd fallback is a convenience for
-    running it by hand from inside a corpus.
+    so the server has to be told which -- unless it is the copy
+    build_search_db.py places beside an index, which serves that one. The cwd
+    fallback is a convenience for running it by hand from inside a corpus.
     """
     if explicit:
         return Path(explicit).resolve()
     env = os.environ.get("PDF_TO_RAG_DB")
     if env:
         return Path(env).resolve()
+    beside = Path(__file__).resolve().parent / "mcp-index.sqlite3"
+    if beside.is_file():
+        return beside
     return Path.cwd().resolve() / "mcp-index.sqlite3"
 
 

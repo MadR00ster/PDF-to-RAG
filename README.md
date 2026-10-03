@@ -105,9 +105,12 @@ python scripts/build_search_db.py --root my-corpus --emit-vscode-config
 python scripts/mcp_smoke_test.py --db my-corpus/mcp-index.sqlite3
 ```
 
-The first command also writes `my-corpus/.vscode/mcp.json`. For another client,
-register the command `python scripts/mcp_server.py --db my-corpus/mcp-index.sqlite3`
-as a stdio server. The index is a snapshot: rebuild it after any conversion.
+The first command also copies `mcp_server.py` into `my-corpus/` and writes
+`my-corpus/.vscode/mcp.json` with paths relative to that folder, so the corpus
+can be synced to another machine and served there with nothing but Python. For
+another client, register the command `python my-corpus/mcp_server.py` as a
+stdio server; it reads the index beside it. The index is a snapshot: rebuild it
+after any conversion, which also refreshes the server copy.
 
 Prose manuals convert better with `convert_docling.py`, which puts a page
 number on every chunk. It needs Docling, a multi-gigabyte install that is

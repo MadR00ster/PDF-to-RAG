@@ -615,7 +615,17 @@ python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
 
 The first writes one SQLite FTS5 index plus a `.vscode/mcp.json`; the second
 drives a real handshake and every tool. Collections are discovered from disk,
-so nothing is hardcoded per corpus. Tools: `search_docs`, `get_section`,
+so nothing is hardcoded per corpus.
+
+**The corpus folder serves itself.** `--emit-vscode-config` copies
+`mcp_server.py` beside the index and writes every path in `.vscode/mcp.json`
+relative to the workspace folder. A config that names this checkout by path
+works on one machine, and a corpus in a synced folder is opened on several;
+the server is one standard-library file, so shipping it with the index costs
+nothing and needs only Python on the other machine. Later builds refresh the
+copy, which also keeps the server and the index it reads on the same schema.
+Do not edit the copy. The server reads figures and PDFs from the folder its
+index is in, not from the path the index was built at. Tools: `search_docs`, `get_section`,
 `lookup_entity`, `list_documents`, `get_toc`, `compare_versions`, `get_figure`,
 `get_page_image`.
 The index is a **snapshot** —

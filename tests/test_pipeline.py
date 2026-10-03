@@ -1097,6 +1097,41 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("compare_versions", r.stdout)
 
+    def test_22b_the_corpus_folder_serves_itself_from_anywhere(self):
+        """No path in the editor config names the machine that built the index.
+
+        A config pointing at this checkout works on one machine, and a corpus
+        in a synced folder is opened on several. --emit-vscode-config copies
+        the server beside the index and writes workspace-relative paths, so
+        the folder can be moved or synced and still be served.
+        """
+        import shutil
+        config = self.root / ".vscode" / "mcp.json"
+        config.parent.mkdir(exist_ok=True)
+        # A server someone registered earlier, by absolute path, under their own name.
+        config.write_text(json.dumps({"servers": {"my-manuals": {
+            "type": "stdio", "command": "python",
+            "args": ["X:\\old\\checkout\\scripts\\mcp_server.py", "--db", "X:\\old\\index.sqlite3"]}}}),
+            encoding="utf-8")
+        for _ in range(2):                      # emitting twice must not add a second entry
+            r = run("build_search_db.py", "--root", str(self.root), "--emit-vscode-config")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        servers = json.loads(config.read_text(encoding="utf-8"))["servers"]
+        self.assertEqual(list(servers), ["my-manuals"], "the existing entry was not reused")
+        self.assertEqual(servers["my-manuals"]["args"],
+                         ["${workspaceFolder}/mcp_server.py", "--db", "${workspaceFolder}/mcp-index.sqlite3"])
+        self.assertNotIn(self.tmp.name, config.read_text(encoding="utf-8"), "the config names this machine's paths")
+        self.assertTrue((self.root / "mcp_server.py").is_file(), "the server was not copied beside the index")
+
+        moved = self.tmp / "Elsewhere"
+        shutil.copytree(self.root, moved)
+        r = run("mcp_smoke_test.py", "--db", str(moved / "mcp-index.sqlite3"),
+                "--server", str(moved / "mcp_server.py"))
+        self.assertEqual(r.returncode, 0, "the copied corpus could not serve itself:\n" + r.stdout + r.stderr)
+        corpus = self.server.Corpus(moved / "mcp-index.sqlite3")
+        self.assertEqual(corpus.root, moved, "a moved corpus still reads figures and PDFs from where it was built")
+        corpus._db.close()
+
     def test_23_checker_catches_edition_defects(self):
         """Each way a set of editions can be undecidable, planted alone."""
         import shutil

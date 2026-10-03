@@ -9,6 +9,8 @@ on any corpus the skill produces.
 
   python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
   python scripts/mcp_smoke_test.py --db ... -v     # print each tool's output
+  python scripts/mcp_smoke_test.py --db ... --server <corpus>/mcp_server.py
+                                                   # the copy beside an index
 
 Exit code is 0 only if every check passed, so it can gate a rebuild.
 """
@@ -34,9 +36,9 @@ failures: list[str] = []
 
 
 class Client:
-    def __init__(self, db: Path):
+    def __init__(self, db: Path, server: Path = SERVER):
         self.proc = subprocess.Popen(
-            [sys.executable, str(SERVER), "--db", str(db)],
+            [sys.executable, str(server), "--db", str(db)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", bufsize=1,
         )
@@ -104,6 +106,8 @@ def probes(db: Path) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
+    ap.add_argument("--server", type=Path, default=SERVER,
+                    help="the server to drive (default: the one beside this script)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -112,9 +116,9 @@ def main() -> int:
         print(f"No index at {db} — build it first.", file=sys.stderr)
         return 1
     p = probes(db)
-    print(f"Testing {SERVER.name} against {db.name}\n")
+    print(f"Testing {args.server} against {db.name}\n")
 
-    client = Client(db)
+    client = Client(db, args.server)
 
     def tool(name: str, tool_args: dict, expect: str, expect_error: bool = False) -> None:
         resp = client.call("tools/call", {"name": name, "arguments": tool_args})
