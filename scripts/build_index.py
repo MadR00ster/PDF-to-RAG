@@ -40,6 +40,7 @@ def load_manuals(docs_dir: Path) -> list[dict]:
                 "slug": slug,
                 "doc_id": m.get("doc_id") or slug,
                 "version": m.get("version"),
+                "version_and_later": bool(m.get("version_and_later")),
                 "title": m["title"],
                 "source_pdf": m["source_pdf"],
                 "page_count": m["page_count"],
@@ -112,7 +113,8 @@ def write_readme(vendor_dir: Path, docs_dir: Path, manuals: list[dict], supersed
         "|---|---|---|---|---|---|",
     ]
     for m in manuals:
-        version = (m["version"] or "-") + ("" if m["current"] else " (not current)")
+        version = (editions.display_version(m["version"], m["version_and_later"])
+                   + ("" if m["current"] else " (not current)"))
         lines.append(
             f"| {m['title']} | {version} | `{m['slug']}` | {m['page_count']} | {m['section_count']} "
             f"| [{m['full_md']}]({m['full_md']}) |"

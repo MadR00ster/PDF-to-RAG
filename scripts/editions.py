@@ -17,12 +17,20 @@ manifest. Search answers from one edition per manual -- the newest, unless
 current_versions.json pins another -- and from any other only when asked for
 it by name, so two editions never compete for the same question.
 
-The version is read from the PDF's first pages, never from its filename:
-on one real corpus twelve filenames carried no version at all, and two named
-a release their cover did not. Where the cover gives none, or disagrees with the
-filename, or only says where support starts ("2023.1 and later") with no
-filename to confirm it, `version` is left out and reported, to be set by hand
-with --version or `stamp --set`.
+`version` is the tool release the document applies to, as its cover prints
+it, and `version_and_later` records a cover that says "2023.1 and later": the
+vendor has not reissued the manual since, and says it still holds. Such an
+edition answers for every release from its own up to the next edition's. One
+without that claim answers for its own release only; whether it holds for the
+next is not something the document says.
+
+The version is read from the PDF's first pages, never from its filename: on
+one real corpus twelve filenames carried no version at all, and two named a
+later release than the cover, which said "and later". A filename that names
+an earlier release than the cover, or a different one where the cover makes
+no such claim, is a contradiction: `version` is then left out and reported,
+as it is when the cover gives none, to be set by hand with --version or
+`stamp --set` (`2023.1+` means "2023.1 and later").
 
 The converters import this for the layout and the manifest fields. The
 commands below are for a corpus that predates either:
@@ -32,8 +40,8 @@ commands below are for a corpus that predates either:
   python scripts/editions.py migrate <collection> [--dry-run]
 
 `status` lists every manual with its editions, the pins, and the PDFs still
-waiting. `stamp` adds `doc_id` and `version` to manifests that lack them,
-keeping the old manifests under .rebuild-backup/. `migrate` moves the PDFs at
+waiting. `stamp` adds `doc_id`, `version` and `version_and_later` to manifests
+that lack them, keeping the old manifests under .rebuild-backup/. `migrate` moves the PDFs at
 a collection's root into source/, or into new_docs/ when nothing accounts for
 them.
 
@@ -68,8 +76,8 @@ LETTERED_RE = re.compile(r"(?<![\w-])([A-Z]-20\d\d\.\d\d(?:-SP\d+(?:-\d+)?)?)(?!
 # is not taken: "IEEE 1149.1" is on more covers than a version is.
 LABELLED_RE = re.compile(
     r"\b(?:Software\s+Version|Version|Release)[:\s]+v?(\d+(?:\.\d+)+(?:-[A-Za-z]+\d+)*)(?!\.?\w)", re.I)
-# "Software Version 2023.1 and later": the cover names where support starts,
-# not which release this document is.
+# "Software Version 2023.1 and later": the document applies from that release
+# on, and says so.
 QUALIFIED_RE = re.compile(r"\s+(?:and|or)\s+(?:later|newer|above|higher)\b", re.I)
 
 FILENAME_LETTERED_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]-20\d\d\.\d\d(?:-SP\d+(?:-\d+)?)?)", re.I)
@@ -188,41 +196,59 @@ def filename_version(name: str) -> str | None:
 
 
 class Cover(NamedTuple):
-    version: str | None   # safe to record as this document's release
+    version: str | None   # the release the document applies to, when that is unambiguous
+    later: bool           # the cover says "and later"
     found: str | None     # what the first pages say, usable or not
     note: str             # why `version` is empty, or ""
 
 
+def display_version(version: str | None, later: bool = False) -> str:
+    return f"{version} and later" if version and later else str(version or "-")
+
+
+def split_version(text: str | None) -> tuple[str | None, bool]:
+    """A version as typed on a command line: "2023.1+" or "2023.1 and later"
+    is 2023.1 with the and-later claim."""
+    text = (text or "").strip()
+    m = re.fullmatch(r"(.+?)\s*(?:\+|\band\s+later)", text, re.I)
+    return (m.group(1).strip(), True) if m else (text or None, False)
+
+
 def read_cover(pdf: Path) -> Cover:
-    """The release named on a PDF's first pages, when it is unambiguous."""
+    """The tool release a PDF's first pages say it applies to, when they say
+    one thing."""
     try:
         import pymupdf
     except ImportError:
-        return Cover(None, None, "PyMuPDF is not installed, so the cover was not read")
+        return Cover(None, False, None, "PyMuPDF is not installed, so the cover was not read")
     try:
         with pymupdf.open(str(pdf)) as doc:
             text = "\n".join(doc[i].get_text() for i in range(min(COVER_PAGES, doc.page_count)))
     except Exception as exc:  # damaged or encrypted: reported, not fatal
-        return Cover(None, None, f"could not be opened ({str(exc)[:80]})")
+        return Cover(None, False, None, f"could not be opened ({str(exc)[:80]})")
 
     lettered = [(m.group(1), m.end()) for m in LETTERED_RE.finditer(text)]
     hits = lettered or [(m.group(1), m.end()) for m in LABELLED_RE.finditer(text)]
     if not hits:
-        return Cover(None, None, "no version on the first pages")
+        return Cover(None, False, None, "no version on the first pages")
     counts = Counter(norm_version(v) for v, _ in hits)
     (best, n), *rest = counts.most_common()
     shown = next(v for v, _ in hits if norm_version(v) == best)
     if rest and rest[0][1] == n:
-        return Cover(None, shown, "the first pages name more than one version: "
+        return Cover(None, False, shown, "the first pages name more than one version: "
                      + ", ".join(sorted(counts)))
+    later = any(QUALIFIED_RE.match(text, end) for v, end in hits if norm_version(v) == best)
     named = filename_version(pdf.name)
     if named and norm_version(named) != best:
-        return Cover(None, shown, f"the cover says {shown} and the filename says {named}")
-    # Unless the filename says the same: then two sources agree on the release.
-    if not named and any(QUALIFIED_RE.match(text, end) for v, end in hits if norm_version(v) == best):
-        return Cover(None, shown, f'the cover says "{shown} and later", which is where support '
-                                  "starts, not this document's release")
-    return Cover(shown, shown, "")
+        # A manual the vendor ships unchanged keeps its cover and takes each
+        # new release's filename: "2023.1 and later" inside x_2025_2.pdf. That
+        # agrees with the cover. A filename naming an earlier release, or a
+        # different one where the cover claims nothing, does not.
+        covered = later and (version_key(named) or ()) > (version_key(best) or ())
+        if not covered:
+            return Cover(None, later, shown, f"the cover says {display_version(shown, later)} "
+                                             f"and the filename says {named}")
+    return Cover(shown, later, shown, "")
 
 
 def default_doc_id(slug: str) -> str:
@@ -254,14 +280,37 @@ def load_pins(collection: Path) -> dict[str, str]:
     return {str(k): v.strip() for k, v in data.items()}
 
 
+def applies_to(editions: list[dict], release: str | None) -> dict | None:
+    """The edition of one manual that documents tool release `release`.
+
+    The one for exactly that release. Failing that, the nearest earlier one,
+    and only if it says "and later": that is the document's own claim to
+    cover what follows it, up to the next edition. An earlier edition that
+    makes no such claim is not offered -- that it still holds would be our
+    guess, not the vendor's statement.
+    """
+    wanted = norm_version(release)
+    for e in editions:
+        if e.get("version") and norm_version(e["version"]) == wanted:
+            return e
+    key = version_key(release)
+    earlier = [e for e in editions if key and (version_key(e.get("version")) or key) < key]
+    if not earlier:
+        return None
+    nearest = max(earlier, key=lambda e: version_key(e["version"]))
+    return nearest if nearest.get("version_and_later") else None
+
+
 def resolve_editions(docs: list[dict], pins: dict[str, str]) -> list[str]:
     """Mark each of one collection's documents `is_latest` / `is_current`.
 
-    `docs` are dicts with slug, doc_id and version; the two flags are added
-    in place. Returns what stops the result being trusted: a manual with two
-    editions where one has no usable version (which is newer cannot be told),
-    two editions with the same version, a pin on a manual or a version that
-    is not here. Nothing is guessed around any of them.
+    `docs` are dicts with slug, doc_id, version and version_and_later; the two
+    flags are added in place. A pin names the tool release in use, and selects
+    the edition that applies to it (see applies_to). Returns what stops the
+    result being trusted: a manual with two editions where one has no usable
+    version (which is newer cannot be told), two editions with the same
+    version, a pin on a manual that is not here or a release none of its
+    editions covers. Nothing is guessed around any of them.
     """
     problems: list[str] = []
     lines: dict[str, list[dict]] = {}
@@ -292,13 +341,14 @@ def resolve_editions(docs: list[dict], pins: dict[str, str]) -> list[str]:
         pin = pins.get(doc_id)
         if pin is None:
             continue
-        match = [e for e in editions if e.get("version") and norm_version(e["version"]) == norm_version(pin)]
-        if not match:
-            have = ", ".join(str(e.get("version") or "no version") for e in editions)
+        match = applies_to(editions, pin)
+        if match is None:
+            have = ", ".join(display_version(e.get("version"), bool(e.get("version_and_later")))
+                             if e.get("version") else "no version" for e in editions)
             problems.append(f"{PINS_FILE} pins {doc_id} to {pin}; its editions here are: {have}")
             continue
         for e in editions:
-            e["is_current"] = e is match[0]
+            e["is_current"] = e is match
 
     for doc_id in sorted(set(pins) - set(lines)):
         problems.append(f"{PINS_FILE} pins {doc_id}, which is not a doc_id in this collection")
@@ -363,18 +413,20 @@ class Plan(NamedTuple):
     slug: str
     doc_id: str
     version: str | None
+    later: bool
     source_name: str
     move: bool
 
 
 def add_arguments(ap: argparse.ArgumentParser) -> None:
-    ap.add_argument("--version", help="this document's release (default: read from the PDF's first pages)")
+    ap.add_argument("--version", help="the tool release this document applies to; end it with + for "
+                                      '"and later", e.g. 2023.1+ (default: read from the PDF\'s first pages)')
     ap.add_argument("--doc-id", help="the name every edition of this manual shares "
                                      "(default: the slug without its release)")
 
 
 def plan(pdf: Path, slug: str | None, out_root: Path | None, version: str | None,
-         doc_id: str | None) -> Plan:
+         doc_id: str | None, later: bool = False) -> Plan:
     """Decide, before anything is written, what a conversion will be called.
 
     A PDF in new_docs/ converted into its own collection is moved to source/
@@ -386,11 +438,13 @@ def plan(pdf: Path, slug: str | None, out_root: Path | None, version: str | None
     out_root = (out_root or collection / "docs").resolve()
 
     if version:
-        print(f"version: {version} (given)")
+        version, typed_later = split_version(version)
+        later = later or typed_later
+        print(f"version: {display_version(version, later)} (given)")
     else:
         cover = read_cover(pdf)
-        version = cover.version
-        print(f"version: {version} (from the cover)" if version
+        version, later = cover.version, bool(cover.version) and cover.later
+        print(f"version: {display_version(version, later)} (from the cover)" if version
               else f"version: not recorded -- {cover.note}. Pass --version to set it.")
 
     move = pdf.parent.name == INBOX_DIR and out_root == (collection / "docs").resolve()
@@ -425,16 +479,7 @@ def plan(pdf: Path, slug: str | None, out_root: Path | None, version: str | None
         print(f"  !! {', '.join(unstamped)} looks like another edition of {doc_id} but its manifest has "
               f"no doc_id, so search will treat the two as unrelated manuals. Run: "
               f'python scripts/editions.py stamp "{out_root.parent}"')
-    return Plan(pdf, collection, out_root, slug, doc_id, version, source_name, move)
-
-
-def manifest_fields(p: Plan) -> dict:
-    """What a converter adds to its manifest. `version` is left out, not
-    written as null, when the cover did not give one."""
-    fields = {"source_pdf": p.source_name, "doc_id": p.doc_id}
-    if p.version:
-        fields["version"] = p.version
-    return fields
+    return Plan(pdf, collection, out_root, slug, doc_id, version, later, source_name, move)
 
 
 def finish(p: Plan) -> None:
@@ -462,24 +507,28 @@ def dump_manifest(manifest: dict) -> str:
     return json.dumps(manifest, indent=2) + "\n"
 
 
-def with_edition_fields(manifest: dict, doc_id: str | None, version: str | None) -> dict:
+def with_edition_fields(manifest: dict, doc_id: str | None, version: str | None,
+                        later: bool = False) -> dict:
     """The manifest with doc_id and version placed after slug, where a person
-    reading it looks for what the document is."""
+    reading it looks for what the document is. `version` is left out, not
+    written as null, when the cover gave none; `version_and_later` appears
+    only when the cover makes that claim."""
+    fields = {}
+    if doc_id:
+        fields["doc_id"] = doc_id
+    if version:
+        fields["version"] = version
+        if later:
+            fields["version_and_later"] = True
     out = {}
     for key, value in manifest.items():
-        if key in ("doc_id", "version"):
+        if key in ("doc_id", "version", "version_and_later"):
             continue
         out[key] = value
         if key == "slug":
-            if doc_id:
-                out["doc_id"] = doc_id
-            if version:
-                out["version"] = version
+            out.update(fields)
     if "slug" not in manifest:
-        if doc_id:
-            out["doc_id"] = doc_id
-        if version:
-            out["version"] = version
+        out.update(fields)
     return out
 
 
@@ -509,19 +558,24 @@ def cmd_stamp(args) -> int:
     print(f"  {'document':42s} {'doc_id':30s} {'version':16s} note")
     for slug, m in manifests.items():
         doc_id = set_doc_id.get(slug) or m.get("doc_id") or default_doc_id(slug)
-        version, note = set_version.get(slug) or m.get("version"), ""
-        if not version:
+        note = ""
+        if slug in set_version:
+            version, later = split_version(set_version[slug])
+        else:
+            version, later = m.get("version"), bool(m.get("version_and_later"))
             pdf = find_source_pdf(collection, m.get("source_pdf"))
-            if pdf is None:
+            cover = read_cover(pdf) if pdf else None
+            if not version and cover:
+                version, later, note = cover.version, bool(cover.version) and cover.later, cover.note
+            elif not version:
                 note = "source PDF not found, so the cover was not read"
-            else:
-                cover = read_cover(pdf)
-                version, note = cover.version, cover.note
+            elif cover and cover.later and norm_version(cover.version) == norm_version(version):
+                later = True          # stamped before "and later" was recorded
         if not version:
             unset.append(slug)
-        new = with_edition_fields(m, doc_id, version)
-        differs = new.get("doc_id") != m.get("doc_id") or new.get("version") != m.get("version")
-        print(f"  {slug[:42]:42s} {doc_id[:30]:30s} {str(version or '-'):16s} "
+        new = with_edition_fields(m, doc_id, version, later)
+        differs = any(new.get(k) != m.get(k) for k in ("doc_id", "version", "version_and_later"))
+        print(f"  {slug[:42]:42s} {doc_id[:30]:30s} {display_version(version, later):16s} "
               f"{'' if differs else '(unchanged) '}{note}")
         if differs and not args.dry_run:
             path = collection / "docs" / slug / "manifest.json"
@@ -536,7 +590,7 @@ def cmd_stamp(args) -> int:
     if unset:
         print(f"{len(unset)} left without a version: {', '.join(unset)}\n"
               "  That is fine for a manual with one edition. Set one with --set SLUG=VERSION "
-              "before converting a second.")
+              "(VERSION+ for \"and later\") before converting a second.")
     print("Next: build_index.py, then build_search_db.py.")
     return 0
 
@@ -591,6 +645,7 @@ def cmd_status(args) -> int:
             print(f"!! {exc}")
             pins, worst = {}, 1
         docs = [{"slug": slug, "doc_id": m.get("doc_id") or slug, "version": m.get("version"),
+                 "version_and_later": bool(m.get("version_and_later")),
                  "stamped": "doc_id" in m, "title": m.get("title") or slug}
                 for slug, m in manifests.items()]
         problems = resolve_editions(docs, pins)
@@ -601,8 +656,8 @@ def cmd_status(args) -> int:
                                      ("pinned", d["is_current"] and d["doc_id"] in pins),
                                      ("latest", d["is_latest"] and not d["is_current"]),
                                      ("no doc_id in manifest", not d["stamped"])) if on]
-            print(f"  {d['doc_id'][:32]:32s} {str(d['version'] or '-'):16s} {d['slug'][:42]:42s} "
-                  f"{', '.join(marks)}")
+            print(f"  {d['doc_id'][:32]:32s} {display_version(d['version'], d['version_and_later']):16s} "
+                  f"{d['slug'][:42]:42s} {', '.join(marks)}")
         waiting = inbox_pdfs(collection)
         if waiting:
             print(f"  waiting in {INBOX_DIR}/: " + ", ".join(p.name for p in waiting))
@@ -634,7 +689,7 @@ def main() -> int:
     s.add_argument("path", type=Path, help="one collection")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--set", action="append", default=[], metavar="SLUG=VERSION",
-                   help="set this document's version (repeatable)")
+                   help="set this document's version; VERSION+ for \"and later\" (repeatable)")
     s.add_argument("--doc-id", action="append", default=[], metavar="SLUG=ID",
                    help="set this document's doc_id (repeatable)")
     s.set_defaults(run=cmd_stamp)

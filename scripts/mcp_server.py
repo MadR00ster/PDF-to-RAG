@@ -26,8 +26,10 @@ Tools:
 A manual can be in the index in several editions. Search and lookup answer
 from one edition of each -- the one the index marks current -- so two releases
 never compete for a question. Any other is read only when a call names it:
-`document` with `version`. A version that is not in the index is refused with
-the list of those that are; nothing is substituted for it.
+`document` with `version`, the tool release in use. That selects the edition
+for exactly that release, or an earlier one whose cover says "and later". A
+release no edition covers is refused with the list of those that are here;
+nothing is substituted for it.
 """
 from __future__ import annotations
 
@@ -262,6 +264,21 @@ def norm_version(version) -> str:
     return v[1:] if re.match(r"V\d", v) else v
 
 
+def version_sort(version) -> str | None:
+    """A version as text that orders releases of one manual, the way the
+    index's `version_sort` column was written: year, release and service pack
+    where there is a year ("Y-2026.03-SP2", "2026.2"), else its numbers."""
+    v = norm_version(version)
+    m = re.search(r"(20\d\d)\.(\d{1,2})", v)
+    if m:
+        sp = re.search(r"SP(\d+)(?:-(\d+))?", v)
+        key = (int(m.group(1)), int(m.group(2)), int(sp.group(1)) if sp else 0,
+               int(sp.group(2)) if sp and sp.group(2) else 0)
+    else:
+        key = tuple(int(n) for n in re.findall(r"\d+", v))
+    return ".".join(f"{n:06d}" for n in key) if key else None
+
+
 def current_only() -> str:
     """SQL limiting chunks or entities to the current edition of each manual."""
     return " AND slug IN (SELECT slug FROM documents WHERE is_current = 1)" if CORPUS.has_editions else ""
@@ -275,8 +292,16 @@ def editions_of(doc_id: str, collection: str | None = None) -> list[sqlite3.Row]
     return CORPUS.db.execute(sql + " ORDER BY collection, version_sort, slug", params).fetchall()
 
 
+def says_later(row: sqlite3.Row) -> bool:
+    return bool(row["version"]) and "version_later" in row.keys() and bool(row["version_later"])
+
+
 def edition_name(row: sqlite3.Row) -> str:
-    return row["version"] or row["slug"]
+    """An edition as it is named to a reader: the release its cover gives,
+    with "and later" where the cover says so."""
+    if not row["version"]:
+        return row["slug"]
+    return f"{row['version']} and later" if says_later(row) else row["version"]
 
 
 def describe_editions(rows: list[sqlite3.Row]) -> str:
@@ -288,9 +313,12 @@ def resolve_document(name, version=None, collection: str | None = None) -> sqlit
 
     `document` is an edition's slug or a manual's doc_id. A slug alone is that
     edition; a doc_id alone is the manual's current edition; either with a
-    version is that release of the manual. A version the index does not hold
-    is an error naming the ones it does -- the nearest one is a different
-    document, and answering from it would be a guess the caller cannot see.
+    version is the edition that applies to that tool release: the one for
+    exactly it, or failing that the nearest earlier one if its cover says
+    "and later" -- the document's own claim to cover what follows it. A
+    release no edition covers is an error naming the editions there are. An
+    earlier edition without that claim is a different document, and answering
+    from it would be a guess the caller cannot see.
     """
     name = str(name or "").strip()
     if not name:
@@ -319,8 +347,12 @@ def resolve_document(name, version=None, collection: str | None = None) -> sqlit
     for e in editions:
         if e["version"] and norm_version(e["version"]) == norm_version(version):
             return e
+    wanted = version_sort(version)
+    earlier = [e for e in editions if wanted and e["version_sort"] and e["version_sort"] < wanted]
+    if earlier and says_later(earlier[-1]):
+        return earlier[-1]
     raise ValueError(
-        f"No {version} edition of `{doc_id}` is in this corpus. Editions here: "
+        f"No edition of `{doc_id}` in this corpus covers {version}. Editions here: "
         f"{describe_editions(editions)}. Nothing was substituted: use one of these, or say that "
         f"{version} is not available."
     )
@@ -340,7 +372,7 @@ def document_label(slug: str, title: str | None = None) -> str:
     title = title or (doc["title"] if doc else slug)
     if doc is None or not CORPUS.has_editions:
         return f"{title} ({slug})"
-    version = f", {doc['version']}" if doc["version"] and doc["version"] not in title else ""
+    version = f", {edition_name(doc)}" if doc["version"] and doc["version"] not in title else ""
     if doc["is_current"]:
         return f"{title}{version} ({slug})"
     current = next((e for e in editions_of(doc["doc_id"], doc["collection"]) if e["is_current"]), None)
@@ -719,7 +751,7 @@ def tool_list_documents(args: dict) -> str:
             if gap else f"{r['section_count']} sections"
         )
         pages = f", {r['page_count']} PDF pages" if r["page_count"] else ""
-        version = f", {r['version']}" if versioned and r["version"] and r["version"] not in r["title"] else ""
+        version = f", {edition_name(r)}" if versioned and r["version"] and r["version"] not in r["title"] else ""
         out.append(f"- `{r['slug']}` — {r['title']}{version}\n"
                    f"  {coverage}{pages}, {r['char_count']:,} chars{extra}")
     out.append("\nPass a slug as `document` to `search_docs` to search just that one.")
@@ -1053,9 +1085,10 @@ def build_tools() -> list[dict]:
         coll_schema["enum"] = collections
     doc_schema = {"type": "string", "description": "An edition's slug, or a manual's name to mean its "
                                                    "current edition (see list_documents)."}
-    version_schema = {"type": "string", "description": "Read this release of the manual instead, e.g. "
-                                                       "'2025.2'. Needs `document`. A release that is "
-                                                       "not in the corpus is refused, not approximated."}
+    version_schema = {"type": "string", "description": "The tool release in use, e.g. '2025.2': read the "
+                                                       "edition that applies to it instead. Needs "
+                                                       "`document`. A release no edition covers is "
+                                                       "refused, not approximated."}
 
     return [
         {

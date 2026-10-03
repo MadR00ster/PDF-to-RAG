@@ -46,8 +46,9 @@ Per collection:
   index.json, PDFs neither converted nor marked superseded.
   editions     documents sharing a `doc_id` are releases of one manual. Each
                needs a version the others can be ordered against, no two the
-               same, and a pin in current_versions.json has to name one of
-               them -- build_search_db.py stops on any of these. Two documents
+               same, and a pin in current_versions.json has to name a release
+               one of them applies to -- build_search_db.py stops on any of
+               these. Two documents
                with one title and different doc_ids are reported too: both
                would answer every search.
 
@@ -203,7 +204,7 @@ CHECKS = {
     # editions
     "edition-unordered": (FAIL, "a manual with several editions where one has no version with a number in it: which is newest cannot be told, and build_search_db.py stops"),
     "edition-duplicate-version": (FAIL, "two editions of one manual with the same version; build_search_db.py stops"),
-    "pin-invalid": (FAIL, "current_versions.json is unreadable, or pins a doc_id or a version that is not in this collection; build_search_db.py stops"),
+    "pin-invalid": (FAIL, "current_versions.json is unreadable, or pins a doc_id that is not in this collection or a release none of its editions applies to; build_search_db.py stops"),
     "edition-ungrouped": (WARN, "two documents with the same title and different doc_ids: if they are editions of one manual, both answer every search"),
     "superseded-invalid": (WARN, "superseded.json is unreadable, an entry lacks file/superseded_by, or it names a slug that is not here"),
 }
@@ -801,10 +802,13 @@ def version_numbers(version) -> tuple | None:
 
 def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> None:
     lines: dict[str, list[tuple[str, object]]] = {}
+    later: dict[str, set] = {}
     titles: dict[str, list[tuple[str, str]]] = {}
     for folder, m in sorted(manifests.items()):
         doc_id = str(m.get("doc_id") or m.get("slug") or folder)
         lines.setdefault(doc_id, []).append((folder, m.get("version")))
+        if m.get("version_and_later") is True:
+            later.setdefault(doc_id, set()).add(version_numbers(m.get("version")))
         # The release is part of some titles ("VCS User Guide, Version
         # T-2022.06") and is exactly what two editions' titles differ by.
         title = str(m.get("title") or "")
@@ -842,10 +846,16 @@ def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> None:
     for doc_id, version in pins.items():
         if doc_id not in lines:
             f.add("pin-invalid", f"{doc_id!r} is not a doc_id here")
-        elif version_numbers(version) is None or version_numbers(version) not in {
-                version_numbers(v) for _folder, v in lines[doc_id]}:
-            have = ", ".join(str(v) for _folder, v in lines[doc_id])
-            f.add("pin-invalid", f"{doc_id} pinned to {version!r}; editions here: {have}")
+            continue
+        # A pin names the tool release in use. An edition for exactly that
+        # release applies to it; so does the nearest earlier edition, if its
+        # cover says "and later".
+        wanted = version_numbers(version)
+        have = {version_numbers(v) for _folder, v in lines[doc_id]} - {None}
+        earlier = [n for n in have if wanted is not None and n < wanted]
+        if wanted is None or not (wanted in have or (earlier and max(earlier) in later.get(doc_id, ()))):
+            f.add("pin-invalid", f"{doc_id} pinned to {version!r}; editions here: "
+                                 + ", ".join(str(v) for _folder, v in lines[doc_id]))
 
 
 def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Path], reports: list[dict]) -> Findings:

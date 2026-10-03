@@ -224,16 +224,24 @@ fields tie them together:
 
 - `doc_id` names the manual every edition shares (`tshell-ref`). It defaults
   to the slug without its release (`tshell-ref-2026-2`); `--doc-id` sets it.
-- `version` is the release, as the PDF's cover prints it.
+- `version` is the tool release the document applies to, as the PDF's cover
+  prints it. `version_and_later` is set when the cover says "and later".
 
 **Read the version from the cover, not the filename.** On one corpus of 44
-PDFs, twelve filenames carried no version and two named a release their cover
-did not. The converters read the first three pages and record a version only when
-it is unambiguous. When the cover names two, qualifies one ("2023.1 and
-later", which is where support starts, not what this document is), or
-disagrees with the filename, `version` is left out and the converter says why.
-Set it with `--version`. A manual with one edition does not need one; a second
-edition cannot be ordered without it, and the index build stops.
+PDFs, twelve filenames carried no version, and two named a later release than
+their cover. Those two covers read "Software Version 2023.1 and later": the
+vendor ships the manual unchanged with every release and renames the file. So
+a version is not "which release of the documentation is this" but "which tool
+release does this document apply to", and "and later" is recorded with it
+rather than thrown away.
+
+The converters read the first three pages and record a version only when it is
+unambiguous. When the cover names two, when the filename names an earlier
+release than the cover, or a different one where the cover makes no "and
+later" claim, `version` is left out and the converter says why. Set it with
+`--version` (`2023.1+` for "2023.1 and later"). A manual with one edition does
+not need one; a second edition cannot be ordered without it, and the index
+build stops.
 
 **One edition per manual is current**: the newest, unless
 `<collection>/current_versions.json` pins another by `doc_id`. Search and
@@ -242,11 +250,19 @@ was with one release converted. Any other edition is read when a call names
 it: `document` (a slug, or a doc_id) with `version`. Every result names its
 version, and one from a non-current edition says so.
 
-**A version that is not in the corpus is refused, never approximated.** The
-server answers with the editions it does have. The release nearest the one
-asked for is a different document, and serving it would be a guess the caller
-cannot see. The same goes for a pin: one that names a version not on disk
-stops the index build and leaves the previous index in place.
+**`version` on a call is the tool release the user is on.** It selects the
+edition for exactly that release. Failing that, it selects the nearest earlier
+edition if that one says "and later": that is the document's own claim to
+cover what follows it, until the next edition. An edition for 2023.1 "and
+later" answers for 2025.2; one for 2026.1 that makes no such claim does not
+answer for 2026.2.
+
+**A release no edition covers is refused, never approximated.** The server
+answers with the editions it does have. An earlier edition that does not claim
+to cover later releases is a different document, and serving it would be a
+guess the caller cannot see. A pin works the same way: it names the release in
+use, and one that no edition covers stops the index build and leaves the
+previous index in place.
 
 **Vendors reuse filenames** (`ptug.pdf` every release). A PDF from `new_docs/`
 whose name is already in `source/` is filed with its version on the end

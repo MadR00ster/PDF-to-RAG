@@ -361,7 +361,7 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
         "toc": [{"level": lvl, "title": t.strip(), "page": pg} for lvl, t, pg in toc],
         "sections": entries,
         "full_md_chars": len(full_md),
-    }, plan.doc_id, plan.version)
+    }, plan.doc_id, plan.version, plan.later)
     # ensure_ascii=True: a non-UTF-8 default locale would otherwise mangle this
     # for any tool that opens it without an explicit encoding= argument.
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

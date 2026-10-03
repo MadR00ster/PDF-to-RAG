@@ -35,9 +35,10 @@ page range where the converter can supply one, and, in reference documents,
 the name of the entry it belongs to.
 
 A manual can be converted in several releases. Each is its own document with
-the release read from the PDF's cover, search answers from one of them per
-manual (the newest unless you pin another), and the rest are read when a
-question names their version.
+the tool release it applies to read from the PDF's cover, search answers from
+one of them per manual (the newest unless you pin another), and the rest are
+read when a question names the release in use. A manual whose cover says
+"2023.1 and later" answers for the releases after it too.
 
 ## What the MCP server does
 

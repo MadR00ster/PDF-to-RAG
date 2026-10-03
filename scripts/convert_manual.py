@@ -276,7 +276,7 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
         "toc": [{"level": lvl, "title": t.strip(), "page": pg} for lvl, t, pg in doc.get_toc()],
         "sections": section_entries,
         "full_md_chars": len(md_text),
-    }, plan.doc_id, plan.version)
+    }, plan.doc_id, plan.version, plan.later)
     doc.close()
     # ensure_ascii=True: this machine's Python defaults to a non-UTF-8
     # locale (cp950), so escaping non-ASCII keeps manifest.json readable by

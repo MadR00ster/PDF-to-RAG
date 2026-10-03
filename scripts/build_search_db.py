@@ -12,7 +12,7 @@ drawn labels are indexed with the section it illustrates.
 
 Editions: documents sharing a `doc_id` are releases of one manual. All of them
 are indexed, and exactly one per manual is marked current -- the newest, or
-the one <collection>/current_versions.json pins. The server answers from the
+the one that applies to the release <collection>/current_versions.json pins. The server answers from the
 current ones unless asked for another by version. A manual whose editions
 cannot be ordered, or a pin on a version that is not here, stops the build:
 answering from an edition nobody chose is worse than not rebuilding.
@@ -78,7 +78,8 @@ CREATE TABLE documents (
     collection_dir TEXT NOT NULL,
     title         TEXT NOT NULL,
     doc_id        TEXT NOT NULL,   -- the manual this is an edition of
-    version       TEXT,            -- the release it documents, as its cover prints it
+    version       TEXT,            -- the tool release it applies to, as its cover prints it
+    version_later INTEGER NOT NULL DEFAULT 0,   -- the cover says "and later"
     version_sort  TEXT,            -- the same, as text that orders a manual's editions
     is_latest     INTEGER NOT NULL DEFAULT 1,
     is_current    INTEGER NOT NULL DEFAULT 1,   -- the edition search answers from
@@ -280,7 +281,8 @@ def resolve_editions(documents: list) -> tuple[dict[str, dict], list[str]]:
     for _key, _display, manifest_path, manifest in documents:
         slug = manifest["slug"]
         by_collection.setdefault(manifest_path.parent.parent.parent, []).append(
-            {"slug": slug, "doc_id": manifest.get("doc_id") or slug, "version": manifest.get("version")})
+            {"slug": slug, "doc_id": manifest.get("doc_id") or slug, "version": manifest.get("version"),
+             "version_and_later": bool(manifest.get("version_and_later"))})
     resolved, problems = {}, []
     for collection_dir, docs in by_collection.items():
         try:
@@ -320,7 +322,8 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
             total += n
             e = edition_of[manifest["slug"]]
             note = "" if e["is_current"] else "  (not current)"
-            print(f"{key:20s} {manifest['slug']:42s} {str(e['version'] or '-'):16s} {n:5d} chunks{note}")
+            shown = editions.display_version(e["version"], e["version_and_later"])
+            print(f"{key:20s} {manifest['slug']:42s} {shown:16s} {n:5d} chunks{note}")
         print(f"\n{len(documents)} documents, {total} chunks")
         return 0
 
@@ -411,11 +414,12 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         pdf = editions.find_source_pdf(doc_dir.parent.parent, manifest.get("source_pdf"))
         db.execute(
             "INSERT INTO documents (slug, collection, collection_dir, title, doc_id, version,"
-            " version_sort, is_latest, is_current, source_pdf, source_path,"
+            " version_later, version_sort, is_latest, is_current, source_pdf, source_path,"
             " page_count, section_count, indexed_count, char_count, has_pages,"
-            " has_entities, figure_count, toc_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " has_entities, figure_count, toc_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 slug, key, display, title, edition["doc_id"], edition["version"],
+                1 if edition["version"] and edition["version_and_later"] else 0,
                 editions.version_sort(edition["version"]),
                 1 if edition["is_latest"] else 0, 1 if edition["is_current"] else 0,
                 manifest.get("source_pdf"),

@@ -36,8 +36,9 @@ here, not a coverage percentage:
   * editions -- a PDF dropped in new_docs/ is filed under source/ with its
     release in the manifest, a second release of the same filename does not
     overwrite the first, search answers from one edition per manual, a version
-    that is not there is refused rather than approximated, and a comparison
-    reads the whole entry, past the point where a lookup is cut.
+    that is not there is refused rather than approximated, a cover that says
+    "and later" answers for later releases and no other does, and a
+    comparison reads the whole entry, past the point where a lookup is cut.
 """
 from __future__ import annotations
 
@@ -1200,6 +1201,62 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         r = run("check_corpus.py", str(corpus), "--strict")
         self.assertEqual(r.returncode, 0, "a migrated corpus no longer passes strictly:\n" + r.stdout)
+
+
+    def test_25_a_cover_that_says_and_later_covers_later_releases(self):
+        """A manual the vendor ships unchanged says "2023.1 and later" on its
+        cover and takes each release's filename. It is the edition for every
+        release from 2023.1 until the next edition, because it says so. An
+        edition that makes no such claim answers for its own release only."""
+        root = self.tmp / "LaterRoot"
+        coll = root / "Tools"
+        for folder in ("new_docs", "docs"):
+            (coll / folder).mkdir(parents=True)
+        gadget_fixture(coll / "new_docs" / "probe_guide_2025_2.pdf", "2023.1 and later", ["Probing", "Limits"])
+        gadget_fixture(coll / "new_docs" / "probe_guide_2026_1.pdf", "2026.1", ["Probing", "Limits", "Remote Probing"])
+        for name in ("probe_guide_2025_2.pdf", "probe_guide_2026_1.pdf"):
+            r = run("convert_manual.py", str(coll / "new_docs" / name), "--title", "Probe Guide")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        old = json.loads((coll / "docs" / "probe-guide-2023-1" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual((old["version"], old.get("version_and_later")), ("2023.1", True),
+                         "the cover's version was dropped because the filename names a later release")
+        new = json.loads((coll / "docs" / "probe-guide-2026-1" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertNotIn("version_and_later", new)
+
+        # A filename naming an earlier release than the cover contradicts it.
+        editions = load_script("editions")
+        gadget_fixture(self.tmp / "probe_guide_2022_1.pdf", "2023.1 and later", ["Probing"])
+        self.assertIsNone(editions.read_cover(self.tmp / "probe_guide_2022_1.pdf").version)
+
+        db = root / "mcp-index.sqlite3"
+        r = run("build_search_db.py", "--root", str(root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.server.CORPUS = corpus = self.server.Corpus(db)
+        self.addCleanup(lambda: corpus._db and corpus._db.close())
+        resolve = self.server.resolve_document
+        self.assertEqual(resolve("probe-guide", "2025.2")["slug"], "probe-guide-2023-1")
+        self.assertEqual(resolve("probe-guide", "2023.1")["slug"], "probe-guide-2023-1")
+        self.assertEqual(resolve("probe-guide", "2026.1")["slug"], "probe-guide-2026-1")
+        self.assertEqual(resolve("probe-guide")["slug"], "probe-guide-2026-1")
+        for release, why in (("2022.4", "a release before the first edition"),
+                             ("2026.2", "a release after an edition that does not say 'and later'")):
+            with self.assertRaises(ValueError, msg=f"{why} was answered"):
+                resolve("probe-guide", release)
+        self.assertIn("2023.1 and later", self.server.tool_search_docs(
+            {"query": "probing", "document": "probe-guide", "version": "2025.2"}))
+        corpus._db.close()
+
+        # A pin names the release in use, and resolves the same way.
+        (coll / "current_versions.json").write_text(json.dumps({"probe-guide": "2025.2"}), encoding="utf-8")
+        r = run("build_search_db.py", "--root", str(root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.server.CORPUS = corpus = self.server.Corpus(db)
+        self.addCleanup(lambda: corpus._db and corpus._db.close())
+        self.assertEqual({h["slug"] for h in self.server.search("probing")}, {"probe-guide-2023-1"},
+                         "a pin on a release the older edition covers did not select it")
+        corpus._db.close()
+        r = run("check_corpus.py", str(coll), "--no-pdf")
+        self.assertNotIn("pin-invalid", r.stdout, "the checker rejects a pin the index build accepts")
 
 
 if __name__ == "__main__":
