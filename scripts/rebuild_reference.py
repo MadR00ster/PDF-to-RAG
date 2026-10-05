@@ -62,6 +62,7 @@ def _load(name: str):
 
 cm = _load("convert_manual")
 ec = _load("enrich_chunks")
+editions = cm.editions
 
 IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*(\s+-[a-z0-9_]+)*$", re.I)
 # An error/warning message code ("ADES-002", "CMD-082"): a reference entry too.
@@ -150,6 +151,7 @@ def main() -> None:
     )
     ap.add_argument("--slug", required=True)
     ap.add_argument("--out-root", type=Path)
+    editions.add_arguments(ap)
     ap.add_argument(
         "--replace",
         action="store_true",
@@ -158,17 +160,26 @@ def main() -> None:
     args = ap.parse_args()
 
     pdf_path = args.pdf.resolve()
-    out_root = (args.out_root or pdf_path.parent / "docs").resolve()
+    if not pdf_path.is_file():
+        sys.exit(f"No such file: {pdf_path}")
+    out_root = (args.out_root or editions.collection_of(pdf_path) / "docs").resolve()
     out_dir = out_root / args.slug
     if out_dir.exists() and not args.replace:
         sys.exit(f"{out_dir} exists -- pass --replace to rebuild it")
 
+    # A rebuild keeps what the document already is: a title, doc_id or version
+    # set by hand must survive --replace.
+    prior = {}
+    if (out_dir / "manifest.json").exists():
+        prior = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8-sig"))
     if not args.title:
-        prior = out_dir / "manifest.json"
-        if not prior.exists():
+        if "title" not in prior:
             sys.exit("--title is required when docs/<slug>/manifest.json does not exist")
-        args.title = json.loads(prior.read_text(encoding="utf-8-sig"))["title"]
+        args.title = prior["title"]
         print(f"[{args.slug}] title from existing manifest: {args.title!r}", flush=True)
+    plan = editions.plan(pdf_path, args.slug, out_root, args.version or prior.get("version"),
+                         args.doc_id or prior.get("doc_id"),
+                         later=not args.version and prior.get("version_and_later") is True)
 
     print(f"[{args.slug}] extracting {pdf_path.name} with page tracking ...", flush=True)
     full_md, page_starts, page_numbers, furn_removed = build_pages(pdf_path, args.title)
@@ -289,8 +300,8 @@ def main() -> None:
     (staging / "full.md").write_text(full_md, encoding="utf-8")
     (staging / "manifest.json").write_text(
         json.dumps(
-            {
-                "source_pdf": pdf_path.name,
+            editions.with_edition_fields({
+                "source_pdf": plan.source_name,
                 "title": args.title,
                 "slug": args.slug,
                 "page_count": doc.page_count,
@@ -299,12 +310,13 @@ def main() -> None:
                 ],
                 "sections": entries,
                 "full_md_chars": len(full_md),
-            },
+            }, plan.doc_id, plan.version, plan.later),
             indent=2,
         )
         + "\n",
         encoding="utf-8",
     )
+    doc.close()
 
     if out_dir.exists():
         # Keep the backup OUTSIDE docs/ -- build_index.py globs docs/*/ for
@@ -322,6 +334,7 @@ def main() -> None:
             flush=True,
         )
     staging.rename(out_dir)
+    editions.finish(plan)
 
     attributed = sum(1 for e in entries if e["command"])
     print(

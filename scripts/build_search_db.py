@@ -10,6 +10,13 @@ Figures come along once extract_figures.py has run: each document's
 figures.json becomes rows get_figure serves, and each figure's caption and
 drawn labels are indexed with the section it illustrates.
 
+Editions: documents sharing a `doc_id` are releases of one manual. All of them
+are indexed, and exactly one per manual is marked current -- the newest, or
+the one that applies to the release <collection>/current_versions.json pins. The server answers from the
+current ones unless asked for another by version. A manual whose editions
+cannot be ordered, or a pin on a version that is not here, stops the build:
+answering from an edition nobody chose is worse than not rebuilding.
+
 Standard library only -- FTS5 ships inside Python's bundled SQLite, so a
 corpus becomes queryable from an editor with no packages, no API key and no
 network.
@@ -17,6 +24,13 @@ network.
 The index is a snapshot, not a live view: rerun this after converting,
 reconverting or enriching anything. The build is atomic (temp file, then
 rename), so a failed run leaves the previous index in place.
+
+--emit-vscode-config also copies mcp_server.py beside the index and writes
+.vscode/mcp.json with paths relative to the corpus folder. The server is one
+standard-library file, so index and server then travel together: the folder
+can be synced to another machine and served there with nothing but Python,
+and no path in its config names the machine that built it. Later builds
+refresh the copy, so the server always matches the index it reads.
 
 Layout it expects -- either shape works, and both are auto-detected:
 
@@ -34,13 +48,18 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
+
 DEFAULT_DB_NAME = "mcp-index.sqlite3"
+SERVER_NAME = "mcp_server.py"
 
 # Reads are dominated by the filesystem, and on a cloud-synced corpus
 # (OneDrive, Dropbox, iCloud) by hydrating placeholder files -- network
@@ -58,7 +77,14 @@ CREATE TABLE documents (
     collection    TEXT NOT NULL,
     collection_dir TEXT NOT NULL,
     title         TEXT NOT NULL,
+    doc_id        TEXT NOT NULL,   -- the manual this is an edition of
+    version       TEXT,            -- the tool release it applies to, as its cover prints it
+    version_later INTEGER NOT NULL DEFAULT 0,   -- the cover says "and later"
+    version_sort  TEXT,            -- the same, as text that orders a manual's editions
+    is_latest     INTEGER NOT NULL DEFAULT 1,
+    is_current    INTEGER NOT NULL DEFAULT 1,   -- the edition search answers from
     source_pdf    TEXT,
+    source_path   TEXT,            -- the PDF relative to the corpus root, if it was found
     page_count    INTEGER,
     section_count INTEGER,   -- sections this document has on disk
     indexed_count INTEGER,   -- how many of them made it into the index
@@ -224,15 +250,38 @@ def find_collections(root: Path) -> list[tuple[str, str, Path]]:
     return found
 
 
-def load_documents(root: Path):
+def load_documents(root: Path) -> tuple[list, list[str]]:
+    """Every document's manifest, and the manifests that could not be used.
+
+    The second list stops the build. A manifest that is skipped is a document
+    missing from the index with nothing to say so, and since editions it is
+    worse than that: if it was a manual's newest edition, an older one is
+    marked current and every default answer quietly changes release. Which
+    edition is current can only be decided from all of them.
+    """
+    documents, failed = [], []
     for key, display, docs in find_collections(root):
         for manifest_path in sorted(docs.glob("*/manifest.json")):
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-            except (OSError, json.JSONDecodeError) as exc:
-                print(f"  !! skipping {manifest_path}: {exc}", file=sys.stderr)
+            manifest, why, delay = None, "", 0.3
+            for attempt in range(3):
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+                    break
+                except OSError as exc:        # a cloud placeholder still hydrating: retry, as read_chunk does
+                    why = str(exc)
+                    if attempt < 2:
+                        time.sleep(delay)
+                        delay *= 2
+                except ValueError as exc:     # not JSON, or not UTF-8: reading again will not help
+                    why = str(exc)
+                    break
+            if manifest is not None and not (isinstance(manifest, dict) and manifest.get("slug")):
+                manifest, why = None, "it is not a manifest with a slug"
+            if manifest is None:
+                failed.append(f"{manifest_path.relative_to(root).as_posix()}: {why}")
                 continue
-            yield key, display, manifest_path, manifest
+            documents.append((key, display, manifest_path, manifest))
+    return documents, failed
 
 
 def load_figures(doc_dir: Path) -> list[dict]:
@@ -247,8 +296,40 @@ def load_figures(doc_dir: Path) -> list[dict]:
         return []
 
 
+def resolve_editions(documents: list) -> tuple[dict[str, dict], list[str]]:
+    """{slug: doc_id, version, is_latest, is_current} for every document, and
+    whatever stops that being decided. Editions are grouped within a
+    collection: two vendors may both have a `user-guide`."""
+    by_collection: dict[Path, list[dict]] = {}
+    for _key, _display, manifest_path, manifest in documents:
+        slug = manifest["slug"]
+        by_collection.setdefault(manifest_path.parent.parent.parent, []).append(
+            {"slug": slug, "doc_id": manifest.get("doc_id") or slug, "version": manifest.get("version"),
+             # Exactly true, as check_corpus.py reads it: "false" in quotes is
+             # a string, and a string is not a claim.
+             "version_and_later": manifest.get("version_and_later") is True})
+    resolved, problems = {}, []
+    for collection_dir, docs in by_collection.items():
+        try:
+            pins = editions.load_pins(collection_dir)
+        except ValueError as exc:
+            pins = {}
+            problems.append(str(exc))
+        problems += [f"{collection_dir.name}: {p}" for p in editions.resolve_editions(docs, pins)]
+        resolved.update((d["slug"], d) for d in docs)
+    return resolved, problems
+
+
 def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: bool = True) -> int:
-    documents = list(load_documents(root))
+    documents, failed = load_documents(root)
+    if failed:
+        print("Manifests that could not be read:", file=sys.stderr)
+        for line in failed:
+            print(f"  !! {line}", file=sys.stderr)
+        print("Nothing was written. An index built without these would leave their documents out, and "
+              "could answer from an older edition of a manual whose newest is among them. Fix or remove "
+              "them, then rerun.", file=sys.stderr)
+        return 1
     if not documents:
         print(
             f"No documents found under {root}.\n"
@@ -258,12 +339,24 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         )
         return 1
 
+    edition_of, problems = resolve_editions(documents)
+    if problems:
+        print("Editions that cannot be ordered, or pins that match nothing:", file=sys.stderr)
+        for p in problems:
+            print(f"  !! {p}", file=sys.stderr)
+        print("Nothing was written. Set the missing versions (editions.py stamp --set) or fix "
+              f"{editions.PINS_FILE}, then rerun.", file=sys.stderr)
+        return 1
+
     if stats_only:
         total = 0
         for key, _display, _mpath, manifest in documents:
             n = len(manifest.get("sections", []))
             total += n
-            print(f"{key:20s} {manifest['slug']:42s} {n:5d} chunks")
+            e = edition_of[manifest["slug"]]
+            note = "" if e["is_current"] else "  (not current)"
+            shown = editions.display_version(e["version"], e["version_and_later"])
+            print(f"{key:20s} {manifest['slug']:42s} {shown:16s} {n:5d} chunks{note}")
         print(f"\n{len(documents)} documents, {total} chunks")
         return 0
 
@@ -350,12 +443,20 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
+        edition = edition_of[slug]
+        pdf = editions.find_source_pdf(doc_dir.parent.parent, manifest.get("source_pdf"))
         db.execute(
-            "INSERT INTO documents (slug, collection, collection_dir, title, source_pdf,"
+            "INSERT INTO documents (slug, collection, collection_dir, title, doc_id, version,"
+            " version_later, version_sort, is_latest, is_current, source_pdf, source_path,"
             " page_count, section_count, indexed_count, char_count, has_pages,"
-            " has_entities, figure_count, toc_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " has_entities, figure_count, toc_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                slug, key, display, title, manifest.get("source_pdf"),
+                slug, key, display, title, edition["doc_id"], edition["version"],
+                1 if edition["version"] and edition["version_and_later"] else 0,
+                editions.version_sort(edition["version"]),
+                1 if edition["is_latest"] else 0, 1 if edition["is_current"] else 0,
+                manifest.get("source_pdf"),
+                pdf.relative_to(root).as_posix() if pdf else None,
                 manifest.get("page_count"), len(wanted), len(rows), chars_here,
                 1 if has_pages else 0,
                 1 if entity_spans else 0,
@@ -384,17 +485,26 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         gap = len(wanted) - len(rows)
         note = f"  !! {gap} unreadable" if gap else ""
         figs = f"  {len(figure_rows):>5} figures" if figure_rows else ""
+        if not edition["is_current"]:
+            note += "  (not current)"
         print(f"  {key:18s} {slug:40s} {len(rows):5d} chunks  {chars_here:>10,} chars{figs}{note}")
 
     for k, v in (
         ("built_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
         ("root", str(root)),
+        # Where the corpus is from the index, when the index is inside it:
+        # "." by default, ".." for --out <root>/indexes/x.sqlite3. A corpus
+        # that is moved or synced takes its index along, and the server finds
+        # the figures and PDFs from this rather than from the path above,
+        # which names the machine that built it.
+        ("root_from_index", os.path.relpath(root, out_path.parent)
+            if out_path.resolve().is_relative_to(root) else ""),
         ("corpus_name", root.name),
         ("chunks", str(total_chunks)),
         ("figures", str(total_figures)),
         ("figure_text", "1" if figure_text else "0"),
         ("unreadable", str(len(unreadable))),
-        ("schema_version", "2"),
+        ("schema_version", "3"),
     ):
         db.execute("INSERT INTO meta (key, value) VALUES (?,?)", (k, v))
 
@@ -426,13 +536,37 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
     return 0
 
 
+COPY_NOTE = (
+    "# A copy, placed here by PDF-to-RAG's build_search_db.py so this folder can be\n"
+    "# served from any machine it is synced to. Do not edit it: the next index\n"
+    "# build replaces it. The original is scripts/mcp_server.py in that repo.\n"
+)
+
+
+def install_server(root: Path) -> Path:
+    """Copy mcp_server.py to the corpus root, beside the index it serves.
+
+    A config that names this checkout by path works on one machine. The
+    server needs nothing but the standard library and the index, so a copy
+    beside the index makes the corpus folder self-contained instead.
+    """
+    source = Path(__file__).resolve().parent / SERVER_NAME
+    first, rest = source.read_text(encoding="utf-8").split("\n", 1)
+    target = root / SERVER_NAME
+    target.write_text(f"{first}\n{COPY_NOTE}{rest}", encoding="utf-8")
+    shutil.copymode(source, target)
+    return target
+
+
 def emit_vscode_config(root: Path, db_path: Path) -> Path:
     """Write .vscode/mcp.json so VS Code picks the corpus up on folder open.
 
-    Points at this checkout's mcp_server.py with an explicit --db, because the
-    scripts are shared across corpora while each index belongs to one.
+    Every path is relative to the workspace folder -- the server copy
+    install_server() places at the corpus root, and the index when it is
+    inside the corpus -- so the file is right on any machine the corpus is
+    opened on. `python` rather than this interpreter's path, for the same
+    reason.
     """
-    server = (Path(__file__).resolve().parent / "mcp_server.py")
     config_path = root / ".vscode" / "mcp.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -444,11 +578,39 @@ def emit_vscode_config(root: Path, db_path: Path) -> Path:
             print(f"  !! {config_path} is not valid JSON; leaving it alone", file=sys.stderr)
             return config_path
 
+    try:
+        db_arg = "${workspaceFolder}/" + db_path.relative_to(root).as_posix()
+    except ValueError:
+        db_arg = str(db_path)             # --out put the index outside the corpus
+
+    def same_path(arg: str, path: Path) -> bool:
+        text = str(arg).replace("${workspaceFolder}", str(root))
+        return os.path.normcase(os.path.abspath(text)) == os.path.normcase(os.path.abspath(path))
+
+    def serves_this_index(cfg) -> bool:
+        """Whether an entry is this corpus's server: by the index it opens,
+        or with no --db, by being the copy that sits beside this index.
+        Running a file called mcp_server.py is not enough -- a workspace can
+        register another corpus the same way, and rewriting that entry would
+        point its tools at this index."""
+        if not isinstance(cfg, dict):
+            return False
+        args = [str(a) for a in cfg.get("args") or []]
+        if "--db" in args[:-1]:
+            return same_path(args[args.index("--db") + 1], db_path)
+        return db_path == root / DEFAULT_DB_NAME and any(same_path(a, root / SERVER_NAME) for a in args)
+
     servers = existing.setdefault("servers", {})
-    servers[slugify(root.name) + "-docs"] = {
+    # This corpus's entry is rewritten under whatever name it was given;
+    # every other entry is left as it is.
+    mine = [name for name, cfg in servers.items() if serves_this_index(cfg)]
+    name = mine[0] if mine else slugify(root.name) + "-docs"
+    while name in servers and not serves_this_index(servers[name]):
+        name += "-2"
+    servers[name] = {
         "type": "stdio",
         "command": "python",
-        "args": [str(server), "--db", str(db_path)],
+        "args": ["${workspaceFolder}/" + SERVER_NAME, "--db", db_arg],
     }
     config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     return config_path
@@ -470,7 +632,8 @@ def main() -> int:
     ap.add_argument(
         "--emit-vscode-config",
         action="store_true",
-        help="also write <root>/.vscode/mcp.json so VS Code finds the server",
+        help="also copy mcp_server.py to <root> and write <root>/.vscode/mcp.json, "
+             "with paths relative to the corpus, so VS Code finds the server",
     )
     ap.add_argument(
         "--no-figure-text",
@@ -489,9 +652,14 @@ def main() -> int:
     print(f"Indexing corpus at {root}")
     code = build(root, out_path, stats_only=args.stats_only, figure_text=not args.no_figure_text)
 
-    if args.emit_vscode_config and not args.stats_only and out_path.exists():
+    built = not args.stats_only and code != 1 and out_path.exists()
+    # A copy already at the root is refreshed by every build: an index and a
+    # server from different versions of this repo need not agree on the schema.
+    if built and (args.emit_vscode_config or (root / SERVER_NAME).is_file()):
+        print(f"\nServer copy -> {install_server(root)}")
+    if built and args.emit_vscode_config:
         written = emit_vscode_config(root, out_path)
-        print(f"\nVS Code config -> {written}\nReload the window; the server appears in Agent mode's tool picker.")
+        print(f"VS Code config -> {written}\nReload the window; the server appears in Agent mode's tool picker.")
     return code
 
 

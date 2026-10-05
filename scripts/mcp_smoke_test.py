@@ -9,6 +9,8 @@ on any corpus the skill produces.
 
   python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
   python scripts/mcp_smoke_test.py --db ... -v     # print each tool's output
+  python scripts/mcp_smoke_test.py --db ... --server <corpus>/mcp_server.py
+                                                   # the copy beside an index
 
 Exit code is 0 only if every check passed, so it can gate a rebuild.
 """
@@ -34,9 +36,9 @@ failures: list[str] = []
 
 
 class Client:
-    def __init__(self, db: Path):
+    def __init__(self, db: Path, server: Path = SERVER):
         self.proc = subprocess.Popen(
-            [sys.executable, str(SERVER), "--db", str(db)],
+            [sys.executable, str(server), "--db", str(db)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", bufsize=1,
         )
@@ -76,16 +78,32 @@ def probes(db: Path) -> dict:
     """Pull real terms out of the index so the checks suit this corpus."""
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    out = {"entity": None, "collection": None, "figure": None}
-    row = con.execute("SELECT slug, title FROM documents ORDER BY section_count DESC LIMIT 1").fetchone()
+    out = {"entity": None, "collection": None, "figure": None, "editions": False, "latest": None}
+    if "doc_id" in {r["name"] for r in con.execute("PRAGMA table_info(documents)")}:
+        out["editions"] = True
+        # The newest edition of a manual that has several, by its own slug. A
+        # doc_id would mean the current edition, which a pin may make the
+        # earliest -- nothing to compare it with, in a healthy corpus -- and
+        # two collections may share one.
+        row = con.execute(
+            "SELECT slug FROM documents WHERE is_latest = 1 AND (collection, doc_id) IN"
+            " (SELECT collection, doc_id FROM documents GROUP BY collection, doc_id HAVING COUNT(*) > 1)"
+            " LIMIT 1").fetchone()
+        out["latest"] = row["slug"] if row else None
+    # Probe terms come from current editions, because that is what a search
+    # without a document reads: a heading that exists only in an edition a
+    # pin has set aside would fail a corpus with nothing wrong with it.
+    current = " AND slug IN (SELECT slug FROM documents WHERE is_current = 1)" if out["editions"] else ""
+    row = con.execute("SELECT slug, title FROM documents WHERE 1 = 1" + current
+                      + " ORDER BY section_count DESC LIMIT 1").fetchone()
     out["document"], out["title_word"] = row["slug"], (row["title"].split() or ["the"])[0]
-    row = con.execute("SELECT name FROM entities LIMIT 1").fetchone()
+    row = con.execute("SELECT name FROM entities WHERE 1 = 1" + current + " LIMIT 1").fetchone()
     if row:
         out["entity"] = row["name"]
     row = con.execute("SELECT DISTINCT collection FROM documents LIMIT 1").fetchone()
     if row:
         out["collection"] = row["collection"]
-    row = con.execute("SELECT heading FROM chunks WHERE length(heading) > 12 LIMIT 1").fetchone()
+    row = con.execute("SELECT heading FROM chunks WHERE length(heading) > 12" + current + " LIMIT 1").fetchone()
     out["phrase"] = row["heading"] if row else out["title_word"]
     try:
         row = con.execute("SELECT id FROM figures ORDER BY id LIMIT 1").fetchone()
@@ -99,6 +117,8 @@ def probes(db: Path) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
+    ap.add_argument("--server", type=Path, default=SERVER,
+                    help="the server to drive (default: the one beside this script)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -107,9 +127,9 @@ def main() -> int:
         print(f"No index at {db} — build it first.", file=sys.stderr)
         return 1
     p = probes(db)
-    print(f"Testing {SERVER.name} against {db.name}\n")
+    print(f"Testing {args.server} against {db.name}\n")
 
-    client = Client(db)
+    client = Client(db, args.server)
 
     def tool(name: str, tool_args: dict, expect: str, expect_error: bool = False) -> None:
         resp = client.call("tools/call", {"name": name, "arguments": tool_args})
@@ -146,7 +166,7 @@ def main() -> int:
 
         names = {t["name"] for t in (client.call("tools/list").get("result") or {}).get("tools", [])}
         check("tools/list", {"search_docs", "get_section", "lookup_entity", "list_documents", "get_toc",
-                             "get_figure", "get_page_image"} <= names,
+                             "compare_versions", "get_figure", "get_page_image"} <= names,
               f"got {sorted(names)}")
 
         print("\nTools:")
@@ -169,6 +189,25 @@ def main() -> int:
         else:
             print("  n/a   get_figure (this index has no figures)")
         image_tool("get_page_image", {"document": p["document"], "page": 1})
+
+        print("\nEditions:")
+        if not p["editions"]:
+            print("  n/a   this index was built before editions were recorded")
+        else:
+            # A version is per manual, and one that is not here is refused
+            # with the list of those that are -- never answered from another.
+            tool("search_docs", {"query": p["title_word"], "version": "1.0"}, "needs `document`", expect_error=True)
+            tool("search_docs", {"query": p["title_word"], "document": p["document"], "version": "0.0.0.1"},
+                 "nothing was substituted", expect_error=True)
+            if p["latest"]:
+                tool("list_documents", {}, "not current")
+                # Its own slug in the answer: a comparison that ran. Not the
+                # wording of a finished one -- a prose manual with no bookmark
+                # outline has no headings to compare, and nothing wrong with it.
+                tool("compare_versions", {"document": p["latest"]}, f"({p['latest']})")
+                tool("get_toc", {"document": p["latest"], "max_level": 1}, "pages")
+            else:
+                tool("compare_versions", {"document": p["document"]}, "only one edition", expect_error=True)
 
         print("\nError handling:")
         tool("search_docs", {"query": "((("}, "no searchable words", expect_error=True)

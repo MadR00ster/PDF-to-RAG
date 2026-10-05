@@ -36,6 +36,9 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
+
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
@@ -105,7 +108,7 @@ def ocr_document(job: tuple) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("collection", type=Path, help="folder holding the source PDFs and docs/")
+    ap.add_argument("collection", type=Path, help="folder holding source/ and docs/")
     ap.add_argument("--only", action="append", default=[], help="restrict to this slug (repeatable)")
     ap.add_argument("--skip", action="append", default=[], help="exclude this slug (repeatable)")
     ap.add_argument("--jobs", type=int, default=1, help="documents to read in parallel (default 1)")
@@ -125,9 +128,9 @@ def main() -> int:
         if slug in args.skip or (args.only and slug not in args.only):
             continue
         manifest = json.loads((fig_path.parent / "manifest.json").read_text(encoding="utf-8-sig"))
-        pdf = coll / (manifest.get("source_pdf") or "")
-        if not pdf.is_file():
-            print(f"  !! {slug}: source PDF is not beside docs/ -- skipped")
+        pdf = editions.find_source_pdf(coll, manifest.get("source_pdf"))
+        if pdf is None:
+            print(f"  !! {slug}: source PDF is in neither {editions.SOURCE_DIR}/ nor {coll.name}/ -- skipped")
             continue
         jobs.append((str(fig_path.parent), str(pdf), tessdata, args.language))
     if not jobs:

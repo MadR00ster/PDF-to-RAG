@@ -19,11 +19,12 @@ own.
 <corpus>/
   mcp-index.sqlite3                one full-text search index for the corpus
   <collection>/                    e.g. one folder per vendor
-    <source>.pdf                   originals stay put
+    new_docs/                      put new PDFs here
+    source/                        PDFs that have been converted
     docs/
       index.json, README.md        catalog of the collection
-      <slug>/
-        manifest.json              title, page count, PDF table of contents
+      <slug>/                      one edition of one manual
+        manifest.json              title, version, page count, PDF table of contents
         full.md                    the whole document
         sections/NNN-slug.md       retrieval chunks, about 2-9 KB each
         figures.json, figures/     every figure, cropped and tied to its section
@@ -32,6 +33,12 @@ own.
 Each chunk carries a breadcrumb taken from the PDF's own table of contents, a
 page range where the converter can supply one, and, in reference documents,
 the name of the entry it belongs to.
+
+A manual can be converted in several releases. Each is its own document with
+the tool release it applies to read from the PDF's cover, search answers from
+one of them per manual (the newest unless you pin another), and the rest are
+read when a question names the release in use. A manual whose cover says
+"2023.1 and later" answers for the releases after it too.
 
 ## What the MCP server does
 
@@ -44,8 +51,9 @@ API key, no network.
 | `search_docs` | BM25-ranked sections with document, breadcrumb and page |
 | `get_section` | the full text of one section, optionally with its neighbours |
 | `lookup_entity` | one command, function or error code, reassembled from all its chunks |
-| `list_documents` | the catalog, with coverage |
+| `list_documents` | the catalog, with versions and coverage |
 | `get_toc` | one document's table of contents |
+| `compare_versions` | what two editions of a manual add, remove or word differently |
 | `get_figure` | a figure as an image, with its caption and section |
 | `get_page_image` | one page of the source PDF as an image |
 
@@ -59,19 +67,23 @@ that writes the answer itself is planned, not built: see
 pip install -r scripts/requirements.txt
 ```
 
-Put the PDFs in a collection folder inside a corpus folder, then for each PDF:
+Put the PDFs in `new_docs/` inside a collection folder inside a corpus folder,
+then for each PDF:
 
 ```bash
-python scripts/pick_extractor.py my-corpus/vendor/*.pdf
+python scripts/pick_extractor.py my-corpus/vendor/new_docs/*.pdf
 ```
 
 That reports whether a document is prose or a reference (one entry per command,
 part or error code) and names the converter to use:
 
 ```bash
-python scripts/convert_manual.py my-corpus/vendor/guide.pdf --title "Widget User Guide"
-python scripts/rebuild_reference.py my-corpus/vendor/commands.pdf --slug widget-cmds --title "Widget Command Reference"
+python scripts/convert_manual.py my-corpus/vendor/new_docs/guide.pdf --title "Widget User Guide"
+python scripts/rebuild_reference.py my-corpus/vendor/new_docs/commands.pdf --slug widget-cmds --title "Widget Command Reference"
 ```
+
+Each converter writes `my-corpus/vendor/docs/<slug>/` and then moves the PDF to
+`my-corpus/vendor/source/`.
 
 Then, for the collection:
 
@@ -94,13 +106,28 @@ python scripts/build_search_db.py --root my-corpus --emit-vscode-config
 python scripts/mcp_smoke_test.py --db my-corpus/mcp-index.sqlite3
 ```
 
-The first command also writes `my-corpus/.vscode/mcp.json`. For another client,
-register the command `python scripts/mcp_server.py --db my-corpus/mcp-index.sqlite3`
-as a stdio server. The index is a snapshot: rebuild it after any conversion.
+The first command also copies `mcp_server.py` into `my-corpus/` and writes
+`my-corpus/.vscode/mcp.json` with paths relative to that folder, so the corpus
+can be synced to another machine and served there with nothing but Python. For
+another client, register the command `python my-corpus/mcp_server.py` as a
+stdio server; it reads the index beside it. The index is a snapshot: rebuild it
+after any conversion, which also refreshes the server copy.
 
 Prose manuals convert better with `convert_docling.py`, which puts a page
 number on every chunk. It needs Docling, a multi-gigabyte install that is
 deliberately left out of `requirements.txt`: `pip install docling`.
+
+To add a newer release of a manual later, drop its PDF in `new_docs/` and
+convert it the same way. It becomes the edition search answers from; the older
+one stays answerable by version. To keep answering from the older release, pin
+it in `my-corpus/vendor/current_versions.json`:
+
+```json
+{"guide": "2025.1"}
+```
+
+`python scripts/editions.py status my-corpus` shows every manual, its editions
+and which one is current. Rebuild the index after changing a pin.
 
 [SKILL.md](SKILL.md) has the full workflow, the reasons behind each step, and
 what to do when the input is not a flat folder of PDFs.
@@ -123,6 +150,7 @@ useless fragments.
 | `enrich_chunks.py` | strip page headers and footers, add breadcrumbs |
 | `extract_figures.py`, `ocr_figures.py` | crop figures; read the words in raster ones |
 | `build_index.py` | regenerate a collection's catalog |
+| `editions.py` | list editions and pins; add versions to an older corpus; move its PDFs into `source/` |
 | `check_corpus.py` | check any converted document against the output contract |
 | `build_search_db.py` | corpus to one SQLite FTS5 index |
 | `mcp_server.py`, `mcp_smoke_test.py` | serve the index; test the server end to end |
@@ -152,6 +180,8 @@ catalog of ways a corpus goes wrong is in
   miss.
 - The scripts expect a flat folder of PDFs per collection. They do not read
   HTML help folders.
+- Comparing two releases reports what the manuals say, line for line. It is
+  not a release note, and it has not been scored against a test set yet.
 - PDFs with no text layer need OCR first.
 - 76 questions is a small test set, and most were written by someone who had
   just read the answer.

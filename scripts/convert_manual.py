@@ -7,9 +7,15 @@ Convert a vendor PDF manual into this repo's RAG doc format:
   docs/<slug>/sections/NNN-heading-slug.md
 
 Usage:
-  python scripts/convert_manual.py "Tessent Manual/newmanual.pdf" --title "Tessent Foo User's Manual"
-  python scripts/convert_manual.py "Synopsys Manual/dcug_V-2024.06.pdf" \
+  python scripts/convert_manual.py "Tessent Manual/new_docs/newmanual.pdf" --title "Tessent Foo User's Manual"
+  python scripts/convert_manual.py "Synopsys Manual/new_docs/dcug_V-2024.06.pdf" \
       --title "Design Compiler(R) User Guide" --slug dcug-v-2024-06
+
+A PDF in <collection>/new_docs/ is moved to <collection>/source/ once its
+conversion has been written. The release it documents is read from its first
+pages into the manifest's `version`, and `doc_id` names the manual it is an
+edition of -- see editions.py. The slug defaults to the filename, with that
+release on the end.
 
 For command-dictionary-style manuals (syn2, tshell-ref, ...) where individual
 commands are marked with a bold name and no real heading, add --dictionary.
@@ -55,6 +61,9 @@ try:
     import pymupdf4llm
 except ImportError:
     sys.exit("Missing dependency. Run: pip install -r scripts/requirements.txt")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
 
 MAX_CHUNK = 9000
 
@@ -233,7 +242,8 @@ def chunk_markdown(md_text: str, dictionary: bool) -> list[tuple[str, int, str]]
     return chunks
 
 
-def convert(pdf_path: Path, title: str, slug: str, dictionary: bool, out_root: Path) -> None:
+def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
+    pdf_path, slug, out_root = plan.pdf, plan.slug, plan.out_root
     print(f"Extracting markdown from {pdf_path.name} ...")
     md_text = pymupdf4llm.to_markdown(str(pdf_path))
     doc = pymupdf.open(str(pdf_path))
@@ -258,15 +268,16 @@ def convert(pdf_path: Path, title: str, slug: str, dictionary: bool, out_root: P
 
     (out_dir / "full.md").write_text(md_text, encoding="utf-8")
 
-    manifest = {
-        "source_pdf": pdf_path.name,
+    manifest = editions.with_edition_fields({
+        "source_pdf": plan.source_name,
         "title": title,
         "slug": slug,
         "page_count": doc.page_count,
         "toc": [{"level": lvl, "title": t.strip(), "page": pg} for lvl, t, pg in doc.get_toc()],
         "sections": section_entries,
         "full_md_chars": len(md_text),
-    }
+    }, plan.doc_id, plan.version, plan.later)
+    doc.close()
     # ensure_ascii=True: this machine's Python defaults to a non-UTF-8
     # locale (cp950), so escaping non-ASCII keeps manifest.json readable by
     # any tool that opens it without an explicit encoding= argument.
@@ -275,8 +286,9 @@ def convert(pdf_path: Path, title: str, slug: str, dictionary: bool, out_root: P
     )
 
     print(f"Wrote {len(section_entries)} sections to {out_dir}")
-    print(f"Pages: {doc.page_count}   full.md chars: {len(md_text)}")
-    print(f'Next: python scripts/build_index.py "{pdf_path.parent}"')
+    print(f"Pages: {manifest['page_count']}   full.md chars: {len(md_text)}")
+    editions.finish(plan)
+    print(f'Next: python scripts/build_index.py "{plan.collection}"')
 
 
 def main() -> None:
@@ -289,21 +301,21 @@ def main() -> None:
         action="store_true",
         help="Also split on standalone **bold** lines (for command-dictionary manuals like syn2/tshell-ref)",
     )
-    ap.add_argument("--out-root", type=Path, help="Where to write docs/<slug>/ (default: <pdf's folder>/docs)")
+    ap.add_argument("--out-root", type=Path,
+                    help="Where to write docs/<slug>/ (default: docs/ in the PDF's collection)")
+    editions.add_arguments(ap)
     args = ap.parse_args()
 
     pdf_path = args.pdf.resolve()
     if not pdf_path.exists():
         sys.exit(f"No such file: {pdf_path}")
 
-    slug = args.slug or slugify(pdf_path.stem, maxlen=40)
-    out_root = (args.out_root or pdf_path.parent / "docs").resolve()
-
-    out_dir = out_root / slug
+    plan = editions.plan(pdf_path, args.slug, args.out_root, args.version, args.doc_id)
+    out_dir = plan.out_root / plan.slug
     if out_dir.exists():
         sys.exit(f"{out_dir} already exists -- pick a different --slug or remove it first")
 
-    convert(pdf_path, args.title, slug, args.dictionary, out_root)
+    convert(plan, args.title, args.dictionary)
 
 
 if __name__ == "__main__":
