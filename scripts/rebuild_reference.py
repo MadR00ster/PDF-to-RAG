@@ -179,7 +179,7 @@ def main() -> None:
         print(f"[{args.slug}] title from existing manifest: {args.title!r}", flush=True)
     plan = editions.plan(pdf_path, args.slug, out_root, args.version or prior.get("version"),
                          args.doc_id or prior.get("doc_id"),
-                         later=not args.version and bool(prior.get("version_and_later")))
+                         later=not args.version and prior.get("version_and_later") is True)
 
     print(f"[{args.slug}] extracting {pdf_path.name} with page tracking ...", flush=True)
     full_md, page_starts, page_numbers, furn_removed = build_pages(pdf_path, args.title)

@@ -305,7 +305,9 @@ def resolve_editions(documents: list) -> tuple[dict[str, dict], list[str]]:
         slug = manifest["slug"]
         by_collection.setdefault(manifest_path.parent.parent.parent, []).append(
             {"slug": slug, "doc_id": manifest.get("doc_id") or slug, "version": manifest.get("version"),
-             "version_and_later": bool(manifest.get("version_and_later"))})
+             # Exactly true, as check_corpus.py reads it: "false" in quotes is
+             # a string, and a string is not a claim.
+             "version_and_later": manifest.get("version_and_later") is True})
     resolved, problems = {}, []
     for collection_dir, docs in by_collection.items():
         try:

@@ -602,8 +602,14 @@ def tool_get_section(args: dict) -> str:
             raise ValueError(f"No section with section_id {section_id}.")
     elif file_arg:
         needle = str(file_arg).replace("\\", "/").lstrip("./")
+        # Editions of a manual share their section filenames, so a path
+        # without the edition's folder matches one in each. The exact path
+        # first, then the current edition -- not whichever was indexed first,
+        # which is the oldest.
+        order = " ORDER BY (file = ?) DESC" + (
+            ", (slug IN (SELECT slug FROM documents WHERE is_current = 1)) DESC" if CORPUS.has_editions else "")
         row = CORPUS.db.execute(
-            SECTION_SELECT + " WHERE file = ? OR file LIKE ?", (needle, f"%{needle}")
+            SECTION_SELECT + " WHERE file = ? OR file LIKE ?" + order, (needle, f"%{needle}", needle)
         ).fetchone()
         if not row:
             raise ValueError(f"No section matching file '{file_arg}'.")
@@ -1151,25 +1157,34 @@ def compare_listing(old: sqlite3.Row, new: sqlite3.Row) -> str:
     out = [f"# `{new['doc_id']}`: {v_old} → {v_new}", document_label(old["slug"]),
            document_label(new["slug"]), ""]
 
-    def names(slug: str) -> dict[str, str]:
-        return {r["name_lower"]: r["name"] for r in CORPUS.db.execute(
+    def names(slug: str) -> tuple[Counter, dict[str, str]]:
+        shown = {r["name_lower"]: r["name"] for r in CORPUS.db.execute(
             "SELECT name, name_lower FROM entities WHERE slug = ?", (slug,))}
+        return Counter(shown.keys()), shown
 
-    def headings(row: sqlite3.Row) -> dict[str, str]:
-        found: dict[str, str] = {}
+    def headings(row: sqlite3.Row) -> tuple[Counter, dict[str, str]]:
+        """How many times each title occurs, and how it is written. Counted,
+        because titles repeat -- every chapter has its Overview and its
+        Limitations -- and a set of them cannot show that one more was added."""
+        counts, shown = Counter(), {}
         for e in json.loads(row["toc_json"] or "[]"):
             title = (e.get("title") or "").strip()
             if heading_key(title):
-                found.setdefault(heading_key(title), title)
-        return found
+                counts[heading_key(title)] += 1
+                shown.setdefault(heading_key(title), title)
+        return counts, shown
 
-    e_old, e_new = names(old["slug"]), names(new["slug"])
+    def only(mine: Counter, theirs: Counter, shown: dict[str, str], other: str) -> list[str]:
+        return [shown[k] if not theirs[k] else f"{shown[k]} ({mine[k] - theirs[k]} more than in {other})"
+                for k in sorted(mine, key=lambda k: shown[k].lower()) if mine[k] > theirs[k]]
+
+    (e_old, old_names), (e_new, new_names) = names(old["slug"]), names(new["slug"])
     if e_old and e_new:
-        a, b, what = e_old, e_new, "entries"
+        a, b, a_shown, b_shown, what = e_old, e_new, old_names, new_names, "entries"
         caveat = ("Names only. An entry in both editions may still have changed: pass `name` to "
                   "compare one entry's text.")
     else:
-        a, b, what = headings(old), headings(new), "headings"
+        (a, a_shown), (b, b_shown), what = headings(old), headings(new), "headings"
         caveat = (("Only one of these editions names its entries, so entries could not be compared. "
                    if e_old or e_new else "")
                   + "Headings only, from the two PDFs' bookmark outlines, chapter numbering aside. A "
@@ -1180,10 +1195,10 @@ def compare_listing(old: sqlite3.Row, new: sqlite3.Row) -> str:
             return "\n".join(out + ["One of these editions has no bookmark outline, so there are no "
                                     "headings to compare. Search each edition with `search_docs` and "
                                     "`document`/`version` instead."])
-    added = sorted((b[k] for k in b.keys() - a.keys()), key=str.lower)
-    removed = sorted((a[k] for k in a.keys() - b.keys()), key=str.lower)
-    out.append(f"{len(b):,} {what} in {v_new} and {len(a):,} in {v_old}: {len(added)} added, "
-               f"{len(removed)} removed, {len(a.keys() & b.keys()):,} in both. {caveat}")
+    added, removed = only(b, a, b_shown, v_old), only(a, b, a_shown, v_new)
+    out.append(f"{sum(b.values()):,} {what} in {v_new} and {sum(a.values()):,} in {v_old}: "
+               f"{sum((b - a).values())} added, {sum((a - b).values())} removed, "
+               f"{sum((a & b).values()):,} in both. {caveat}")
     half = MAX_SECTION_CHARS // 2
     out += ["", f"## Added in {v_new}"] + (listed(added, half, f"{what} added") or ["(none)"])
     out += ["", f"## Removed since {v_old}"] + (listed(removed, half, f"{what} removed") or ["(none)"])

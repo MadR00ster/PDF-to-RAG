@@ -40,7 +40,7 @@ def load_manuals(docs_dir: Path) -> list[dict]:
                 "slug": slug,
                 "doc_id": m.get("doc_id") or slug,
                 "version": m.get("version"),
-                "version_and_later": bool(m.get("version_and_later")),
+                "version_and_later": m.get("version_and_later") is True,
                 "title": m["title"],
                 "source_pdf": m["source_pdf"],
                 "page_count": m["page_count"],

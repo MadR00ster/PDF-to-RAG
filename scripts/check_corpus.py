@@ -206,7 +206,7 @@ CHECKS = {
     "edition-duplicate-version": (FAIL, "two editions of one manual with the same version; build_search_db.py stops"),
     "pin-invalid": (FAIL, "current_versions.json is unreadable, or pins a doc_id that is not in this collection or a release none of its editions applies to; build_search_db.py stops"),
     "edition-ungrouped": (WARN, "two documents with the same title and different doc_ids: if they are editions of one manual, both answer every search"),
-    "superseded-invalid": (WARN, "superseded.json is unreadable, an entry lacks file/superseded_by, or it names a slug that is not here"),
+    "superseded-invalid": (WARN, "superseded.json is unreadable, an entry lacks file/superseded_by, it names a slug that is not here, or it lists a PDF that has since been converted"),
 }
 
 
@@ -776,12 +776,13 @@ def index_skips(name: str) -> bool:
 
 
 def find_source_pdf(collection_dir: Path, name) -> Path | None:
-    """Where a collection keeps a PDF: source/, the collection folder itself
-    (every PDF's place before source/ existed), or new_docs/ while its own
-    conversion is still running."""
+    """Where a collection keeps a converted document's PDF: source/, or the
+    collection folder itself (every PDF's place before source/ existed). Not
+    new_docs/: a PDF waiting there under the same name is as likely the next
+    release, and checking this document's pages against it proves nothing."""
     if not isinstance(name, str) or not name.strip():
         return None
-    for folder in (collection_dir / "source", collection_dir, collection_dir / "new_docs"):
+    for folder in (collection_dir / "source", collection_dir):
         if (folder / name).is_file():
             return folder / name
     return None
@@ -815,7 +816,9 @@ def same_release(a, b) -> bool:
     return na == nb
 
 
-def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> None:
+def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> dict[str, bool]:
+    """Raise what is wrong with the collection's editions, and return which
+    document folders are current -- for the manuals where that can be told."""
     lines: dict[str, list[tuple[str, object]]] = {}
     later: dict[str, set] = {}
     titles: dict[str, list[tuple[str, str]]] = {}
@@ -832,32 +835,45 @@ def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> None:
         if key(title):
             titles.setdefault(key(title), []).append((folder, doc_id))
 
+    chosen: dict[str, str] = {}             # doc_id -> the folder that is current
+    by_numbers: dict[str, dict[tuple, str]] = {}
     for doc_id, editions in lines.items():
         if len(editions) < 2:
+            chosen[doc_id] = editions[0][0]
+            by_numbers[doc_id] = {version_numbers(editions[0][1]): editions[0][0]}
             continue
         seen: dict[tuple, str] = {}
+        sound = True
         for folder, version in editions:
             numbers = version_numbers(version)
             if numbers is None:
                 f.add("edition-unordered", f"{doc_id}: {folder} has version {version!r}")
+                sound = False
             elif numbers in seen:
                 f.add("edition-duplicate-version", f"{doc_id}: {seen[numbers]} and {folder} are both {version}")
+                sound = False
             else:
                 seen[numbers] = folder
+        if sound:
+            chosen[doc_id] = seen[max(seen)]
+            by_numbers[doc_id] = seen
     for same in titles.values():
         if len({doc_id for _folder, doc_id in same}) > 1:
             f.add("edition-ungrouped", ", ".join(f"{folder} (doc_id {doc_id})" for folder, doc_id in same)[:200])
 
+    def current() -> dict[str, bool]:
+        return {folder: folder == chosen[doc_id] for doc_id in chosen for folder, _v in lines[doc_id]}
+
     pins_path = collection_dir / "current_versions.json"
     if not pins_path.is_file():
-        return
+        return current()
     try:
         pins = load_json(pins_path)
         if not isinstance(pins, dict):
             raise ValueError("not an object")
     except (OSError, ValueError) as exc:
         f.add("pin-invalid", str(exc)[:100])
-        return
+        return {}
     for doc_id, version in pins.items():
         if doc_id not in lines:
             f.add("pin-invalid", f"{doc_id!r} is not a doc_id here")
@@ -865,6 +881,7 @@ def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> None:
         # A pin is a version as text; the index build stops on anything else.
         if not isinstance(version, str) or not version.strip():
             f.add("pin-invalid", f"{doc_id} pinned to {version!r}, which is not a version written as text")
+            chosen.pop(doc_id, None)
             continue
         # It names the tool release in use. An edition for that release
         # applies to it; so does the nearest earlier edition, if its cover
@@ -872,10 +889,19 @@ def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> None:
         wanted = version_numbers(version)
         have = {version_numbers(v) for _folder, v in lines[doc_id]} - {None}
         earlier = [n for n in have if wanted is not None and n < wanted]
-        if not (any(same_release(version, v) for _folder, v in lines[doc_id])
-                or (earlier and max(earlier) in later.get(doc_id, ()))):
+        exact = [folder for folder, v in lines[doc_id] if same_release(version, v)]
+        if exact:
+            pinned = exact[0]
+        elif earlier and max(earlier) in later.get(doc_id, ()):
+            pinned = by_numbers.get(doc_id, {}).get(max(earlier))
+        else:
             f.add("pin-invalid", f"{doc_id} pinned to {version!r}; editions here: "
                                  + ", ".join(str(v) for _folder, v in lines[doc_id]))
+            chosen.pop(doc_id, None)
+            continue
+        if doc_id in chosen and pinned:
+            chosen[doc_id] = pinned
+    return current()
 
 
 def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Path], reports: list[dict]) -> Findings:
@@ -895,6 +921,7 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
             manifests[r["folder"]] = m
 
     index_path = docs / "index.json"
+    listed = None
     if not index_path.is_file():
         f.add("index-missing")
     else:
@@ -921,6 +948,8 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
                 # Only where the manifest says: an index written before
                 # editions were recorded is not stale for lacking them.
                 expected.update({k: m[k] for k in ("doc_id", "version") if m.get(k)})
+                if m.get("version_and_later") is True:
+                    expected["version_and_later"] = True
                 for field, want in expected.items():
                     if e.get(field) != want:
                         f.add("index-stale", f"{folder}: index.json {field} {e.get(field)!r}, "
@@ -936,11 +965,17 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
             f.add("superseded-invalid", str(exc)[:100])
             superseded = []
     slugs = {d.name for d in doc_dirs}
+    converted = {str(m.get("source_pdf")): folder for folder, m in manifests.items()}
     for e in superseded:
         if not isinstance(e, dict) or not e.get("file") or not e.get("superseded_by"):
             f.add("superseded-invalid", f"entry {e!r}"[:120])
         elif e["superseded_by"] not in slugs:
             f.add("superseded-invalid", f"{e['file']} superseded by {e['superseded_by']!r}, which is not here")
+        elif e["file"] in converted:
+            # Set aside once, converted as an edition since: build_index.py
+            # would list it both as a manual and as a PDF that was not converted.
+            f.add("superseded-invalid", f"{e['file']} is converted as {converted[e['file']]}; "
+                                        "remove its entry")
 
     accounted = {str(m.get("source_pdf")) for m in manifests.values()} | \
                 {str(e.get("file")) for e in superseded if isinstance(e, dict)}
@@ -952,7 +987,13 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
             if pdf.is_file() and pdf.suffix.lower() == ".pdf" and pdf.name not in accounted:
                 f.add("pdf-unaccounted", str(pdf.relative_to(collection_dir)))
 
-    check_editions(collection_dir, manifests, f)
+    # index.json also says which edition of each manual is current. A pin
+    # changed and only the search index rebuilt leaves that saying otherwise.
+    for folder, is_current in sorted(check_editions(collection_dir, manifests, f).items()):
+        e = (listed or {}).get(folder)
+        if e is not None and "current" in e and bool(e["current"]) != is_current:
+            f.add("index-stale", f"{folder}: index.json has it as {'' if e['current'] else 'not '}the "
+                                 "current edition; the manifests and current_versions.json say otherwise")
     return f
 
 

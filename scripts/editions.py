@@ -75,6 +75,11 @@ LETTERED_RE = re.compile(r"(?<![\w-])([A-Z]-20\d\d\.\d\d(?:-SP\d+(?:-\d+)?)?)(?!
 # is not taken: "IEEE 1149.1" is on more covers than a version is.
 LABELLED_RE = re.compile(
     r"\b(?:Software\s+Version|Version|Release)[:\s]+v?(\d+(?:\.\d+)+(?:-[A-Za-z]+\d+)*)(?!\.?\w)", re.I)
+# "Document Version 1.3", "File Format Version 2.0": a version, and not the
+# product's. Only on the same line: a title ending in one of these words above
+# "Version 4.1" is the usual cover.
+NOT_THE_PRODUCT_RE = re.compile(
+    r"\b(?:document|doc|file|format|schema|standard|specification|spec|protocol|template)\.?[ \t]+$", re.I)
 # "Software Version 2023.1 and later": the document applies from that release
 # on, and says so.
 QUALIFIED_RE = re.compile(r"\s+(?:and|or)\s+(?:later|newer|above|higher)\b", re.I)
@@ -101,12 +106,17 @@ def collection_of(pdf: Path) -> Path:
 
 
 def find_source_pdf(collection: Path, name: str | None) -> Path | None:
-    """A manifest's `source_pdf` on disk. source/ first; then the collection
-    root, where every PDF lived before source/ existed; then new_docs/, where
-    one sits while its own conversion is still running."""
+    """A manifest's `source_pdf` on disk: source/, or the collection root,
+    where every PDF lived before source/ existed.
+
+    Not new_docs/. A file there has not been converted, and vendors reuse
+    filenames, so one with the right name is as likely the next release as
+    this document's PDF. A source that is missing is reported as missing; it
+    is not replaced by whatever is waiting under the same name.
+    """
     if not name:
         return None
-    for folder in (collection / SOURCE_DIR, collection, collection / INBOX_DIR):
+    for folder in (collection / SOURCE_DIR, collection):
         candidate = folder / name
         if candidate.is_file():
             return candidate
@@ -227,6 +237,34 @@ def filename_version(name: str) -> str | None:
     return f"{m.group(1)}.{int(m.group(2))}{further}{(m.group(4) or '').upper()}"
 
 
+def _dotted(version: str) -> tuple[tuple[int, ...], tuple | None] | None:
+    """A year-style version as its dotted numbers and its service pack."""
+    v = norm_version(version)
+    m = re.search(r"(20\d\d)\.(\d{1,2})((?:\.\d+)*)", v)
+    if not m:
+        return None
+    sp = re.search(r"SP(\d+)(?:-(\d+))?", v)
+    dotted = (int(m.group(1)), int(m.group(2)), *(int(n) for n in m.group(3).split(".") if n))
+    return dotted, (sp.groups() if sp else None)
+
+
+def filename_agrees(named: str, shown: str) -> bool:
+    """Whether a filename's version is the cover's, or only says more or less
+    of it. Digits after the release in a filename are a revision counter, a
+    sequence number or a date at least as often as part of the version
+    (`ug_2026_2_001.pdf`), and a filename may leave a service pack out or
+    carry one the unchanged cover does not. So the two agree when one's
+    numbers begin with the other's and no two service packs differ. A
+    different year or release is a contradiction."""
+    if same_release(named, shown):
+        return True
+    a, b = _dotted(named), _dotted(shown)
+    if not a or not b:
+        return False
+    n = min(len(a[0]), len(b[0]))
+    return a[0][:n] == b[0][:n] and (a[1] == b[1] or not a[1] or not b[1])
+
+
 class Cover(NamedTuple):
     version: str | None   # the release the document applies to, when that is unambiguous
     later: bool           # the cover says "and later"
@@ -263,7 +301,9 @@ def read_cover(pdf: Path) -> Cover:
     # the lettered form where there was one let "Y-2026.03" on a cover that
     # also says "Software Version 2025.1" pass as unambiguous.
     hits = sorted((m.start(), m.group(1), m.end())
-                  for pattern in (LETTERED_RE, LABELLED_RE) for m in pattern.finditer(text))
+                  for pattern in (LETTERED_RE, LABELLED_RE) for m in pattern.finditer(text)
+                  if not (pattern is LABELLED_RE
+                          and NOT_THE_PRODUCT_RE.search(text, max(0, m.start() - 24), m.start())))
     if not hits:
         return Cover(None, False, None, "no version on the first pages")
     shown = hits[0][1]
@@ -275,7 +315,7 @@ def read_cover(pdf: Path) -> Cover:
                      + ", ".join([shown] + others))
     later = any(QUALIFIED_RE.match(text, end) for _start, _v, end in hits)
     named = filename_version(pdf.name)
-    if named and not same_release(named, shown):
+    if named and not filename_agrees(named, shown):
         # A manual the vendor ships unchanged keeps its cover and takes each
         # new release's filename: "2023.1 and later" inside x_2025_2.pdf. That
         # agrees with the cover. A filename naming an earlier release, or a
@@ -453,8 +493,12 @@ def source_name_for(collection: Path, pdf: Path, version: str | None) -> str:
     filed = filed_pdfs(collection)
     twin = same_file(pdf, filed)
     if twin:
-        sys.exit(f"{pdf.name} is byte for byte the PDF already filed as "
-                 f"{twin.relative_to(collection)}. Nothing to convert; delete the copy in {INBOX_DIR}/.")
+        where = twin.relative_to(collection)
+        converted = any(m.get("source_pdf") == twin.name for m in load_manifests(collection).values())
+        sys.exit(f"{pdf.name} is byte for byte the PDF already filed as {where}. "
+                 + ("Nothing to convert; " if converted else
+                    f"That one has not been converted: run the converter on {where} instead, and ")
+                 + f"delete the copy in {INBOX_DIR}/.")
     taken = {p.name.lower() for p in filed}
     if pdf.name.lower() not in taken:
         return pdf.name
@@ -641,7 +685,7 @@ def cmd_stamp(args) -> int:
         if slug in set_version:
             version, later = split_version(set_version[slug])
         else:
-            version, later = m.get("version"), bool(m.get("version_and_later"))
+            version, later = m.get("version"), m.get("version_and_later") is True
             pdf = find_source_pdf(collection, m.get("source_pdf"))
             cover = read_cover(pdf) if pdf else None
             if not version and cover:
@@ -727,7 +771,7 @@ def cmd_status(args) -> int:
             print(f"!! {exc}")
             pins, worst = {}, 1
         docs = [{"slug": slug, "doc_id": m.get("doc_id") or slug, "version": m.get("version"),
-                 "version_and_later": bool(m.get("version_and_later")),
+                 "version_and_later": m.get("version_and_later") is True,
                  "stamped": "doc_id" in m, "title": m.get("title") or slug}
                 for slug, m in manifests.items()]
         problems = resolve_editions(docs, pins)

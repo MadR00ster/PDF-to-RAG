@@ -10,6 +10,11 @@ share, larger ones more but only by the square root of their size, so one
 6,000-section command reference cannot become the whole test -- and it leaves
 out front matter, legal boilerplate and stubs too small to answer anything.
 
+Where a manual is converted in several editions, only the one search answers
+from is sampled. eval_search.py searches the way a user does, without naming
+a version, so a question about a section of any other edition could only ever
+score as a miss.
+
 Prints each sampled section's slug, file, heading and opening text for whoever
 writes the questions. With --figures it samples only sections that have
 figures, and names each figure's image so it can be looked at. Sections
@@ -33,6 +38,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
 from build_search_db import clean_heading, find_collections, is_noise  # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):
@@ -61,10 +67,22 @@ def pools(root: Path, min_chars: int, used: set, figures_only: bool) -> dict:
     """slug -> (doc_dir, [(section, its figures)]) of sections worth asking about."""
     out = {}
     for _key, _display, docs in find_collections(root):
-        for mp in sorted(docs.glob("*/manifest.json")):
-            if mp.parent.name.endswith((".old", ".new")) or mp.parent.name.startswith((".", "_")):
+        manifests = {mp: json.loads(mp.read_text(encoding="utf-8-sig"))
+                     for mp in sorted(docs.glob("*/manifest.json"))
+                     if not (mp.parent.name.endswith((".old", ".new")) or mp.parent.name.startswith((".", "_")))}
+        entries = [{"slug": m["slug"], "doc_id": m.get("doc_id") or m["slug"], "version": m.get("version"),
+                    "version_and_later": m.get("version_and_later") is True} for m in manifests.values()]
+        try:
+            problems = editions.resolve_editions(entries, editions.load_pins(docs.parent))
+        except ValueError as exc:
+            problems = [str(exc)]
+        if problems:
+            sys.exit("Which edition of each manual is current cannot be told, so there is nothing sound to "
+                     "sample:\n  " + "\n  ".join(problems))
+        current = {e["slug"] for e in entries if e["is_current"]}
+        for mp, manifest in manifests.items():
+            if manifest["slug"] not in current:
                 continue
-            manifest = json.loads(mp.read_text(encoding="utf-8-sig"))
             figures: dict[str, list] = {}
             fig_path = mp.parent / "figures.json"
             if fig_path.is_file():

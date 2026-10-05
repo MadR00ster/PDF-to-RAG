@@ -549,6 +549,25 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(resolve("Setup", [9])[1], "page", "anchored to a bookmark with no page")
         pdf.close()
 
+    def test_09c_docling_records_the_edition_and_files_the_pdf(self):
+        """The Docling converter takes a PDF from new_docs/ like the others.
+        Runs only where Docling is installed; the other two converters are
+        covered wherever the suite runs."""
+        try:
+            import docling  # noqa: F401
+        except ImportError:
+            self.skipTest("Docling is not installed")
+        coll = self.tmp / "DoclingCollection"
+        for folder in ("new_docs", "docs"):
+            (coll / folder).mkdir(parents=True)
+        gadget_fixture(coll / "new_docs" / "dl_guide.pdf", "2026.1", ["Setup", "Use"])
+        r = run("convert_docling.py", str(coll / "new_docs" / "dl_guide.pdf"), "--title", "DL Guide")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        m = json.loads((coll / "docs" / "dl-guide-2026-1" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual((m["doc_id"], m["version"], m["source_pdf"]), ("dl-guide", "2026.1", "dl_guide.pdf"))
+        self.assertTrue((coll / "source" / "dl_guide.pdf").is_file(), "the converted PDF was not moved to source/")
+        self.assertFalse((coll / "new_docs" / "dl_guide.pdf").exists())
+
     def test_09_docling_path_gates_cleanly(self):
         try:
             import docling  # noqa: F401
@@ -861,6 +880,10 @@ class PipelineTest(unittest.TestCase):
             ("source PDF that will not open", lambda d, m: (d.parents[1] / "hand.pdf").write_bytes(b"not a pdf"),
              "content-unchecked", False),
             ("index.json title out of date", stale_index, "index-stale", False),
+            ("a converted PDF still listed as set aside",
+             lambda d, m: (d.parents[1] / "superseded.json").write_text(
+                 json.dumps([{"file": "hand.pdf", "superseded_by": "hand"}]), encoding="utf-8"),
+             "superseded-invalid", False),
         ]
         for i, (name, damage, expected, fails) in enumerate(plants):
             with self.subTest(defect=name, check=expected):
@@ -1052,6 +1075,24 @@ class EditionsTest(unittest.TestCase):
                          "a filename read without its service pack contradicted the cover")
         self.assertEqual(editions.filename_version("guide_2026.1.3.pdf"), "2026.1.3")
         self.assertEqual(editions.filename_version("tshell_ref_2026_2.pdf"), "2026.2")
+        # Digits after the release in a filename are a revision counter or a
+        # date as often as part of the version. They do not contradict a cover
+        # that gives the release they follow; another release does.
+        for name in ("guide_2026_2_2.pdf", "ug_2026_2_001.pdf", "guide_2026_2_20260301.pdf", "guide_2026.2-SP1.pdf"):
+            numbered = self.tmp / name
+            write_pdf(numbered, [[("Tool Guide", 24), ("Software Version 2026.2", 11)]], [[1, "Tool Guide", 1]])
+            self.assertEqual(editions.read_cover(numbered).version, "2026.2", f"{name} contradicted its own cover")
+        other = self.tmp / "guide_2025_2.pdf"
+        write_pdf(other, [[("Tool Guide", 24), ("Software Version 2026.2", 11)]], [[1, "Tool Guide", 1]])
+        self.assertIsNone(editions.read_cover(other).version, "a filename naming another release passed")
+
+        # A document's own revision is not the release of the tool it describes.
+        revised = self.tmp / "revised.pdf"
+        write_pdf(revised, [[("Tool Guide", 24), ("Document Version 1.3", 11)]], [[1, "Tool Guide", 1]])
+        self.assertIsNone(editions.read_cover(revised).version, "a document revision was recorded as the release")
+        titled = self.tmp / "titled.pdf"
+        write_pdf(titled, [[("Tool User Guide Version 4.1", 24)]], [[1, "Tool Guide", 1]])
+        self.assertEqual(editions.read_cover(titled).version, "4.1")
 
         # A filename with nothing to make a slug from still gets one.
         odd = self.tmp / "Odd" / "new_docs"
@@ -1068,7 +1109,17 @@ class EditionsTest(unittest.TestCase):
         """
         r = self.build()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Questions are written against what search can find: the sampler
+        # draws from the edition in use, not from every one on disk.
+        r = run("sample_sections.py", "--root", str(self.root), "--n", "20", "--min-chars", "40")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("gadget-2026-1", r.stdout)
+        self.assertNotIn("gadget-2025-1", r.stdout, "a section of an edition search never reads was sampled")
         s = self.serve()
+        # Both editions have sections/002-unpacking.md. Without the edition's
+        # folder in the path, it is the current one that is meant.
+        self.assertIn("gadget-2026-1", s.tool_get_section({"file": "sections/002-unpacking.md"}),
+                      "a path two editions share returned the older one")
         hits = s.search("gadget seals")
         self.assertTrue(hits, "nothing found in the current edition")
         self.assertEqual({h["slug"] for h in hits}, {"gadget-2026-1"}, "an older edition answered a plain search")
@@ -1108,13 +1159,18 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual({h["slug"] for h in s.search("gadget seals")}, {"gadget-2025-1"}, "the pin was ignored")
         s.CORPUS._db.close()
 
-        # The catalog follows the pin as well...
+        # The catalog follows the pin as well, and until it is rebuilt the
+        # checker says it does not.
         catalog = self.coll / "docs" / "index.json"
+        r = run("check_corpus.py", str(self.coll), "--no-pdf")
+        self.assertIn("index-stale", r.stdout, "a catalog naming the wrong current edition went unreported")
         r = run("build_index.py", str(self.coll))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         pinned = catalog.read_bytes()
         self.assertEqual({e["slug"]: e["current"] for e in json.loads(pinned)["manuals"]},
                          {"gadget-2025-1": True, "gadget-2026-1": False})
+        r = run("check_corpus.py", str(self.coll), "--no-pdf")
+        self.assertNotIn("index-stale", r.stdout, r.stdout)
 
         before = self.db.read_bytes()
         pins.write_text(json.dumps({"gadget": "2024.1"}), encoding="utf-8")
@@ -1148,8 +1204,12 @@ class EditionsTest(unittest.TestCase):
                     "--slug", f"widget-ref-v{n}", "--doc-id", "widget-ref", "--version", f"{n}.0")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertTrue((source / f"widget-ref-{n}.pdf").is_file(), "a PDF already in source/ was moved")
+        # A rebuild keeps what the document is: no --version, no --doc-id, no --title.
+        r = run("rebuild_reference.py", str(source / "widget-ref-2.pdf"), "--slug", "widget-ref-v2", "--replace")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         m = self.manifest("widget-ref-v2")
-        self.assertEqual((m["doc_id"], m["version"]), ("widget-ref", "2.0"))
+        self.assertEqual((m["doc_id"], m["version"], m["title"]), ("widget-ref", "2.0", "Widget Reference"),
+                         "--replace lost the edition a document was converted as")
         long_chars = sum(sec["chars"] for sec in m["sections"] if sec.get("command") == LONG_ENTRY)
         self.assertGreater(long_chars, 40_000, "the fixture's long entry is not past the lookup cut")
 
@@ -1570,6 +1630,8 @@ class EditionsTest(unittest.TestCase):
             m.update(slug=f"hand-{n}", doc_id="hand", version=f"{n}.0")
             if n == "1":
                 m["sections"][1]["command"] = "Alpha Setup"
+            else:                               # a second section with a title the manual already has
+                m["toc"].append({"level": 2, "title": "Alpha Setup", "page": 6})
             path.write_text(json.dumps(m, indent=2), encoding="utf-8")
         r = run("build_search_db.py", "--root", str(root))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1581,6 +1643,8 @@ class EditionsTest(unittest.TestCase):
         listing = self.server.tool_compare_versions({"document": "hand"})
         corpus._db.close()
         self.assertIn("Only one of these editions names its entries", listing)
+        self.assertIn("Alpha Setup (1 more than in 1.0)", listing,
+                      "a heading added under a title the manual already had was not reported")
         self.assertNotIn("## Removed since 1.0\n- Alpha Setup", listing,
                          "an entry was reported removed from an edition that attributes nothing")
 
