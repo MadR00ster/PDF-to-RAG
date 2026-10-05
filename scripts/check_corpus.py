@@ -800,6 +800,17 @@ def version_numbers(version) -> tuple | None:
     return tuple(int(n) for n in re.findall(r"\d+", v)) or None
 
 
+def same_release(a, b) -> bool:
+    """Two versions naming one release, as build_search_db.py decides it: by
+    their numbers ("2026.3" is "Y-2026.03"), or as written where a version
+    has none."""
+    na, nb = version_numbers(a), version_numbers(b)
+    if na is None or nb is None:
+        text_a, text_b = (re.sub(r"\s+", "", str(v or "")).upper().replace("_", ".") for v in (a, b))
+        return bool(text_a) and text_a == text_b
+    return na == nb
+
+
 def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> None:
     lines: dict[str, list[tuple[str, object]]] = {}
     later: dict[str, set] = {}
@@ -847,13 +858,18 @@ def check_editions(collection_dir: Path, manifests: dict, f: Findings) -> None:
         if doc_id not in lines:
             f.add("pin-invalid", f"{doc_id!r} is not a doc_id here")
             continue
-        # A pin names the tool release in use. An edition for exactly that
-        # release applies to it; so does the nearest earlier edition, if its
-        # cover says "and later".
+        # A pin is a version as text; the index build stops on anything else.
+        if not isinstance(version, str) or not version.strip():
+            f.add("pin-invalid", f"{doc_id} pinned to {version!r}, which is not a version written as text")
+            continue
+        # It names the tool release in use. An edition for that release
+        # applies to it; so does the nearest earlier edition, if its cover
+        # says "and later".
         wanted = version_numbers(version)
         have = {version_numbers(v) for _folder, v in lines[doc_id]} - {None}
         earlier = [n for n in have if wanted is not None and n < wanted]
-        if wanted is None or not (wanted in have or (earlier and max(earlier) in later.get(doc_id, ()))):
+        if not (any(same_release(version, v) for _folder, v in lines[doc_id])
+                or (earlier and max(earlier) in later.get(doc_id, ()))):
             f.add("pin-invalid", f"{doc_id} pinned to {version!r}; editions here: "
                                  + ", ".join(str(v) for _folder, v in lines[doc_id]))
 

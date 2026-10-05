@@ -981,6 +981,45 @@ class EditionsTest(unittest.TestCase):
         self.assertNotIn("source-pdf-missing", r.stdout)
         self.assertNotIn("pdf-unaccounted", r.stdout)
 
+    def test_20b_any_version_groups_editions_and_two_on_a_cover_are_refused(self):
+        """4.1 and 4.2 of guide.pdf are one manual, not two.
+
+        The shared name used to be found by taking a year-style ending off the
+        slug, so `guide-4-1` and `guide-4-2` stayed two unrelated manuals that
+        both answered every search. And a cover naming two versions is
+        ambiguous however often each is printed: a running header repeats.
+        """
+        editions = load_script("editions")
+        self.assertEqual(editions.default_slug("guide", "4.1"), "guide-4-1")
+        self.assertEqual(editions.default_slug("guide-4-1", "4.1"), "guide-4-1", "the version was appended twice")
+        self.assertEqual(editions.default_doc_id("guide-4-1", "4.1"), "guide")
+        self.assertEqual(editions.default_doc_id("guide-42", "4.1"), "guide-42",
+                         "a number in the manual's name was taken for its version")
+        self.assertEqual(editions.default_doc_id("tshell-ref-2026-2", "2026.2"), "tshell-ref")
+        self.assertEqual(editions.default_doc_id("mbist-useref-2025-2", "2023.1"), "mbist-useref")
+
+        coll = self.tmp / "Numbered" / "Tools"
+        for folder in ("new_docs", "docs"):
+            (coll / folder).mkdir(parents=True)
+        for version in ("4.1", "4.2"):
+            gadget_fixture(coll / "new_docs" / "guide.pdf", version, ["Setup", "Use"])
+            r = run("convert_manual.py", str(coll / "new_docs" / "guide.pdf"), "--title", "Tool Guide")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        ids = {slug: json.loads((coll / "docs" / slug / "manifest.json").read_text(encoding="utf-8"))["doc_id"]
+               for slug in ("guide-4-1", "guide-4-2")}
+        self.assertEqual(ids, {"guide-4-1": "guide", "guide-4-2": "guide"},
+                         "two releases of one manual were given different doc_ids")
+
+        pdf = self.tmp / "two-versions.pdf"
+        write_pdf(pdf, [[("Tool Guide", 24), ("Software Version 4.1", 11), ("Software Version 4.1", 11),
+                         ("Version 4.2", 11)]], [[1, "Tool Guide", 1]])
+        cover = editions.read_cover(pdf)
+        self.assertIsNone(cover.version, "the version printed more often was taken as the manual's")
+        self.assertIn("4.2", cover.note)
+        # The same release written two ways is one version, not two.
+        self.assertTrue(editions.same_release("2026.3", "Y-2026.03"))
+        self.assertFalse(editions.same_release("Y-2026.03", "Y-2026.03-SP2"))
+
     def test_21_search_answers_from_one_edition_per_manual(self):
         """Two releases indexed, one answering -- and never a stand-in.
 
@@ -1078,6 +1117,18 @@ class EditionsTest(unittest.TestCase):
         same = s.tool_compare_versions({"document": "widget-ref", "name": "set_widget_option_07"})
         self.assertIn("No differences", same)
 
+        # What is ignored is Markdown emphasis, and only that. Deleting every
+        # `_` and `*` made `data_*` and `data*` the same line, and two entries
+        # matching different names "identical".
+        key = s.diff_key
+        self.assertNotEqual(key("set_mode -pattern data_*"), key("set_mode -pattern data*"),
+                            "a pattern's own characters were dropped as if they were emphasis")
+        self.assertNotEqual(key("use scan_en"), key("use scanen"))
+        self.assertEqual(key("**_chain_name group_name_**"), key("chain_name group_name"))
+        self.assertEqual(key("_Note:_ The _cell_em_ value"), key("Note: The cell_em value"))
+        self.assertEqual(key("- `-from` _`from_list`_"), key("- -from from_list"))
+        self.assertEqual(key(r"data\_\*"), key("data_*"))
+
         listing = s.tool_compare_versions({"document": "widget-ref", "from_version": "1.0", "to_version": "2.0"})
         added, removed = listing.split("## Removed since")
         self.assertIn("set_widget_option_25", added)
@@ -1152,7 +1203,8 @@ class EditionsTest(unittest.TestCase):
             if pins is not None:
                 (corpus / "current_versions.json").write_text(json.dumps(pins), encoding="utf-8")
             r = run("check_corpus.py", str(corpus), "--no-pdf")
-            return r.returncode, r.stdout
+            built = run("build_search_db.py", "--root", str(corpus), "--stats-only")
+            return r.returncode, r.stdout, built.returncode
 
         both = {"doc_id": "hand"}
         cases = [
@@ -1160,15 +1212,25 @@ class EditionsTest(unittest.TestCase):
             ("unordered", {**both, "version": "1.0"}, both, None, "edition-unordered", 1),
             ("duplicate", {**both, "version": "1.0"}, {**both, "version": "1.0"}, None, "edition-duplicate-version", 1),
             ("badpin", {**both, "version": "1.0"}, {**both, "version": "2.0"}, {"hand": "3.0"}, "pin-invalid", 1),
+            # A pin is a version as text: 2.0 as a JSON number stops the build.
+            ("numberpin", {**both, "version": "1.0"}, {**both, "version": "2.0"}, {"hand": 2.0}, "pin-invalid", 1),
         ]
         for name, first, second, pins, expected, code in cases:
             with self.subTest(defect=name):
-                rc, out = plant(name, first, second, pins)
+                rc, out, build_rc = plant(name, first, second, pins)
                 self.assertIn(expected, out, f"{name} went unreported\n{out}")
                 self.assertEqual(rc, code, out)
-        rc, out = plant("clean", {**both, "version": "1.0"}, {**both, "version": "2.0"}, {"hand": "1.0"})
-        for check in ("edition-", "pin-invalid"):
-            self.assertNotIn(check, out, f"two well-formed editions raised {check}\n{out}")
+                self.assertEqual(build_rc, code, f"the checker and the index build disagree about {name}")
+        # What the checker passes, the index build must accept -- including a
+        # release written without its letter.
+        fine = [("clean", {**both, "version": "1.0"}, {**both, "version": "2.0"}, {"hand": "1.0"}),
+                ("samepin", {**both, "version": "Y-2026.03"}, {**both, "version": "Y-2026.06"}, {"hand": "2026.3"})]
+        for name, first, second, pins in fine:
+            with self.subTest(accepted=name):
+                rc, out, build_rc = plant(name, first, second, pins)
+                for check in ("edition-", "pin-invalid"):
+                    self.assertNotIn(check, out, f"two well-formed editions raised {check}\n{out}")
+                self.assertEqual(build_rc, 0, f"the index build rejects a pin the checker accepts ({name})")
 
     def test_24_an_older_corpus_is_stamped_and_migrated(self):
         """A corpus converted before editions existed: PDFs beside docs/, no
@@ -1257,6 +1319,59 @@ class EditionsTest(unittest.TestCase):
         corpus._db.close()
         r = run("check_corpus.py", str(coll), "--no-pdf")
         self.assertNotIn("pin-invalid", r.stdout, "the checker rejects a pin the index build accepts")
+
+        # The pin makes the earliest edition current. That is a healthy
+        # corpus, and the smoke test has to say so.
+        r = run("mcp_smoke_test.py", "--db", str(db))
+        self.assertEqual(r.returncode, 0, "a pin on the earliest edition failed the smoke test:\n" + r.stdout)
+
+        # A section the index could not read is not evidence it was removed.
+        self.server.CORPUS = corpus = self.server.Corpus(db)
+        self.addCleanup(lambda: corpus._db and corpus._db.close())
+        asked = {"document": "probe-guide", "from_version": "2023.1", "to_version": "2026.1"}
+        self.assertIn("Remote Probing", self.server.tool_compare_versions(asked))
+        corpus._db.close()
+        (coll / "docs" / "probe-guide-2026-1" / new["sections"][-1]["file"]).unlink()
+        r = run("build_search_db.py", "--root", str(root))
+        self.assertEqual(r.returncode, 2, "a section file that is gone did not mark the build partial")
+        self.server.CORPUS = corpus = self.server.Corpus(db)
+        self.addCleanup(lambda: corpus._db and corpus._db.close())
+        with self.assertRaises(ValueError) as partial:
+            self.server.tool_compare_versions(asked)
+        self.assertIn("not in the index", str(partial.exception))
+        corpus._db.close()
+
+    def test_26_a_name_means_what_it_does_in_the_collection_asked_for(self):
+        """One collection's slug can be another's doc_id.
+
+        `hand` is a document in Alpha and a manual with two editions in Beta.
+        Asked for in Beta, it has to be Beta's manual -- and every tool that
+        takes a document has to be able to say which collection it means.
+        """
+        root = self.tmp / "TwoCollections"
+        handmade_document(root / "Alpha", "hand")
+        for n in ("1", "2"):
+            handmade_document(root / "Beta", f"hand-{n}")
+            path = root / "Beta" / "docs" / f"hand-{n}" / "manifest.json"
+            m = json.loads(path.read_text(encoding="utf-8"))
+            m.update(doc_id="hand", version=f"{n}.0")
+            path.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        r = run("build_search_db.py", "--root", str(root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.server.CORPUS = corpus = self.server.Corpus(root / "mcp-index.sqlite3")
+        self.addCleanup(lambda: corpus._db and corpus._db.close())
+        resolve = self.server.resolve_document
+        self.assertEqual(resolve("hand")["slug"], "hand")
+        self.assertEqual(resolve("hand", collection="beta")["slug"], "hand-2",
+                         "another collection's slug answered for this collection's manual")
+        self.assertEqual(resolve("hand", "1.0", "beta")["slug"], "hand-1")
+        with self.assertRaises(ValueError):
+            resolve("hand-1", collection="alpha")
+        self.assertIn("hand-2", self.server.tool_get_toc({"document": "hand", "collection": "beta"}))
+        schemas = {t["name"]: t["inputSchema"]["properties"] for t in self.server.build_tools()}
+        for tool in ("search_docs", "lookup_entity", "get_toc", "compare_versions", "get_page_image"):
+            self.assertIn("collection", schemas[tool], f"{tool} takes a document and cannot say which collection")
+        corpus._db.close()
 
 
 if __name__ == "__main__":

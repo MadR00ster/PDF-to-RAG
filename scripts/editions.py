@@ -56,7 +56,6 @@ import re
 import shutil
 import sys
 import time
-from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
@@ -186,6 +185,18 @@ def version_sort(version: str | None) -> str | None:
     return ".".join(f"{n:06d}" for n in key) if key else None
 
 
+def same_release(a: str | None, b: str | None) -> bool:
+    """Whether two version strings name one release: "2026.3" and "Y-2026.03"
+    do. Judged by the numbers editions are ordered by, which is also how two
+    editions are found to share a version, so a release cannot be both the
+    same as an edition and absent from the manual. Versions with no number in
+    them are the same only as written."""
+    ka, kb = version_key(a), version_key(b)
+    if ka is None or kb is None:
+        return bool(norm_version(a)) and norm_version(a) == norm_version(b)
+    return ka == kb
+
+
 def filename_version(name: str) -> str | None:
     stem = Path(name).stem
     m = FILENAME_LETTERED_RE.search(stem)
@@ -231,35 +242,47 @@ def read_cover(pdf: Path) -> Cover:
     hits = lettered or [(m.group(1), m.end()) for m in LABELLED_RE.finditer(text)]
     if not hits:
         return Cover(None, False, None, "no version on the first pages")
-    counts = Counter(norm_version(v) for v, _ in hits)
-    (best, n), *rest = counts.most_common()
-    shown = next(v for v, _ in hits if norm_version(v) == best)
-    if rest and rest[0][1] == n:
+    shown = hits[0][0]
+    others = sorted({v for v, _ in hits if not same_release(v, shown)})
+    if others:
+        # Not the one printed most often: a running header repeats, and how
+        # often a version appears says nothing about which the manual covers.
         return Cover(None, False, shown, "the first pages name more than one version: "
-                     + ", ".join(sorted(counts)))
-    later = any(QUALIFIED_RE.match(text, end) for v, end in hits if norm_version(v) == best)
+                     + ", ".join([shown] + others))
+    later = any(QUALIFIED_RE.match(text, end) for _v, end in hits)
     named = filename_version(pdf.name)
-    if named and norm_version(named) != best:
+    if named and not same_release(named, shown):
         # A manual the vendor ships unchanged keeps its cover and takes each
         # new release's filename: "2023.1 and later" inside x_2025_2.pdf. That
         # agrees with the cover. A filename naming an earlier release, or a
         # different one where the cover claims nothing, does not.
-        covered = later and (version_key(named) or ()) > (version_key(best) or ())
+        covered = later and (version_key(named) or ()) > (version_key(shown) or ())
         if not covered:
             return Cover(None, later, shown, f"the cover says {display_version(shown, later)} "
                                              f"and the filename says {named}")
     return Cover(shown, later, shown, "")
 
 
-def default_doc_id(slug: str) -> str:
-    """The name a manual's editions share: the slug without its release."""
+def default_doc_id(slug: str, version: str | None = None) -> str:
+    """The name a manual's editions share: the slug without its release.
+
+    The document's own version where the slug ends in it, whatever its shape:
+    `guide-4-1` at 4.1 is `guide`, or 4.1 and 4.2 of one manual would be two
+    unrelated manuals that both answer every search. Otherwise a year-style
+    ending, which is what a slug named after a filename carries. Nothing else
+    is taken off: a number that is not this document's version is part of the
+    manual's name.
+    """
+    tail = f"-{slugify(version)}" if version and slugify(version) else ""
+    if tail and slug.endswith(tail) and len(slug) > len(tail):
+        return slug[: -len(tail)]
     return VERSION_SUFFIX_RE.sub("", slug) or slug
 
 
 def default_slug(stem_slug: str, version: str | None) -> str:
     """docs/<slug> for a new edition: the manual's name and its release, so
     two editions of one PDF name never ask for the same folder."""
-    return f"{default_doc_id(stem_slug)}-{slugify(version)}" if version else stem_slug
+    return f"{default_doc_id(stem_slug, version)}-{slugify(version)}" if version else stem_slug
 
 
 # -------------------------------------------------------------------- pins
@@ -289,9 +312,8 @@ def applies_to(editions: list[dict], release: str | None) -> dict | None:
     makes no such claim is not offered -- that it still holds would be our
     guess, not the vendor's statement.
     """
-    wanted = norm_version(release)
     for e in editions:
-        if e.get("version") and norm_version(e["version"]) == wanted:
+        if e.get("version") and same_release(e["version"], release):
             return e
     key = version_key(release)
     earlier = [e for e in editions if key and (version_key(e.get("version")) or key) < key]
@@ -453,7 +475,7 @@ def plan(pdf: Path, slug: str | None, out_root: Path | None, version: str | None
         print(f"{SOURCE_DIR}/ already has a {pdf.name}; this one will be filed as {source_name}")
 
     slug = slug or default_slug(slugify(pdf.stem), version)
-    doc_id = doc_id or default_doc_id(slug)
+    doc_id = doc_id or default_doc_id(slug, version)
 
     siblings, unstamped = [], []
     for folder, m in load_manifests(out_root.parent).items() if out_root.name == "docs" else ():
@@ -461,10 +483,10 @@ def plan(pdf: Path, slug: str | None, out_root: Path | None, version: str | None
             continue
         if m.get("doc_id") == doc_id:
             siblings.append(m)
-        elif "doc_id" not in m and default_doc_id(folder) == doc_id:
+        elif "doc_id" not in m and default_doc_id(folder, m.get("version")) == doc_id:
             unstamped.append(folder)
     for m in siblings:
-        if version and m.get("version") and norm_version(m["version"]) == norm_version(version):
+        if version and m.get("version") and same_release(m["version"], version):
             sys.exit(f"{doc_id} {version} is already converted as docs/{m.get('slug')}. "
                      "Pass --doc-id if this is a different manual, or --version if the release is wrong.")
     if siblings:
@@ -557,7 +579,6 @@ def cmd_stamp(args) -> int:
     print(f"{collection.name} ({'DRY RUN -- nothing written' if args.dry_run else 'writing'})")
     print(f"  {'document':42s} {'doc_id':30s} {'version':16s} note")
     for slug, m in manifests.items():
-        doc_id = set_doc_id.get(slug) or m.get("doc_id") or default_doc_id(slug)
         note = ""
         if slug in set_version:
             version, later = split_version(set_version[slug])
@@ -569,10 +590,13 @@ def cmd_stamp(args) -> int:
                 version, later, note = cover.version, bool(cover.version) and cover.later, cover.note
             elif not version:
                 note = "source PDF not found, so the cover was not read"
-            elif cover and cover.later and norm_version(cover.version) == norm_version(version):
+            elif cover and cover.later and same_release(cover.version, version):
                 later = True          # stamped before "and later" was recorded
         if not version:
             unset.append(slug)
+        # After the version: a slug ending in this document's own version
+        # loses it, whatever the version looks like.
+        doc_id = set_doc_id.get(slug) or m.get("doc_id") or default_doc_id(slug, version)
         new = with_edition_fields(m, doc_id, version, later)
         differs = any(new.get(k) != m.get(k) for k in ("doc_id", "version", "version_and_later"))
         print(f"  {slug[:42]:42s} {doc_id[:30]:30s} {display_version(version, later):16s} "

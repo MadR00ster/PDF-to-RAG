@@ -324,8 +324,14 @@ def resolve_document(name, version=None, collection: str | None = None) -> sqlit
     if not name:
         raise ValueError("`document` (a slug or doc_id from `list_documents`) is required.")
     version = str(version).strip() if version not in (None, "") else None
-    unknown = f"Unknown document slug '{name}'. Call `list_documents` for valid slugs."
+    unknown = (f"Unknown document slug '{name}'" + (f" in collection '{collection}'" if collection else "")
+               + ". Call `list_documents` for valid slugs.")
     row = CORPUS.db.execute("SELECT * FROM documents WHERE slug = ?", (name,)).fetchone()
+    if row and collection and row["collection"] != collection:
+        # Another collection's slug. In the one asked for, the name can only
+        # be a manual's doc_id -- and one collection's slug may well be
+        # another's doc_id (`guide` here, `guide-4-1` and `guide-4-2` there).
+        row = None
     if not CORPUS.has_editions:
         if not row:
             raise ValueError(unknown)
@@ -344,10 +350,13 @@ def resolve_document(name, version=None, collection: str | None = None) -> sqlit
                          f"({', '.join(sorted({e['collection'] for e in editions}))}); pass `collection`.")
     if version is None:
         return next(e for e in editions if e["is_current"])
-    for e in editions:
-        if e["version"] and norm_version(e["version"]) == norm_version(version):
-            return e
+    # The same release however it is written: "2026.3" is "Y-2026.03". By the
+    # numbers editions are ordered by, as the index build does for a pin.
     wanted = version_sort(version)
+    for e in editions:
+        if e["version"] and (norm_version(e["version"]) == norm_version(version)
+                             or (wanted and e["version_sort"] == wanted)):
+            return e
     earlier = [e for e in editions if wanted and e["version_sort"] and e["version_sort"] < wanted]
     if earlier and says_later(earlier[-1]):
         return earlier[-1]
@@ -763,7 +772,7 @@ def tool_list_documents(args: dict) -> str:
 
 
 def tool_get_toc(args: dict) -> str:
-    row = resolve_document(args.get("document"), args.get("version"))
+    row = resolve_document(args.get("document"), args.get("version"), normalize_collection(args.get("collection")))
     slug = row["slug"]
 
     max_level = clamp_int(args.get("max_level"), 2, 1, 6)
@@ -842,7 +851,7 @@ def tool_get_figure(args: dict) -> list[dict]:
 
 
 def tool_get_page_image(args: dict) -> list[dict]:
-    row = resolve_document(args.get("document"), args.get("version"))
+    row = resolve_document(args.get("document"), args.get("version"), normalize_collection(args.get("collection")))
     slug = row["slug"]
     page_no = clamp_int(args.get("page"), 0, 0, 1_000_000)
     if not 1 <= page_no <= (row["page_count"] or 0):
@@ -885,15 +894,37 @@ HEADING_NUMBER_RE = re.compile(
     r"^\s*(?:(?:chapter|appendix|part|section)\s+[0-9A-Za-z]+[.:]?|\d+(?:\.\d+)*[.:)]?|[A-Za-z][.:)])\s+", re.I)
 DIFF_QUOTES = str.maketrans({"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
                              "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-"})
+# Markdown emphasis, matched only where it is emphasis: a pair of markers
+# around text, the opening one not following a word character and the closing
+# one not preceding one. `_cell_em_` loses its outer pair and keeps the
+# underscore inside; `set_mode -pattern data_*` loses nothing.
+MD_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|<>~])")
+MD_CODE_RE = re.compile(r"`([^`\n]+)`")
+MD_EMPHASIS_RES = (
+    re.compile(r"(?<![\w*])\*\*(?=\S)(.+?)(?<=\S)\*\*(?![\w*])"),
+    re.compile(r"(?<![\w])__(?=[^\s_])(.+?)(?<=[^\s_])__(?![\w])"),
+    re.compile(r"(?<![\w*])\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?![\w*])"),
+    re.compile(r"(?<![\w])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w])"),
+)
 
 
 def diff_key(line: str) -> str:
-    """A line as compared between editions. Emphasis marks, quote style,
-    dash style and spacing change with the vendor's template from one release
-    to the next and say nothing about the product, so they are not compared.
-    Everything else is: case, numbers, every word."""
+    """A line as compared between editions. Emphasis, quote style, dash style
+    and spacing change with the vendor's template from one release to the
+    next and say nothing about the product, so they are not compared.
+    Everything else is: case, numbers, every word, and every character of an
+    identifier or a pattern. Deleting each `_` and `*` outright made
+    `data_*` and `data*` one key, and two entries that match different names
+    "identical"; only markers that pair up around text are taken out."""
     text = unicodedata.normalize("NFKC", line).translate(DIFF_QUOTES)
-    return " ".join(re.sub(r"[*_`\\]", "", text).split())
+    text = MD_CODE_RE.sub(r"\1", text)
+    for _ in range(3):                    # `**_bold italic_**` nests
+        before = text
+        for pattern in MD_EMPHASIS_RES:
+            text = pattern.sub(r"\1", text)
+        if text == before:
+            break
+    return " ".join(MD_ESCAPE_RE.sub(r"\1", text).split())
 
 
 def entry_lines(slug: str, name: str) -> tuple[list[tuple[str, str]], str]:
@@ -1062,6 +1093,18 @@ def tool_compare_versions(args: dict) -> str:
         old = earlier[-1]
     if old["slug"] == new["slug"]:
         raise ValueError("`from_version` and `to_version` name the same edition.")
+    # Entries exist in the index only for the sections that could be read. A
+    # section missing from one edition would show as an entry removed, or as
+    # two entries with no differences, while the answer says the whole entry
+    # was compared.
+    for edition in (old, new):
+        gap = (edition["section_count"] or 0) - (edition["indexed_count"] or 0)
+        if gap > 0:
+            raise ValueError(
+                f"{gap} of {edition['section_count']} sections of {document_label(edition['slug'])} are "
+                "not in the index, so a comparison could call text removed or unchanged only because "
+                "it was not indexed. Rebuild the index with build_search_db.py once every section "
+                "file is readable, then compare.")
     name = (args.get("name") or "").strip().strip("`")
     return compare_entry(old, new, name) if name else compare_listing(old, new)
 
@@ -1171,6 +1214,7 @@ def build_tools() -> list[dict]:
                 "properties": {
                     "document": doc_schema,
                     "version": version_schema,
+                    "collection": coll_schema,
                     "max_level": {"type": "integer", "description": "Deepest heading level to show, 1-6 (default 2)."},
                     "contains": {"type": "string", "description": "Only entries whose title contains this text (any level)."},
                 },
@@ -1226,6 +1270,7 @@ def build_tools() -> list[dict]:
                 "properties": {
                     "document": doc_schema,
                     "version": version_schema,
+                    "collection": coll_schema,
                     "page": {"type": "integer", "description": "1-based page number in the PDF."},
                 },
                 "required": ["document", "page"],

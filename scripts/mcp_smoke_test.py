@@ -78,21 +78,32 @@ def probes(db: Path) -> dict:
     """Pull real terms out of the index so the checks suit this corpus."""
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    out = {"entity": None, "collection": None, "figure": None, "editions": False, "manual": None}
+    out = {"entity": None, "collection": None, "figure": None, "editions": False, "latest": None}
     if "doc_id" in {r["name"] for r in con.execute("PRAGMA table_info(documents)")}:
         out["editions"] = True
-        row = con.execute("SELECT doc_id FROM documents GROUP BY collection, doc_id"
-                          " HAVING COUNT(*) > 1 LIMIT 1").fetchone()
-        out["manual"] = row["doc_id"] if row else None
-    row = con.execute("SELECT slug, title FROM documents ORDER BY section_count DESC LIMIT 1").fetchone()
+        # The newest edition of a manual that has several, by its own slug. A
+        # doc_id would mean the current edition, which a pin may make the
+        # earliest -- nothing to compare it with, in a healthy corpus -- and
+        # two collections may share one.
+        row = con.execute(
+            "SELECT slug FROM documents WHERE is_latest = 1 AND (collection, doc_id) IN"
+            " (SELECT collection, doc_id FROM documents GROUP BY collection, doc_id HAVING COUNT(*) > 1)"
+            " LIMIT 1").fetchone()
+        out["latest"] = row["slug"] if row else None
+    # Probe terms come from current editions, because that is what a search
+    # without a document reads: a heading that exists only in an edition a
+    # pin has set aside would fail a corpus with nothing wrong with it.
+    current = " AND slug IN (SELECT slug FROM documents WHERE is_current = 1)" if out["editions"] else ""
+    row = con.execute("SELECT slug, title FROM documents WHERE 1 = 1" + current
+                      + " ORDER BY section_count DESC LIMIT 1").fetchone()
     out["document"], out["title_word"] = row["slug"], (row["title"].split() or ["the"])[0]
-    row = con.execute("SELECT name FROM entities LIMIT 1").fetchone()
+    row = con.execute("SELECT name FROM entities WHERE 1 = 1" + current + " LIMIT 1").fetchone()
     if row:
         out["entity"] = row["name"]
     row = con.execute("SELECT DISTINCT collection FROM documents LIMIT 1").fetchone()
     if row:
         out["collection"] = row["collection"]
-    row = con.execute("SELECT heading FROM chunks WHERE length(heading) > 12 LIMIT 1").fetchone()
+    row = con.execute("SELECT heading FROM chunks WHERE length(heading) > 12" + current + " LIMIT 1").fetchone()
     out["phrase"] = row["heading"] if row else out["title_word"]
     try:
         row = con.execute("SELECT id FROM figures ORDER BY id LIMIT 1").fetchone()
@@ -188,10 +199,10 @@ def main() -> int:
             tool("search_docs", {"query": p["title_word"], "version": "1.0"}, "needs `document`", expect_error=True)
             tool("search_docs", {"query": p["title_word"], "document": p["document"], "version": "0.0.0.1"},
                  "nothing was substituted", expect_error=True)
-            if p["manual"]:
+            if p["latest"]:
                 tool("list_documents", {}, "not current")
-                tool("compare_versions", {"document": p["manual"]}, "in both")
-                tool("get_toc", {"document": p["manual"], "max_level": 1}, "pages")
+                tool("compare_versions", {"document": p["latest"]}, "in both")
+                tool("get_toc", {"document": p["latest"], "max_level": 1}, "pages")
             else:
                 tool("compare_versions", {"document": p["document"]}, "only one edition", expect_error=True)
 
