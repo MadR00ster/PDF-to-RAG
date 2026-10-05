@@ -113,15 +113,23 @@ def find_source_pdf(collection: Path, name: str | None) -> Path | None:
     return None
 
 
+def pdfs_in(folder: Path) -> list[Path]:
+    """The PDFs directly in a folder, whatever the case of their suffix. A
+    glob for *.pdf does not see PTUG.PDF on a case-sensitive filesystem, and
+    a filed PDF that is not seen is a name that looks free to take."""
+    if not folder.is_dir():
+        return []
+    return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
+
+
 def filed_pdfs(collection: Path) -> list[Path]:
     """Every PDF the collection has taken in: source/ and, in a collection
     not yet migrated, its root."""
-    found = sorted((collection / SOURCE_DIR).glob("*.pdf")) if (collection / SOURCE_DIR).is_dir() else []
-    return found + sorted(collection.glob("*.pdf"))
+    return pdfs_in(collection / SOURCE_DIR) + pdfs_in(collection)
 
 
 def inbox_pdfs(collection: Path) -> list[Path]:
-    return sorted((collection / INBOX_DIR).glob("*.pdf")) if (collection / INBOX_DIR).is_dir() else []
+    return pdfs_in(collection / INBOX_DIR)
 
 
 def find_collections(root: Path) -> list[Path]:
@@ -238,18 +246,21 @@ def read_cover(pdf: Path) -> Cover:
     except Exception as exc:  # damaged or encrypted: reported, not fatal
         return Cover(None, False, None, f"could not be opened ({str(exc)[:80]})")
 
-    lettered = [(m.group(1), m.end()) for m in LETTERED_RE.finditer(text)]
-    hits = lettered or [(m.group(1), m.end()) for m in LABELLED_RE.finditer(text)]
+    # Both ways a release is printed, together and in reading order. Taking
+    # the lettered form where there was one let "Y-2026.03" on a cover that
+    # also says "Software Version 2025.1" pass as unambiguous.
+    hits = sorted((m.start(), m.group(1), m.end())
+                  for pattern in (LETTERED_RE, LABELLED_RE) for m in pattern.finditer(text))
     if not hits:
         return Cover(None, False, None, "no version on the first pages")
-    shown = hits[0][0]
-    others = sorted({v for v, _ in hits if not same_release(v, shown)})
+    shown = hits[0][1]
+    others = sorted({v for _start, v, _end in hits if not same_release(v, shown)})
     if others:
         # Not the one printed most often: a running header repeats, and how
         # often a version appears says nothing about which the manual covers.
         return Cover(None, False, shown, "the first pages name more than one version: "
                      + ", ".join([shown] + others))
-    later = any(QUALIFIED_RE.match(text, end) for _v, end in hits)
+    later = any(QUALIFIED_RE.match(text, end) for _start, _v, end in hits)
     named = filename_version(pdf.name)
     if named and not same_release(named, shown):
         # A manual the vendor ships unchanged keeps its cover and takes each
@@ -511,6 +522,14 @@ def finish(p: Plan) -> None:
         return
     target = p.collection / SOURCE_DIR / p.source_name
     target.parent.mkdir(exist_ok=True)
+    if target.exists():
+        # rename() replaces an existing file without a word on POSIX. The
+        # name was checked when the conversion started; if something has
+        # taken it since, the PDF already there is another edition's source.
+        print(f"  !! {SOURCE_DIR}/{p.source_name} already exists, so {INBOX_DIR}/{p.pdf.name} was left "
+              "where it is and nothing was overwritten. The conversion is complete; file the PDF by "
+              "hand under the name its manifest records.")
+        return
     try:
         # A rename, never a copy: a half-moved PDF would be filed twice.
         p.pdf.rename(target)
@@ -635,7 +654,7 @@ def cmd_migrate(args) -> int:
                      f"for would be sent back to {INBOX_DIR}/.")
 
     moves = [(pdf, collection / (SOURCE_DIR if pdf.name in accounted else INBOX_DIR) / pdf.name)
-             for pdf in sorted(collection.glob("*.pdf"))]
+             for pdf in pdfs_in(collection)]
     print(f"{collection.name} ({'DRY RUN -- nothing moved' if args.dry_run else 'moving'})")
     blocked = [target for _pdf, target in moves if target.exists()]
     if blocked:
@@ -685,7 +704,7 @@ def cmd_status(args) -> int:
         waiting = inbox_pdfs(collection)
         if waiting:
             print(f"  waiting in {INBOX_DIR}/: " + ", ".join(p.name for p in waiting))
-        loose = sorted(collection.glob("*.pdf"))
+        loose = pdfs_in(collection)
         if loose:
             print(f"  {len(loose)} PDF(s) at the collection root, not in {SOURCE_DIR}/ -- "
                   f"see `editions.py migrate`")

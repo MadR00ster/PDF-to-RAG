@@ -908,23 +908,55 @@ MD_EMPHASIS_RES = (
 )
 
 
-def diff_key(line: str) -> str:
+def diff_key(line: str, literal: bool = False) -> str:
     """A line as compared between editions. Emphasis, quote style, dash style
     and spacing change with the vendor's template from one release to the
     next and say nothing about the product, so they are not compared.
     Everything else is: case, numbers, every word, and every character of an
     identifier or a pattern. Deleting each `_` and `*` outright made
     `data_*` and `data*` one key, and two entries that match different names
-    "identical"; only markers that pair up around text are taken out."""
+    "identical"; only markers that pair up around text are taken out.
+
+    Code is not prose. What a code span holds is kept exactly, without its
+    backticks, and a `literal` line -- one inside a fenced block -- is
+    compared as written: unwrapping `` `*foo*` `` first handed the wildcard
+    to the emphasis rule, and a pattern changed to `foo` compared equal.
+    """
     text = unicodedata.normalize("NFKC", line).translate(DIFF_QUOTES)
-    text = MD_CODE_RE.sub(r"\1", text)
+    if literal:
+        return " ".join(text.split())
+    held: list[str] = []
+
+    def hold(match: re.Match) -> str:
+        held.append(match.group(1))
+        return f"\x00{len(held) - 1}\x00"
+
+    text = MD_CODE_RE.sub(hold, text)
     for _ in range(3):                    # `**_bold italic_**` nests
         before = text
         for pattern in MD_EMPHASIS_RES:
             text = pattern.sub(r"\1", text)
         if text == before:
             break
-    return " ".join(MD_ESCAPE_RE.sub(r"\1", text).split())
+    text = MD_ESCAPE_RE.sub(r"\1", text)
+    text = re.sub(r"\x00(\d+)\x00", lambda m: held[int(m.group(1))], text)
+    return " ".join(text.split())
+
+
+def keyed_lines(body: str, crumb: str = "") -> list[tuple[str, str]]:
+    """One chunk's lines as (key, text): its own label and its code fences
+    left out, and the lines between fences keyed as code."""
+    lines, fenced = [], False
+    for i, line in enumerate(body.splitlines()):
+        if i == 0 and crumb and line.strip().strip("*").strip() == crumb:
+            continue                          # the chunk's own label, not the entry's text
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        key = diff_key(line, literal=fenced)
+        if key and re.search(r"[0-9A-Za-z]", key):
+            lines.append((key, line.strip()))
+    return lines
 
 
 def entry_lines(slug: str, name: str) -> tuple[list[tuple[str, str]], str]:
@@ -937,13 +969,7 @@ def entry_lines(slug: str, name: str) -> tuple[list[tuple[str, str]], str]:
     ).fetchall()
     lines = []
     for c in chunks:
-        crumb = (c["breadcrumb"] or "").strip("*").strip()
-        for i, line in enumerate(c["body"].splitlines()):
-            if i == 0 and crumb and line.strip().strip("*").strip() == crumb:
-                continue                      # the chunk's own label, not the entry's text
-            key = diff_key(line)
-            if key and re.search(r"[0-9A-Za-z]", key):
-                lines.append((key, line.strip()))
+        lines += keyed_lines(c["body"], (c["breadcrumb"] or "").strip("*").strip())
     starts = [c["page_start"] for c in chunks if c["page_start"] is not None]
     ends = [c["page_end"] for c in chunks if c["page_end"] is not None]
     pages = ""

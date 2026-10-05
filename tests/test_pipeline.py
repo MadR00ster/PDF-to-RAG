@@ -1016,6 +1016,16 @@ class EditionsTest(unittest.TestCase):
         cover = editions.read_cover(pdf)
         self.assertIsNone(cover.version, "the version printed more often was taken as the manual's")
         self.assertIn("4.2", cover.note)
+        # Two releases are two releases in whichever style each is printed.
+        mixed = self.tmp / "mixed-styles.pdf"
+        write_pdf(mixed, [[("Tool Guide", 24), ("Version Y-2026.03", 11), ("Software Version 2025.1", 11)]],
+                  [[1, "Tool Guide", 1]])
+        self.assertIsNone(editions.read_cover(mixed).version,
+                          "a lettered version hid a different one printed beside it")
+        agreeing = self.tmp / "agreeing-styles.pdf"
+        write_pdf(agreeing, [[("Tool Guide", 24), ("Version Y-2026.03", 11), ("Release 2026.03", 11)]],
+                  [[1, "Tool Guide", 1]])
+        self.assertEqual(editions.read_cover(agreeing).version, "Y-2026.03")
         # The same release written two ways is one version, not two.
         self.assertTrue(editions.same_release("2026.3", "Y-2026.03"))
         self.assertFalse(editions.same_release("Y-2026.03", "Y-2026.03-SP2"))
@@ -1128,6 +1138,18 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual(key("_Note:_ The _cell_em_ value"), key("Note: The cell_em value"))
         self.assertEqual(key("- `-from` _`from_list`_"), key("- -from from_list"))
         self.assertEqual(key(r"data\_\*"), key("data_*"))
+        # Code is compared as written: inside a code span or a fenced block a
+        # `*`, a `_` or a backslash is the command's, not Markdown's.
+        for code, other in (("`*foo*`", "`foo`"), ("`_foo_`", "`foo`"), ("`__init__`", "`init`"),
+                            (r"`a\_b`", "`a_b`"), ("`**kwargs**`", "`kwargs`")):
+            self.assertNotEqual(key(f"set_pattern -pattern {code}"), key(f"set_pattern -pattern {other}"),
+                                f"{code} and {other} compare equal")
+        self.assertEqual(key("**`foo`**"), key("foo"), "emphasis around a code span was kept")
+        fenced = "Run it:\n```\nset_pattern *foo*\n```\nThen use *foo* here.\n"
+        plain = "Run it:\n```\nset_pattern foo\n```\nThen use foo here.\n"
+        changed = [a for a, b in zip(s.keyed_lines(fenced), s.keyed_lines(plain)) if a[0] != b[0]]
+        self.assertEqual([text for _key, text in changed], ["set_pattern *foo*"],
+                         "only the line inside the fence differs; emphasis in the prose line does not")
 
         listing = s.tool_compare_versions({"document": "widget-ref", "from_version": "1.0", "to_version": "2.0"})
         added, removed = listing.split("## Removed since")
@@ -1340,6 +1362,66 @@ class EditionsTest(unittest.TestCase):
             self.server.tool_compare_versions(asked)
         self.assertIn("not in the index", str(partial.exception))
         corpus._db.close()
+
+    def test_25b_an_unreadable_manifest_stops_the_build(self):
+        """A manifest that cannot be read is not a document to leave out.
+
+        Skipped, the newest edition of a manual drops out of the inventory,
+        the one before it is marked current, and every default answer comes
+        from an older release with nothing to say so.
+        """
+        import shutil
+        root = self.tmp / "BrokenManifest"
+        handmade_document(root, "hand-1")
+        shutil.copytree(root / "docs" / "hand-1", root / "docs" / "hand-2")
+        for n in ("1", "2"):
+            path = root / "docs" / f"hand-{n}" / "manifest.json"
+            m = json.loads(path.read_text(encoding="utf-8"))
+            m.update(slug=f"hand-{n}", doc_id="hand", version=f"{n}.0")
+            path.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        db = root / "mcp-index.sqlite3"
+        r = run("build_search_db.py", "--root", str(root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        before = db.read_bytes()
+
+        newest = root / "docs" / "hand-2" / "manifest.json"
+        newest.write_text(newest.read_text(encoding="utf-8")[:-40], encoding="utf-8")   # cut off mid-write
+        r = run("build_search_db.py", "--root", str(root))
+        self.assertNotEqual(r.returncode, 0, "the build went ahead without the newest edition's manifest")
+        self.assertIn("hand-2/manifest.json", r.stdout + r.stderr)
+        self.assertEqual(db.read_bytes(), before, "a build that could not read every manifest replaced the index")
+
+    def test_25c_a_filed_pdf_is_never_overwritten(self):
+        """PTUG.PDF is a PDF, and a filed one is never replaced.
+
+        A glob for *.pdf does not see it where filenames are case-sensitive,
+        so the next release of the same name looked free to file -- and a
+        rename replaces an existing file silently on POSIX.
+        """
+        coll = self.tmp / "Shouting" / "Tools"
+        for folder in ("new_docs", "source", "docs"):
+            (coll / folder).mkdir(parents=True)
+        gadget_fixture(coll / "source" / "PTUG.PDF", "2025.1", ["Setup"])
+        editions = load_script("editions")
+        self.assertEqual([p.name for p in editions.filed_pdfs(coll)], ["PTUG.PDF"])
+
+        gadget_fixture(coll / "new_docs" / "PTUG.PDF", "2026.1", ["Setup", "Extras"])
+        r = run("convert_manual.py", str(coll / "new_docs" / "PTUG.PDF"), "--title", "Tool Guide")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        m = json.loads((coll / "docs" / "ptug-2026-1" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(m["source_pdf"], "PTUG_2026.1.PDF")
+        first = pymupdf.open(str(coll / "source" / "PTUG.PDF"))
+        self.assertIn("2025.1", first[0].get_text(), "the PDF already filed was replaced by the new release")
+        first.close()
+
+        # And if the name is taken by the time the conversion ends, the move
+        # is refused rather than made over the file that is there.
+        waiting = coll / "new_docs" / "late.pdf"
+        waiting.write_bytes(b"new")
+        (coll / "source" / "late.pdf").write_bytes(b"already filed")
+        editions.finish(editions.Plan(waiting, coll, coll / "docs", "late", "late", None, False, "late.pdf", True))
+        self.assertEqual((coll / "source" / "late.pdf").read_bytes(), b"already filed")
+        self.assertTrue(waiting.exists(), "the PDF that could not be filed was lost")
 
     def test_26_a_name_means_what_it_does_in_the_collection_asked_for(self):
         """One collection's slug can be another's doc_id.

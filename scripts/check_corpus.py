@@ -941,9 +941,12 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
     accounted = {str(m.get("source_pdf")) for m in manifests.values()} | \
                 {str(e.get("file")) for e in superseded if isinstance(e, dict)}
     # new_docs/ is where PDFs wait to be converted, so nothing there is amiss.
-    for pdf in sorted((collection_dir / "source").glob("*.pdf")) + sorted(collection_dir.glob("*.pdf")):
-        if pdf.name not in accounted:
-            f.add("pdf-unaccounted", str(pdf.relative_to(collection_dir)))
+    # By suffix in any case: a glob for *.pdf misses X.PDF where names are
+    # case-sensitive.
+    for folder in (collection_dir / "source", collection_dir):
+        for pdf in sorted(folder.iterdir()) if folder.is_dir() else []:
+            if pdf.is_file() and pdf.suffix.lower() == ".pdf" and pdf.name not in accounted:
+                f.add("pdf-unaccounted", str(pdf.relative_to(collection_dir)))
 
     check_editions(collection_dir, manifests, f)
     return f

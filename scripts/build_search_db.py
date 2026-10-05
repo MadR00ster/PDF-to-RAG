@@ -250,15 +250,38 @@ def find_collections(root: Path) -> list[tuple[str, str, Path]]:
     return found
 
 
-def load_documents(root: Path):
+def load_documents(root: Path) -> tuple[list, list[str]]:
+    """Every document's manifest, and the manifests that could not be used.
+
+    The second list stops the build. A manifest that is skipped is a document
+    missing from the index with nothing to say so, and since editions it is
+    worse than that: if it was a manual's newest edition, an older one is
+    marked current and every default answer quietly changes release. Which
+    edition is current can only be decided from all of them.
+    """
+    documents, failed = [], []
     for key, display, docs in find_collections(root):
         for manifest_path in sorted(docs.glob("*/manifest.json")):
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-            except (OSError, json.JSONDecodeError) as exc:
-                print(f"  !! skipping {manifest_path}: {exc}", file=sys.stderr)
+            manifest, why, delay = None, "", 0.3
+            for attempt in range(3):
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+                    break
+                except OSError as exc:        # a cloud placeholder still hydrating: retry, as read_chunk does
+                    why = str(exc)
+                    if attempt < 2:
+                        time.sleep(delay)
+                        delay *= 2
+                except ValueError as exc:     # not JSON, or not UTF-8: reading again will not help
+                    why = str(exc)
+                    break
+            if manifest is not None and not (isinstance(manifest, dict) and manifest.get("slug")):
+                manifest, why = None, "it is not a manifest with a slug"
+            if manifest is None:
+                failed.append(f"{manifest_path.relative_to(root).as_posix()}: {why}")
                 continue
-            yield key, display, manifest_path, manifest
+            documents.append((key, display, manifest_path, manifest))
+    return documents, failed
 
 
 def load_figures(doc_dir: Path) -> list[dict]:
@@ -296,7 +319,15 @@ def resolve_editions(documents: list) -> tuple[dict[str, dict], list[str]]:
 
 
 def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: bool = True) -> int:
-    documents = list(load_documents(root))
+    documents, failed = load_documents(root)
+    if failed:
+        print("Manifests that could not be read:", file=sys.stderr)
+        for line in failed:
+            print(f"  !! {line}", file=sys.stderr)
+        print("Nothing was written. An index built without these would leave their documents out, and "
+              "could answer from an older edition of a manual whose newest is among them. Fix or remove "
+              "them, then rerun.", file=sys.stderr)
+        return 1
     if not documents:
         print(
             f"No documents found under {root}.\n"
