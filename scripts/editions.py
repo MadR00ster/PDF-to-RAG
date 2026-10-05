@@ -413,6 +413,22 @@ def same_file(pdf: Path, others: list[Path]) -> Path | None:
     return None
 
 
+def versioned_name(name: str, version: str) -> str:
+    """`ptug.pdf` at Y-2027.03 as `ptug_Y-2027.03.pdf`."""
+    path = Path(name)
+    return f"{path.stem}_{re.sub(r'[^0-9A-Za-z.-]+', '-', version).strip('-')}{path.suffix}"
+
+
+def free_source_name(collection: Path, name: str, version: str | None) -> str:
+    """A name no filed PDF has: `name` with the version on the end, or
+    failing that with a number."""
+    taken = {p.name.lower() for p in filed_pdfs(collection)}
+    path = Path(name)
+    candidates = ([versioned_name(name, version)] if version else []) + [
+        f"{path.stem}_{n}{path.suffix}" for n in range(2, 1000)]
+    return next(c for c in candidates if c.lower() not in taken)
+
+
 def source_name_for(collection: Path, pdf: Path, version: str | None) -> str:
     """The name a PDF from new_docs/ takes in source/.
 
@@ -432,7 +448,7 @@ def source_name_for(collection: Path, pdf: Path, version: str | None) -> str:
     if not version:
         sys.exit(f"{SOURCE_DIR}/ already holds a different {pdf.name}, and this one's cover gives no "
                  "version to tell them apart. Pass --version.")
-    name = f"{pdf.stem}_{re.sub(r'[^0-9A-Za-z.-]+', '-', version).strip('-')}{pdf.suffix}"
+    name = versioned_name(pdf.name, version)
     if name.lower() in taken:
         sys.exit(f"{SOURCE_DIR}/ already holds both {pdf.name} and {name}, and neither is this file. "
                  "Two different PDFs claim the same name and version; rename one by hand.")
@@ -523,21 +539,29 @@ def finish(p: Plan) -> None:
     target = p.collection / SOURCE_DIR / p.source_name
     target.parent.mkdir(exist_ok=True)
     if target.exists():
-        # rename() replaces an existing file without a word on POSIX. The
-        # name was checked when the conversion started; if something has
-        # taken it since, the PDF already there is another edition's source.
-        print(f"  !! {SOURCE_DIR}/{p.source_name} already exists, so {INBOX_DIR}/{p.pdf.name} was left "
-              "where it is and nothing was overwritten. The conversion is complete; file the PDF by "
-              "hand under the name its manifest records.")
-        return
+        # The name was free when the conversion started, and the manifest was
+        # written with it. Another PDF has been filed under it since. Left
+        # as it is, this edition's manifest names that PDF -- every tool
+        # looks in source/ first -- so its figures and page images would come
+        # from a different document; and rename() would replace the file
+        # without a word on POSIX. So take a name nothing has, and put it in
+        # the manifest before the move.
+        name = free_source_name(p.collection, p.source_name, p.version)
+        manifest_path = p.out_root / p.slug / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        manifest["source_pdf"] = name
+        manifest_path.write_text(dump_manifest(manifest), encoding="utf-8")
+        print(f"  !! {SOURCE_DIR}/{p.source_name} was taken while this conversion ran. Nothing was "
+              f"overwritten: this PDF is filed as {name}, and the manifest now says so.")
+        target = target.with_name(name)
     try:
         # A rename, never a copy: a half-moved PDF would be filed twice.
         p.pdf.rename(target)
     except OSError as exc:
-        print(f"  !! could not move {INBOX_DIR}/{p.pdf.name} to {SOURCE_DIR}/{p.source_name} ({exc}). "
-              "The conversion is complete; move the file by hand.")
+        print(f"  !! could not move {INBOX_DIR}/{p.pdf.name} to {SOURCE_DIR}/{target.name} ({exc}). "
+              "The conversion is complete and its manifest names that file; move it by hand.")
         return
-    print(f"moved {INBOX_DIR}/{p.pdf.name} -> {SOURCE_DIR}/{p.source_name}")
+    print(f"moved {INBOX_DIR}/{p.pdf.name} -> {SOURCE_DIR}/{target.name}")
 
 
 # ---------------------------------------------------------------- commands

@@ -1147,9 +1147,16 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual(key("**`foo`**"), key("foo"), "emphasis around a code span was kept")
         fenced = "Run it:\n```\nset_pattern *foo*\n```\nThen use *foo* here.\n"
         plain = "Run it:\n```\nset_pattern foo\n```\nThen use foo here.\n"
-        changed = [a for a, b in zip(s.keyed_lines(fenced), s.keyed_lines(plain)) if a[0] != b[0]]
-        self.assertEqual([text for _key, text in changed], ["set_pattern *foo*"],
+        changed = [a for a, b in zip(s.keyed_lines(fenced), s.keyed_lines(plain)) if a.key != b.key]
+        self.assertEqual([line.text for line in changed], ["set_pattern *foo*"],
                          "only the line inside the fence differs; emphasis in the prose line does not")
+        # Exactly as written: spacing and quote style inside code are the code's.
+        self.assertNotEqual(key('print("a  b")', literal=True), key('print("a b")', literal=True))
+        self.assertNotEqual(key('call `f("a  b")` now'), key('call `f("a b")` now'))
+        self.assertNotEqual(key("print(\u201ca\u201d)", literal=True), key('print("a")', literal=True))
+        self.assertEqual(key('print("a  b")', literal=True, exact=False), key('print("a b")', literal=True, exact=False))
+        # A line of code with no letter in it is still a line of code.
+        self.assertEqual([line.key for line in s.keyed_lines("```\n[\n+\n]\n```\n---\n")], ["[", "+", "]"])
 
         listing = s.tool_compare_versions({"document": "widget-ref", "from_version": "1.0", "to_version": "2.0"})
         added, removed = listing.split("## Removed since")
@@ -1414,14 +1421,69 @@ class EditionsTest(unittest.TestCase):
         self.assertIn("2025.1", first[0].get_text(), "the PDF already filed was replaced by the new release")
         first.close()
 
-        # And if the name is taken by the time the conversion ends, the move
-        # is refused rather than made over the file that is there.
+        # And if the name is taken by the time the conversion ends, the PDF
+        # is filed under another, and the manifest -- written before, with
+        # the name that was free then -- is corrected. Left alone it would
+        # name the other PDF, and this edition's pages would come from it.
         waiting = coll / "new_docs" / "late.pdf"
         waiting.write_bytes(b"new")
         (coll / "source" / "late.pdf").write_bytes(b"already filed")
+        (coll / "docs" / "late").mkdir()
+        manifest = coll / "docs" / "late" / "manifest.json"
+        manifest.write_text(json.dumps({"slug": "late", "source_pdf": "late.pdf"}), encoding="utf-8")
         editions.finish(editions.Plan(waiting, coll, coll / "docs", "late", "late", None, False, "late.pdf", True))
         self.assertEqual((coll / "source" / "late.pdf").read_bytes(), b"already filed")
-        self.assertTrue(waiting.exists(), "the PDF that could not be filed was lost")
+        filed = json.loads(manifest.read_text(encoding="utf-8"))["source_pdf"]
+        self.assertNotEqual(filed, "late.pdf", "the manifest still names the PDF another edition filed")
+        self.assertEqual((coll / "source" / filed).read_bytes(), b"new")
+        self.assertEqual(editions.find_source_pdf(coll, filed).read_bytes(), b"new")
+        self.assertFalse(waiting.exists())
+
+    def test_25d_code_in_an_entry_is_compared_as_code(self):
+        """An entry whose example changed is not "No differences".
+
+        Two releases of one entry, the same but for a fenced example that
+        runs across a chunk boundary. In the second chunk a wildcard loses
+        its asterisks, a string loses a space, and a `+` becomes a `-`. Each
+        was invisible once: emphasis was stripped inside code, spacing was
+        collapsed in it, lines without a letter were dropped, and a chunk
+        that began inside a fence was read as prose.
+        """
+        import shutil
+        root = self.tmp / "CodeEntry"
+        handmade_document(root, "hand-1")
+        shutil.copytree(root / "docs" / "hand-1", root / "docs" / "hand-2")
+        variants = {"1": ("set_pattern *foo*", 'print("a  b")', "+"),
+                    "2": ("set_pattern foo", 'print("a b")', "-")}
+        for n, (pattern, text, sign) in variants.items():
+            doc = root / "docs" / f"hand-{n}"
+            m = json.loads((doc / "manifest.json").read_text(encoding="utf-8"))
+            m.update(slug=f"hand-{n}", doc_id="hand", version=f"{n}.0")
+            first, second = m["sections"][1], m["sections"][2]
+            first["command"] = second["command"] = "Alpha Setup"
+            (doc / first["file"]).write_text(
+                f"*{first['breadcrumb']}*\n\n## Alpha Setup\n\nRun it:\n```\n[\nset_pattern *foo*\n", encoding="utf-8")
+            (doc / second["file"]).write_text(
+                f"*{second['breadcrumb']}*\n\n{pattern}\n{text}\n{sign}\n]\n```\nThen use *foo* here.\n",
+                encoding="utf-8")
+            (doc / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
+        r = run("build_search_db.py", "--root", str(root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.server.CORPUS = corpus = self.server.Corpus(root / "mcp-index.sqlite3")
+        self.addCleanup(lambda: corpus._db and corpus._db.close())
+        out = self.server.tool_compare_versions({"document": "hand", "name": "Alpha Setup"})
+        corpus._db.close()
+        self.assertNotIn("No differences", out)
+        only_old, rest = out.split("## Only in 2.0")
+        only_new, spacing = rest.split("## Code that differs only in spacing")
+        self.assertIn("- set_pattern *foo*", only_old, "a wildcard in a chunk that starts inside a fence was read as emphasis")
+        self.assertIn("- set_pattern foo", only_new)
+        self.assertIn("- +", only_old, "a line of code with no letter in it was dropped")
+        self.assertIn("- -", only_new)
+        self.assertIn('1.0: print("a  b")', spacing, "a change of spacing inside code was not reported")
+        self.assertIn('2.0: print("a b")', spacing)
+        self.assertNotIn("Then use", out, "prose that differs in nothing was reported")
+        self.assertNotIn("- [", out, "a line that is in both editions was reported")
 
     def test_26_a_name_means_what_it_does_in_the_collection_asked_for(self):
         """One collection's slug can be another's doc_id.

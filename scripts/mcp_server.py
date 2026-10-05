@@ -45,6 +45,7 @@ import traceback
 import unicodedata
 from collections import Counter
 from pathlib import Path
+from typing import NamedTuple
 
 SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2025-06-18"
@@ -908,68 +909,99 @@ MD_EMPHASIS_RES = (
 )
 
 
-def diff_key(line: str, literal: bool = False) -> str:
-    """A line as compared between editions. Emphasis, quote style, dash style
-    and spacing change with the vendor's template from one release to the
-    next and say nothing about the product, so they are not compared.
-    Everything else is: case, numbers, every word, and every character of an
-    identifier or a pattern. Deleting each `_` and `*` outright made
-    `data_*` and `data*` one key, and two entries that match different names
-    "identical"; only markers that pair up around text are taken out.
+class Line(NamedTuple):
+    key: str      # what has to match for two editions to have the same line
+    text: str     # the line as it is shown
+    loose: str    # the same with code compared as loosely as prose is
 
-    Code is not prose. What a code span holds is kept exactly, without its
-    backticks, and a `literal` line -- one inside a fenced block -- is
-    compared as written: unwrapping `` `*foo*` `` first handed the wildcard
-    to the emphasis rule, and a pattern changed to `foo` compared equal.
+
+def _typography(text: str) -> str:
+    """Text with what a vendor's template decides taken out: quote and dash
+    style, compatibility forms, runs of spaces."""
+    return " ".join(unicodedata.normalize("NFKC", text).translate(DIFF_QUOTES).split())
+
+
+def diff_key(line: str, literal: bool = False, exact: bool = True) -> str:
+    """A line as compared between editions.
+
+    In prose, emphasis, quote style, dash style and spacing change with the
+    vendor's template from one release to the next and say nothing about the
+    product, so they are not compared. Everything else is: case, numbers,
+    every word, every character of an identifier or a pattern. Deleting each
+    `_` and `*` outright made `data_*` and `data*` one key, and two entries
+    that match different names "identical"; only markers that pair up around
+    text are taken out.
+
+    Code is not prose. What a code span holds, and a `literal` line -- one
+    inside a fenced block -- is compared exactly as written: its asterisks
+    are wildcards, not emphasis, and `print("a  b")` is not `print("a b")`.
+    `exact=False` gives the key that treats code as loosely as prose, which
+    is how a line that differs only in spacing or quote style is recognised
+    and reported as that, instead of being hidden or shown as a rewording.
     """
-    text = unicodedata.normalize("NFKC", line).translate(DIFF_QUOTES)
     if literal:
-        return " ".join(text.split())
+        return line.rstrip() if exact else _typography(line)
     held: list[str] = []
 
     def hold(match: re.Match) -> str:
         held.append(match.group(1))
         return f"\x00{len(held) - 1}\x00"
 
-    text = MD_CODE_RE.sub(hold, text)
-    for _ in range(3):                    # `**_bold italic_**` nests
+    text = MD_CODE_RE.sub(hold, line)         # set aside before anything is normalised
+    text = unicodedata.normalize("NFKC", text).translate(DIFF_QUOTES)
+    for _ in range(3):                        # `**_bold italic_**` nests
         before = text
         for pattern in MD_EMPHASIS_RES:
             text = pattern.sub(r"\1", text)
         if text == before:
             break
-    text = MD_ESCAPE_RE.sub(r"\1", text)
-    text = re.sub(r"\x00(\d+)\x00", lambda m: held[int(m.group(1))], text)
-    return " ".join(text.split())
+    text = " ".join(MD_ESCAPE_RE.sub(r"\1", text).split())
+    return re.sub(r"\x00(\d+)\x00",
+                  lambda m: held[int(m.group(1))] if exact else _typography(held[int(m.group(1))]), text)
 
 
-def keyed_lines(body: str, crumb: str = "") -> list[tuple[str, str]]:
-    """One chunk's lines as (key, text): its own label and its code fences
-    left out, and the lines between fences keyed as code."""
+def without_label(body: str, breadcrumb: str | None) -> str:
+    """A chunk's text without the breadcrumb line its converter put first:
+    the chunk's own label, not the entry's text."""
+    crumb = (breadcrumb or "").strip("*").strip()
+    first, _, rest = body.partition("\n")
+    return rest if crumb and first.strip().strip("*").strip() == crumb else body
+
+
+def keyed_lines(text: str) -> list[Line]:
+    """An entry's lines, keyed for comparison.
+
+    The whole entry at once, not chunk by chunk: a chunk boundary can fall
+    inside a fenced example, and whether a line is code has to survive it.
+    Inside a fence every line that is not blank counts, punctuation included
+    -- a `[` added around a list, or a `+` that became a `-`, is a change.
+    In prose a line with no letter or digit is a rule or a table border.
+    """
     lines, fenced = [], False
-    for i, line in enumerate(body.splitlines()):
-        if i == 0 and crumb and line.strip().strip("*").strip() == crumb:
-            continue                          # the chunk's own label, not the entry's text
+    for line in text.splitlines():
         if line.lstrip().startswith("```"):
             fenced = not fenced
             continue
-        key = diff_key(line, literal=fenced)
-        if key and re.search(r"[0-9A-Za-z]", key):
-            lines.append((key, line.strip()))
+        if fenced:
+            if line.strip():
+                lines.append(Line(diff_key(line, literal=True), line.rstrip(),
+                                  diff_key(line, literal=True, exact=False)))
+            continue
+        key = diff_key(line)
+        if key and (re.search(r"[0-9A-Za-z]", key) or "`" in line):
+            lines.append(Line(key, line.strip(), diff_key(line, exact=False)))
     return lines
 
 
-def entry_lines(slug: str, name: str) -> tuple[list[tuple[str, str]], str]:
-    """Every line of one entry in one edition as (key, text), and its pages.
-    The whole entry, however long: a comparison cut where a lookup is cut
-    would report two long entries as identical whenever they differ late."""
+def entry_lines(slug: str, name: str) -> tuple[list[Line], str]:
+    """Every line of one entry in one edition, and its pages. The whole
+    entry, however long: a comparison cut where a lookup is cut would report
+    two long entries as identical whenever they differ late."""
     chunks = CORPUS.db.execute(
         "SELECT body, breadcrumb, page_start, page_end FROM chunks WHERE slug = ? AND entity = ? ORDER BY ord",
         (slug, name),
     ).fetchall()
-    lines = []
-    for c in chunks:
-        lines += keyed_lines(c["body"], (c["breadcrumb"] or "").strip("*").strip())
+    lines = keyed_lines("\n".join(without_label(c["body"], c["breadcrumb"]) for c in chunks))
     starts = [c["page_start"] for c in chunks if c["page_start"] is not None]
     ends = [c["page_end"] for c in chunks if c["page_end"] is not None]
     pages = ""
@@ -979,17 +1011,38 @@ def entry_lines(slug: str, name: str) -> tuple[list[tuple[str, str]], str]:
     return lines, pages
 
 
-def only_in(mine: list[tuple[str, str]], theirs: list[tuple[str, str]]) -> list[str]:
+def only_in(mine: list[Line], theirs: list[Line]) -> list[Line]:
     """Lines of `mine` with no counterpart in `theirs`, in reading order. A
     line there twice and here once is matched once."""
-    available = Counter(key for key, _ in theirs)
+    available = Counter(line.key for line in theirs)
     out = []
-    for key, text in mine:
-        if available[key]:
-            available[key] -= 1
+    for line in mine:
+        if available[line.key]:
+            available[line.key] -= 1
         else:
-            out.append(text)
+            out.append(line)
     return out
+
+
+def respaced(removed: list[Line], added: list[Line]) -> tuple[list[tuple[Line, Line]], list[Line], list[Line]]:
+    """Pair off unmatched lines that are the same once spacing and quote
+    style in code are set aside too. Returns the pairs and what is left of
+    each side. In code such a difference can matter, so it is not dropped;
+    but one name added to an aligned block moves every other line of it, and
+    listing those as removed and added would bury the line that changed."""
+    waiting: dict[str, list[int]] = {}
+    for i, line in enumerate(added):
+        waiting.setdefault(line.loose, []).append(i)
+    pairs, left, used = [], [], set()
+    for line in removed:
+        candidates = waiting.get(line.loose)
+        if candidates:
+            i = candidates.pop(0)
+            used.add(i)
+            pairs.append((line, added[i]))
+        else:
+            left.append(line)
+    return pairs, left, [line for i, line in enumerate(added) if i not in used]
 
 
 def listed(items: list[str], budget: int, what: str) -> list[str]:
@@ -1030,6 +1083,7 @@ def compare_entry(old: sqlite3.Row, new: sqlite3.Row, name: str) -> str:
     new_lines, new_pages = entry_lines(new["slug"], in_new["name"])
     removed, added = only_in(old_lines, new_lines), only_in(new_lines, old_lines)
     same = len(new_lines) - len(added)
+    spacing, removed, added = respaced(removed, added)
     head = [
         f"# `{in_new['name']}`: {v_old} → {v_new}",
         f"{document_label(old['slug'])}" + (f" · {old_pages}" if old_pages else ""),
@@ -1037,17 +1091,30 @@ def compare_entry(old: sqlite3.Row, new: sqlite3.Row, name: str) -> str:
         "",
     ]
     scope = (f"All {len(old_lines)} and {len(new_lines)} lines of the entry were compared, not only the "
-             "part a lookup returns. Emphasis marks, quote style and spacing are ignored; line order "
-             "is not compared.")
-    if not removed and not added:
+             "part a lookup returns. In prose, emphasis marks, quote style and spacing are ignored; code "
+             "spans and fenced code are compared exactly. Line order is not compared.")
+    if not (removed or added or spacing):
         return "\n".join(head + [f"No differences: every line of this entry is in both editions. {scope}"])
-    out = head + [f"{same} line(s) are in both editions, {len(removed)} only in {v_old}, "
-                  f"{len(added)} only in {v_new}. {scope} A reworded line appears on both sides.", ""]
-    half = MAX_SECTION_CHARS // 2
+    counts = [f"{same} line(s) are in both editions", f"{len(removed)} only in {v_old}",
+              f"{len(added)} only in {v_new}"]
+    if spacing:
+        counts.append(f"{len(spacing)} line(s) of code differ only in spacing or quote style")
+    out = head + [", ".join(counts) + f". {scope} A reworded line appears on both sides.", ""]
+    budget = MAX_SECTION_CHARS // 3
     if removed:
-        out += [f"## Only in {v_old}"] + listed(removed, half, f"line(s) only in {v_old}") + [""]
+        out += [f"## Only in {v_old}"] + listed([l.text for l in removed], budget, f"line(s) only in {v_old}") + [""]
     if added:
-        out += [f"## Only in {v_new}"] + listed(added, half, f"line(s) only in {v_new}") + [""]
+        out += [f"## Only in {v_new}"] + listed([l.text for l in added], budget, f"line(s) only in {v_new}") + [""]
+    if spacing:
+        out += ["## Code that differs only in spacing or quote style", "```"]
+        used = 0
+        for n, (was, now) in enumerate(spacing):
+            if n >= MAX_LISTED or used > budget:
+                out.append(f"…and {len(spacing) - n} more pair(s) not shown")
+                break
+            out += [f"{v_old}: {was.text}", f"{v_new}: {now.text}"]
+            used += len(was.text) + len(now.text)
+        out += ["```", ""]
     return "\n".join(out).rstrip()
 
 

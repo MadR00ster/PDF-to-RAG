@@ -278,6 +278,13 @@ of those that differ near the end look identical that far in. What it reports
 is what the manuals say. That is not a release note: a manual reworded is not
 a tool changed, and a tool can change without its manual. Say which it is.
 
+It reads prose and code differently. In prose, emphasis marks, quote style and
+spacing change with the vendor's template and are ignored. Code spans and
+fenced code are compared exactly as written: `*foo*` in a command is a
+wildcard, not emphasis. A line of code that differs only in spacing or quote
+style is listed as that, on its own, because one name added to an aligned
+block moves every other line in it.
+
 Two things it does not do yet. It compares exact lines, so an edition whose
 page footers survived conversion shows them as differences. And for prose it
 compares headings only; to compare a topic, search each edition.
