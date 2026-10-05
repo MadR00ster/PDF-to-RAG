@@ -581,12 +581,30 @@ def emit_vscode_config(root: Path, db_path: Path) -> Path:
     except ValueError:
         db_arg = str(db_path)             # --out put the index outside the corpus
 
+    def same_path(arg: str, path: Path) -> bool:
+        text = str(arg).replace("${workspaceFolder}", str(root))
+        return os.path.normcase(os.path.abspath(text)) == os.path.normcase(os.path.abspath(path))
+
+    def serves_this_index(cfg) -> bool:
+        """Whether an entry is this corpus's server: by the index it opens,
+        or with no --db, by being the copy that sits beside this index.
+        Running a file called mcp_server.py is not enough -- a workspace can
+        register another corpus the same way, and rewriting that entry would
+        point its tools at this index."""
+        if not isinstance(cfg, dict):
+            return False
+        args = [str(a) for a in cfg.get("args") or []]
+        if "--db" in args[:-1]:
+            return same_path(args[args.index("--db") + 1], db_path)
+        return db_path == root / DEFAULT_DB_NAME and any(same_path(a, root / SERVER_NAME) for a in args)
+
     servers = existing.setdefault("servers", {})
-    # An entry that already runs mcp_server.py is this corpus's server under
-    # whatever name it was given: rewrite it rather than add a second one.
-    mine = [name for name, cfg in servers.items() if isinstance(cfg, dict)
-            and any(str(a).replace("\\", "/").endswith(SERVER_NAME) for a in cfg.get("args") or [])]
-    name = mine[0] if len(mine) == 1 else slugify(root.name) + "-docs"
+    # This corpus's entry is rewritten under whatever name it was given;
+    # every other entry is left as it is.
+    mine = [name for name, cfg in servers.items() if serves_this_index(cfg)]
+    name = mine[0] if mine else slugify(root.name) + "-docs"
+    while name in servers and not serves_this_index(servers[name]):
+        name += "-2"
     servers[name] = {
         "type": "stdio",
         "command": "python",

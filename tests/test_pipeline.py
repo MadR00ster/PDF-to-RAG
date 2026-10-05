@@ -1108,11 +1108,24 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual({h["slug"] for h in s.search("gadget seals")}, {"gadget-2025-1"}, "the pin was ignored")
         s.CORPUS._db.close()
 
+        # The catalog follows the pin as well...
+        catalog = self.coll / "docs" / "index.json"
+        r = run("build_index.py", str(self.coll))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        pinned = catalog.read_bytes()
+        self.assertEqual({e["slug"]: e["current"] for e in json.loads(pinned)["manuals"]},
+                         {"gadget-2025-1": True, "gadget-2026-1": False})
+
         before = self.db.read_bytes()
         pins.write_text(json.dumps({"gadget": "2024.1"}), encoding="utf-8")
         r = self.build()
         self.assertNotEqual(r.returncode, 0, "a pin on a version that is not here was accepted")
         self.assertEqual(self.db.read_bytes(), before, "a failed build replaced the index")
+        # ...and like the index, is left as it was when the pin matches
+        # nothing, not rewritten to advertise the newest edition.
+        r = run("build_index.py", str(self.coll))
+        self.assertNotEqual(r.returncode, 0, "build_index.py accepted a pin that matches nothing")
+        self.assertEqual(catalog.read_bytes(), pinned, "a catalog was overwritten by a build that failed")
         r = run("check_corpus.py", str(self.coll), "--no-pdf")
         self.assertIn("pin-invalid", r.stdout)
         pins.unlink()
@@ -1197,6 +1210,14 @@ class EditionsTest(unittest.TestCase):
 
         self.assertIn("removed between them",
                       s.tool_compare_versions({"document": "widget-ref", "name": "set_widget_option_03"}))
+        # A typo is answered from the edition that was asked, not from one
+        # that happens to hold the closest name.
+        typo = s.tool_lookup_entity({"name": "set_widget_optoin_03"})
+        self.assertIn("Did you mean", typo)
+        self.assertNotIn("set_widget_option_03", typo, "a typo was corrected to an entry only an older edition has")
+        self.assertIn("set_widget_option_03", s.tool_lookup_entity(
+            {"name": "set_widget_optoin_03", "document": "widget-ref", "version": "1.0"}))
+
         gone = s.tool_lookup_entity({"name": "set_widget_option_03"})
         self.assertIn("widget-ref-v1", gone, "an entry dropped in the current edition was not traced to the older one")
         self.assertNotIn("SYNTAX", gone, "an older edition's entry was served as if it were current")
@@ -1219,18 +1240,24 @@ class EditionsTest(unittest.TestCase):
         import shutil
         config = self.root / ".vscode" / "mcp.json"
         config.parent.mkdir(exist_ok=True)
-        # A server someone registered earlier, by absolute path, under their own name.
-        config.write_text(json.dumps({"servers": {"my-manuals": {
-            "type": "stdio", "command": "python",
-            "args": ["X:\\old\\checkout\\scripts\\mcp_server.py", "--db", "X:\\old\\index.sqlite3"]}}}),
-            encoding="utf-8")
+        # This corpus, registered earlier by absolute path under someone's own
+        # name -- and another corpus registered the same way, which is not
+        # this build's to touch just because it runs a file of the same name.
+        other = {"type": "stdio", "command": "python",
+                 "args": ["X:\\old\\checkout\\scripts\\mcp_server.py", "--db", "X:\\other\\index.sqlite3"]}
+        config.write_text(json.dumps({"servers": {
+            "my-manuals": {"type": "stdio", "command": "python",
+                           "args": ["X:\\old\\checkout\\scripts\\mcp_server.py", "--db",
+                                    str(self.root / "mcp-index.sqlite3")]},
+            "other-manuals": other}}), encoding="utf-8")
         for _ in range(2):                      # emitting twice must not add a second entry
             r = run("build_search_db.py", "--root", str(self.root), "--emit-vscode-config")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         servers = json.loads(config.read_text(encoding="utf-8"))["servers"]
-        self.assertEqual(list(servers), ["my-manuals"], "the existing entry was not reused")
+        self.assertEqual(list(servers), ["my-manuals", "other-manuals"], "this corpus's entry was not reused")
         self.assertEqual(servers["my-manuals"]["args"],
                          ["${workspaceFolder}/mcp_server.py", "--db", "${workspaceFolder}/mcp-index.sqlite3"])
+        self.assertEqual(servers["other-manuals"], other, "another corpus's server was pointed at this index")
         self.assertNotIn(self.tmp.name, config.read_text(encoding="utf-8"), "the config names this machine's paths")
         self.assertTrue((self.root / "mcp_server.py").is_file(), "the server was not copied beside the index")
 
@@ -1524,6 +1551,38 @@ class EditionsTest(unittest.TestCase):
         self.assertIn('2.0: print("a b")', spacing)
         self.assertNotIn("Then use", out, "prose that differs in nothing was reported")
         self.assertNotIn("- [", out, "a line that is in both editions was reported")
+
+    def test_25e_an_edition_that_names_no_entries_proves_nothing_about_one(self):
+        """Absent from an edition with no entity rows is not "removed".
+
+        rebuild_reference.py attributes entries only where it finds enough of
+        them. A reference that shrinks below that still has every command and
+        no entity rows, and an entry compared against it used to be reported
+        as removed.
+        """
+        import shutil
+        root = self.tmp / "Unattributed"
+        handmade_document(root, "hand-1")
+        shutil.copytree(root / "docs" / "hand-1", root / "docs" / "hand-2")
+        for n in ("1", "2"):
+            path = root / "docs" / f"hand-{n}" / "manifest.json"
+            m = json.loads(path.read_text(encoding="utf-8"))
+            m.update(slug=f"hand-{n}", doc_id="hand", version=f"{n}.0")
+            if n == "1":
+                m["sections"][1]["command"] = "Alpha Setup"
+            path.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        r = run("build_search_db.py", "--root", str(root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.server.CORPUS = corpus = self.server.Corpus(root / "mcp-index.sqlite3")
+        self.addCleanup(lambda: corpus._db and corpus._db.close())
+        with self.assertRaises(ValueError) as unknown:
+            self.server.tool_compare_versions({"document": "hand", "name": "Alpha Setup"})
+        self.assertIn("no per-entry attribution", str(unknown.exception))
+        listing = self.server.tool_compare_versions({"document": "hand"})
+        corpus._db.close()
+        self.assertIn("Only one of these editions names its entries", listing)
+        self.assertNotIn("## Removed since 1.0\n- Alpha Setup", listing,
+                         "an entry was reported removed from an edition that attributes nothing")
 
     def test_26_a_name_means_what_it_does_in_the_collection_asked_for(self):
         """One collection's slug can be another's doc_id.

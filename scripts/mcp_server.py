@@ -100,7 +100,6 @@ class Corpus:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._db: sqlite3.Connection | None = None
-        self._entity_names: list[str] | None = None
         self._root: Path | None = None
         self._has_figures: bool | None = None
         self._has_editions: bool | None = None
@@ -147,11 +146,6 @@ class Corpus:
             f"(worst: {detail}). Absence of a result here is not evidence the corpus "
             f"lacks it. Rebuild with `build_search_db.py` once every file is readable."
         )
-
-    def entity_names(self) -> list[str]:
-        if self._entity_names is None:
-            self._entity_names = [r["name"] for r in self.db.execute("SELECT DISTINCT name FROM entities")]
-        return self._entity_names
 
     @property
     def root(self) -> Path:
@@ -712,23 +706,30 @@ def suggest_entities(name: str, collection: str | None, document: str | None = N
     elsewhere = other_editions_with(name, collection, document)
     if elsewhere:
         return elsewhere
-    where, params = "WHERE name_lower LIKE ?", [name.lower() + "%"]
+    # Every suggestion comes from where the lookup looked: this collection,
+    # this edition, or the current edition of each manual. Close matches used
+    # to be drawn from every entry in the corpus, so a typo asked of 2.0
+    # could be answered with a command only 1.0 has, and nothing said so.
+    scope, scope_params = "", []
     if collection:
-        where += " AND collection = ?"
-        params.append(collection)
+        scope += " AND collection = ?"
+        scope_params.append(collection)
     if document:
-        where += " AND slug = ?"
-        params.append(document)
+        scope += " AND slug = ?"
+        scope_params.append(document)
     else:
-        where += current_only()
+        scope += current_only()
     prefix = CORPUS.db.execute(
-        f"SELECT name, slug FROM entities {where} ORDER BY name LIMIT 25", params
+        f"SELECT name, slug FROM entities WHERE name_lower LIKE ?{scope} ORDER BY name LIMIT 25",
+        [name.lower() + "%"] + scope_params,
     ).fetchall()
     if prefix:
         listing = "\n".join(f"- `{r['name']}` ({r['slug']})" for r in prefix)
         return f"No entry named exactly `{name}`. Entries starting with it:\n\n{listing}"
 
-    close = difflib.get_close_matches(name.lower(), [c.lower() for c in CORPUS.entity_names()], n=8, cutoff=0.7)
+    candidates = [r["name_lower"] for r in CORPUS.db.execute(
+        f"SELECT DISTINCT name_lower FROM entities WHERE 1 = 1{scope}", scope_params)]
+    close = difflib.get_close_matches(name.lower(), candidates, n=8, cutoff=0.7)
     if close:
         return f"No entry named `{name}`. Did you mean:\n\n" + "\n".join(f"- `{c}`" for c in close)
     return (
@@ -1085,7 +1086,17 @@ def compare_entry(old: sqlite3.Row, new: sqlite3.Row, name: str) -> str:
             "Leave `name` out to compare its headings, or search each edition with `search_docs` "
             "and `document`/`version`.")
     if not in_old or not in_new:
-        there, missing = (new, v_old) if in_new else (old, v_new)
+        there, other, missing = (new, old, v_old) if in_new else (old, new, v_new)
+        # Absent from an edition that names its entries is evidence. Absent
+        # from one that names none is not: a reference is attributed only
+        # where enough entries are found, so one that shrank below that has
+        # every command and no entity rows.
+        if not CORPUS.db.execute("SELECT 1 FROM entities WHERE slug = ? LIMIT 1", (other["slug"],)).fetchone():
+            raise ValueError(
+                f"`{name}` is an entry in the {edition_name(there)} edition of `{new['doc_id']}`, but the "
+                f"{missing} edition has no per-entry attribution at all, so the index cannot say whether "
+                "it is in that edition too. Leave `name` out to compare the editions' headings, or search "
+                f"the {missing} edition with `search_docs` and `document`/`version`.")
         return (f"`{name}` is an entry in the {edition_name(there)} edition of `{new['doc_id']}` and "
                 f"not in the {missing} edition: it was {'added' if in_new else 'removed'} between them.\n\n"
                 f"Read it with `lookup_entity` and `document`: `{there['slug']}`.")
@@ -1159,7 +1170,9 @@ def compare_listing(old: sqlite3.Row, new: sqlite3.Row) -> str:
                   "compare one entry's text.")
     else:
         a, b, what = headings(old), headings(new), "headings"
-        caveat = ("Headings only, from the two PDFs' bookmark outlines, chapter numbering aside. A "
+        caveat = (("Only one of these editions names its entries, so entries could not be compared. "
+                   if e_old or e_new else "")
+                  + "Headings only, from the two PDFs' bookmark outlines, chapter numbering aside. A "
                   "renamed heading shows as one removed and one added, and text under a heading that "
                   "is in both may still have changed: search each edition with `search_docs` and "
                   "`document`/`version` to compare a topic.")

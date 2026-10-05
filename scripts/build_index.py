@@ -188,15 +188,20 @@ def main() -> None:
     manuals = load_manuals(docs_dir)
     superseded = load_superseded(vendor_dir)
     problems = mark_current(vendor_dir, manuals)
+    if problems:
+        # Before anything is written. With a pin that matches nothing, the
+        # newest edition is still marked current here; written out, the
+        # catalog would advertise it while the search index, which refuses
+        # the same pin, went on answering from the edition pinned before.
+        print("Editions that could not be ordered. Nothing was written, and build_search_db.py "
+              "stops on these too:")
+        for p in problems:
+            print(f"  !! {p}")
+        sys.exit(1)
 
     write_index_json(docs_dir, manuals, superseded)
     write_readme(vendor_dir, docs_dir, manuals, superseded)
     report_orphans(vendor_dir, manuals, superseded)
-    if problems:
-        print("\nEditions that could not be ordered -- build_search_db.py stops on these:")
-        for p in problems:
-            print(f"  !! {p}")
-        sys.exit(1)
 
 
 if __name__ == "__main__":
