@@ -80,7 +80,7 @@ LABELLED_RE = re.compile(
 QUALIFIED_RE = re.compile(r"\s+(?:and|or)\s+(?:later|newer|above|higher)\b", re.I)
 
 FILENAME_LETTERED_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]-20\d\d\.\d\d(?:-SP\d+(?:-\d+)?)?)", re.I)
-FILENAME_YEAR_RE = re.compile(r"(?<!\d)(20\d\d)[._](\d{1,2})(?!\d)")
+FILENAME_YEAR_RE = re.compile(r"(?<!\d)(20\d\d)[._](\d{1,2})((?:[._]\d+)*)(-SP\d+(?:-\d+)?)?(?!\d)", re.I)
 
 # What a slug ends in when it was named after a release: "-2026-2",
 # "-y-2026-03-sp2". Dropping it gives the name the editions share.
@@ -170,18 +170,26 @@ def norm_version(version: str | None) -> str:
 def version_key(version: str | None) -> tuple[int, ...] | None:
     """Numbers to order editions by, or None when the version has none.
 
-    "Y-2026.03-SP2" is (2026, 3, 2, 0) and "2026.2" is (2026, 2, 0, 0): year,
-    release within it, service pack. Anything without a year is ordered by
-    the numbers in it as written. Only editions of one manual are ever
-    compared, so two vendors' schemes never meet.
+    Where there is a year: year, release within it, any further dotted
+    components, then -1 and the service pack. "2026.2" is (2026, 2, -1, 0, 0),
+    "Y-2026.03-SP2" is (2026, 3, -1, 2, 0) and "2026.1.1" is
+    (2026, 1, 1, -1, 0, 0). Every component counts: with the third dropped,
+    2026.1.1 and 2026.1.2 were one release, so the second was refused as a
+    duplicate and a request for one was answered from the other. The -1
+    keeps a release ahead of its own patches and service packs apart from
+    them. Anything without a year is ordered by the numbers in it as
+    written. Only editions of one manual are ever compared, so two vendors'
+    schemes never meet. mcp_server.version_sort and
+    check_corpus.version_numbers do the same thing and must keep doing it.
     """
     v = norm_version(version)
     if not v:
         return None
-    m = re.search(r"(20\d\d)\.(\d{1,2})", v)
+    m = re.search(r"(20\d\d)\.(\d{1,2})((?:\.\d+)*)", v)
     if m:
         sp = re.search(r"SP(\d+)(?:-(\d+))?", v)
-        return (int(m.group(1)), int(m.group(2)), int(sp.group(1)) if sp else 0,
+        further = tuple(int(n) for n in m.group(3).split(".") if n)
+        return (int(m.group(1)), int(m.group(2)), *further, -1, int(sp.group(1)) if sp else 0,
                 int(sp.group(2)) if sp and sp.group(2) else 0)
     numbers = tuple(int(n) for n in re.findall(r"\d+", v))
     return numbers or None
@@ -211,7 +219,12 @@ def filename_version(name: str) -> str | None:
     if m:
         return m.group(1).upper()
     m = FILENAME_YEAR_RE.search(stem)
-    return f"{m.group(1)}.{int(m.group(2))}" if m else None
+    if not m:
+        return None
+    # All of it: `guide_2026.1-SP2.pdf` read as 2026.1 contradicts a cover
+    # that says 2026.1-SP2, and the version is then left out for no reason.
+    further = "".join(f".{int(n)}" for n in re.findall(r"\d+", m.group(3)))
+    return f"{m.group(1)}.{int(m.group(2))}{further}{(m.group(4) or '').upper()}"
 
 
 class Cover(NamedTuple):
@@ -501,7 +514,9 @@ def plan(pdf: Path, slug: str | None, out_root: Path | None, version: str | None
     if source_name != pdf.name:
         print(f"{SOURCE_DIR}/ already has a {pdf.name}; this one will be filed as {source_name}")
 
-    slug = slug or default_slug(slugify(pdf.stem), version)
+    # A filename with no ASCII letter or digit in it slugs to nothing, and an
+    # empty slug is docs/ itself.
+    slug = slug or default_slug(slugify(pdf.stem) or "document", version)
     doc_id = doc_id or default_doc_id(slug, version)
 
     siblings, unstamped = [], []

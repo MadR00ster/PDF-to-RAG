@@ -201,7 +201,10 @@ def main() -> int:
                  "nothing was substituted", expect_error=True)
             if p["latest"]:
                 tool("list_documents", {}, "not current")
-                tool("compare_versions", {"document": p["latest"]}, "in both")
+                # Its own slug in the answer: a comparison that ran. Not the
+                # wording of a finished one -- a prose manual with no bookmark
+                # outline has no headings to compare, and nothing wrong with it.
+                tool("compare_versions", {"document": p["latest"]}, f"({p['latest']})")
                 tool("get_toc", {"document": p["latest"], "max_level": 1}, "pages")
             else:
                 tool("compare_versions", {"document": p["document"]}, "only one edition", expect_error=True)

@@ -166,10 +166,17 @@ class Corpus:
         if self._root is None:
             here = self.db_path.parent
             doc = self.db.execute("SELECT collection_dir FROM documents LIMIT 1").fetchone()
-            row = self.db.execute("SELECT value FROM meta WHERE key = 'root'").fetchone()
-            recorded = Path(row["value"]) if row and row["value"] else None
-            if doc and (here / doc["collection_dir"] / "docs").is_dir():
-                self._root = here
+            meta = dict(self.db.execute("SELECT key, value FROM meta WHERE key IN ('root', 'root_from_index')"))
+            recorded = Path(meta["root"]) if meta.get("root") else None
+            # An index kept in a subfolder of its corpus (--out
+            # <root>/indexes/x.sqlite3) records the way back up. Without it
+            # `here` is indexes/, and a moved corpus fell through to the path
+            # it was built at.
+            nearby = [Path(os.path.normpath(here / meta["root_from_index"]))] if meta.get("root_from_index") else []
+            for candidate in nearby + [here]:
+                if doc and (candidate / doc["collection_dir"] / "docs").is_dir():
+                    self._root = candidate
+                    break
             else:
                 self._root = recorded if recorded and recorded.is_dir() else here
         return self._root
@@ -267,13 +274,17 @@ def norm_version(version) -> str:
 
 def version_sort(version) -> str | None:
     """A version as text that orders releases of one manual, the way the
-    index's `version_sort` column was written: year, release and service pack
-    where there is a year ("Y-2026.03-SP2", "2026.2"), else its numbers."""
+    index's `version_sort` column was written by editions.version_sort: where
+    there is a year, the year, the release, any further dotted components,
+    then -1 and the service pack ("2026.1.1" is not "2026.1.2"); else its
+    numbers. This file is copied beside indexes and imports nothing from the
+    repo, so the rule is written out here too; tests hold the two together."""
     v = norm_version(version)
-    m = re.search(r"(20\d\d)\.(\d{1,2})", v)
+    m = re.search(r"(20\d\d)\.(\d{1,2})((?:\.\d+)*)", v)
     if m:
         sp = re.search(r"SP(\d+)(?:-(\d+))?", v)
-        key = (int(m.group(1)), int(m.group(2)), int(sp.group(1)) if sp else 0,
+        further = tuple(int(n) for n in m.group(3).split(".") if n)
+        key = (int(m.group(1)), int(m.group(2)), *further, -1, int(sp.group(1)) if sp else 0,
                int(sp.group(2)) if sp and sp.group(2) else 0)
     else:
         key = tuple(int(n) for n in re.findall(r"\d+", v))
@@ -1177,7 +1188,10 @@ def tool_compare_versions(args: dict) -> str:
         raise ValueError(f"Only one edition of `{new['doc_id']}` is in this corpus "
                          f"({edition_name(new)}), so there is nothing to compare it with.")
     if args.get("from_version") not in (None, ""):
-        old = resolve_document(new["doc_id"], args["from_version"], new["collection"])
+        # By the slug of the edition already chosen, which no other document
+        # has. Its doc_id can also be some other document's slug, and resolved
+        # by that name the comparison would be against a different manual.
+        old = resolve_document(new["slug"], args["from_version"], new["collection"])
     else:
         earlier = [e for e in editions if (e["version_sort"] or "") < (new["version_sort"] or "")]
         if not earlier:

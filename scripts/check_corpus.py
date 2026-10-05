@@ -789,13 +789,17 @@ def find_source_pdf(collection_dir: Path, name) -> Path | None:
 
 def version_numbers(version) -> tuple | None:
     """The numbers editions are ordered by, or None when a version has none.
-    Year, release and service pack where there is a year ("Y-2026.03-SP2",
-    "2026.2"); otherwise the numbers as written."""
+    Where there is a year: year, release, any further dotted components, then
+    -1 and the service pack ("2026.1.1" is not "2026.1.2", and neither is
+    "2026.1"). Otherwise the numbers as written. The same rule as
+    editions.version_key, written out again because this file shares no code
+    with what it checks; tests hold the two together."""
     v = re.sub(r"\s+", "", str(version or "")).upper().replace("_", ".")
-    m = re.search(r"(20\d\d)\.(\d{1,2})", v)
+    m = re.search(r"(20\d\d)\.(\d{1,2})((?:\.\d+)*)", v)
     if m:
         sp = re.search(r"SP(\d+)(?:-(\d+))?", v)
-        return (int(m.group(1)), int(m.group(2)), int(sp.group(1)) if sp else 0,
+        further = tuple(int(n) for n in m.group(3).split(".") if n)
+        return (int(m.group(1)), int(m.group(2)), *further, -1, int(sp.group(1)) if sp else 0,
                 int(sp.group(2)) if sp and sp.group(2) else 0)
     return tuple(int(n) for n in re.findall(r"\d+", v)) or None
 

@@ -490,6 +490,13 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
     for k, v in (
         ("built_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
         ("root", str(root)),
+        # Where the corpus is from the index, when the index is inside it:
+        # "." by default, ".." for --out <root>/indexes/x.sqlite3. A corpus
+        # that is moved or synced takes its index along, and the server finds
+        # the figures and PDFs from this rather than from the path above,
+        # which names the machine that built it.
+        ("root_from_index", os.path.relpath(root, out_path.parent)
+            if out_path.resolve().is_relative_to(root) else ""),
         ("corpus_name", root.name),
         ("chunks", str(total_chunks)),
         ("figures", str(total_figures)),

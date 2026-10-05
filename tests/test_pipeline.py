@@ -1029,6 +1029,36 @@ class EditionsTest(unittest.TestCase):
         # The same release written two ways is one version, not two.
         self.assertTrue(editions.same_release("2026.3", "Y-2026.03"))
         self.assertFalse(editions.same_release("Y-2026.03", "Y-2026.03-SP2"))
+        # Every dotted component counts: with the third dropped, 2026.1.1 and
+        # 2026.1.2 were one release, and a request for one got the other.
+        self.assertFalse(editions.same_release("2026.1.1", "2026.1.2"))
+        self.assertFalse(editions.same_release("2026.1", "2026.1.1"))
+        ordered = ["2026.1", "2026.1-SP1", "2026.1.1", "2026.1.2", "2026.2"]
+        self.assertEqual(sorted(reversed(ordered), key=editions.version_key), ordered)
+        self.assertEqual(sorted(reversed(ordered), key=editions.version_sort), ordered)
+        # The rule is written three times -- here, in the server that is
+        # copied beside indexes, and in the checker that shares no code with
+        # what it checks. They have to say the same thing.
+        checker = load_script("check_corpus")
+        for v in ordered + ["2026.2", "Y-2026.03", "Y-2026.03-SP2", "V-2023.12-SP1-2", "4.1", "4.1.2",
+                            "v2025_2", "RevB"]:
+            self.assertEqual(checker.version_numbers(v), editions.version_key(v), v)
+            self.assertEqual(self.server.version_sort(v), editions.version_sort(v), v)
+
+        # A filename's version is read whole, service pack included.
+        packed = self.tmp / "guide_2026.1-SP2.pdf"
+        write_pdf(packed, [[("Tool Guide", 24), ("Software Version 2026.1-SP2", 11)]], [[1, "Tool Guide", 1]])
+        self.assertEqual(editions.read_cover(packed).version, "2026.1-SP2",
+                         "a filename read without its service pack contradicted the cover")
+        self.assertEqual(editions.filename_version("guide_2026.1.3.pdf"), "2026.1.3")
+        self.assertEqual(editions.filename_version("tshell_ref_2026_2.pdf"), "2026.2")
+
+        # A filename with nothing to make a slug from still gets one.
+        odd = self.tmp / "Odd" / "new_docs"
+        odd.mkdir(parents=True)
+        write_pdf(odd / "\u624b\u518c.pdf", [[("Guide", 24), ("Nothing here names a release.", 11)]], [[1, "Guide", 1]])
+        plan = editions.plan(odd / "\u624b\u518c.pdf", None, self.tmp / "odd-out", None, None)
+        self.assertEqual((plan.slug, plan.doc_id), ("document", "document"), "an empty slug is docs/ itself")
 
     def test_21_search_answers_from_one_edition_per_manual(self):
         """Two releases indexed, one answering -- and never a stand-in.
@@ -1211,6 +1241,16 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, "the copied corpus could not serve itself:\n" + r.stdout + r.stderr)
         corpus = self.server.Corpus(moved / "mcp-index.sqlite3")
         self.assertEqual(corpus.root, moved, "a moved corpus still reads figures and PDFs from where it was built")
+        corpus._db.close()
+
+        # The same for an index kept in a subfolder of its corpus: it has to
+        # find its way back up, not fall through to the path it was built at.
+        r = run("build_search_db.py", "--root", str(self.root), "--out", str(self.root / "indexes" / "nested.sqlite3"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        nested = self.tmp / "ElsewhereNested"
+        shutil.copytree(self.root, nested)
+        corpus = self.server.Corpus(nested / "indexes" / "nested.sqlite3")
+        self.assertEqual(corpus.root, nested, "an index in a subfolder of a moved corpus reads the old corpus")
         corpus._db.close()
 
     def test_23_checker_catches_edition_defects(self):
@@ -1516,6 +1556,31 @@ class EditionsTest(unittest.TestCase):
         for tool in ("search_docs", "lookup_entity", "get_toc", "compare_versions", "get_page_image"):
             self.assertIn("collection", schemas[tool], f"{tool} takes a document and cannot say which collection")
         corpus._db.close()
+
+        # Within one collection too: `guide` is the doc_id of guide-1 and
+        # guide-2, and the slug of a document that has nothing to do with
+        # them. Comparing guide-2 with its 1.0 must stay inside the manual.
+        shared = self.tmp / "SharedName"
+        for slug, doc_id, version in (("guide", "unrelated", "1.0"), ("guide-1", "guide", "1.0"),
+                                      ("guide-2", "guide", "2.0")):
+            handmade_document(shared, slug)
+            path = shared / "docs" / slug / "manifest.json"
+            m = json.loads(path.read_text(encoding="utf-8"))
+            m.update(doc_id=doc_id, version=version)
+            if doc_id == "guide":
+                m["toc"] = []                   # a manual whose PDFs have no bookmark outline
+            path.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        r = run("build_search_db.py", "--root", str(shared))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.server.CORPUS = corpus = self.server.Corpus(shared / "mcp-index.sqlite3")
+        self.addCleanup(lambda: corpus._db and corpus._db.close())
+        out = self.server.tool_compare_versions({"document": "guide-2", "from_version": "1.0"})
+        corpus._db.close()
+        self.assertIn("(guide-1)", out, "the earlier edition of the manual was not the one compared")
+        self.assertNotIn("(guide)", out, "a document that only shares the manual's name was compared instead")
+        # No outline means no headings to compare, not a broken corpus.
+        r = run("mcp_smoke_test.py", "--db", str(shared / "mcp-index.sqlite3"))
+        self.assertEqual(r.returncode, 0, "a manual with no bookmark outline failed the smoke test:\n" + r.stdout)
 
 
 if __name__ == "__main__":
