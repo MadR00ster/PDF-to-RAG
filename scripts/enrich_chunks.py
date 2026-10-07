@@ -24,6 +24,10 @@ Usage:
 
 Options:
   --dry-run     report what would change; write nothing
+  --list-furniture
+                print every distinct line deleted, or with --dry-run that
+                would be, per manual with a count, most often first. Read it
+                before running on text another tool produced.
   --skip SLUG   exclude a manual (repeatable); use for manuals queued for a
                 full page-accurate reconversion, which redoes this anyway
   --only SLUG   restrict to one manual (repeatable)
@@ -56,6 +60,13 @@ CHAPTER_HDR_RE = re.compile(r"^\s*(Chapter|Appendix|Section)\s+\w{1,4}\s*:", re.
 # How close a bare page number / running chapter header must sit to a
 # frequency-detected furniture line to be treated as furniture too.
 ADJACENCY = 3
+
+# A line is the running title when it starts with the title (a footer that
+# adds the release: "Design Compiler User Guide V-2024.06") or is most of it
+# (one the layout cut short). A line that only begins the title -- "Design
+# Compiler" alone, the product name prose uses -- is content. This is the
+# share of the title such a line has to cover.
+TITLE_SHARE = 0.6
 
 
 def strip_emphasis(line: str) -> str:
@@ -146,14 +157,18 @@ def detect_furniture(section_texts: list[str], title: str) -> set[str]:
     for line, n in counts.items():
         norm = re.sub(r"\s+", " ", line).strip().lower()
         is_title_line = title_core and (
-            norm.startswith(title_core[:40]) or title_core.startswith(norm[:40])
+            norm.startswith(title_core[:40])
+            or (title_core.startswith(norm[:40]) and len(norm) >= TITLE_SHARE * len(title_core))
         )
         if norm == "feedback" or (is_title_line and n >= 3):
             furniture.add(line)
     return furniture
 
 
-def strip_furniture(text: str, furniture: set[str]) -> tuple[str, int]:
+def strip_furniture(text: str, furniture: set[str],
+                    dropped: list[str] | None = None) -> tuple[str, int]:
+    """The text without its furniture, and how many lines that was. Each line
+    removed is appended to `dropped`, when one is given."""
     lines = text.splitlines()
     drop = [False] * len(lines)
 
@@ -181,6 +196,8 @@ def strip_furniture(text: str, furniture: set[str]) -> tuple[str, int]:
                 if near:
                     drop[i] = True
 
+    if dropped is not None:
+        dropped.extend(ln.strip() for i, ln in enumerate(lines) if drop[i])
     kept = [ln for i, ln in enumerate(lines) if not drop[i]]
     out = "\n".join(kept)
     out = re.sub(r"\n{3,}", "\n\n", out).strip() + "\n"
@@ -366,9 +383,12 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
 
     changed = 0
     lines_dropped = 0
+    removed: Counter[str] = Counter()
 
     for idx, (s, text) in enumerate(zip(sections, texts)):
-        new, dropped = strip_furniture(text, furniture)
+        gone: list[str] = []
+        new, dropped = strip_furniture(text, furniture, gone)
+        removed.update(gone)
         lines_dropped += dropped
         # Never overwrite a breadcrumb a page-aware converter wrote.
         keep_existing = converter_owns_breadcrumb(s)
@@ -395,6 +415,7 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
         "furniture_patterns": len(furniture),
         "breadcrumbs": crumb_mode,
         "furniture_sample": sorted(furniture, key=len, reverse=True)[:4],
+        "lines_removed": removed,
     }
 
 
@@ -413,6 +434,9 @@ def main() -> None:
     )
     ap.add_argument("vendor", type=Path)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--list-furniture", action="store_true",
+                    help="print every distinct line deleted (or, with --dry-run, that would be), "
+                    "per manual, most often first")
     ap.add_argument("--skip", action="append", default=[])
     ap.add_argument("--only", action="append", default=[])
     args = ap.parse_args()
@@ -441,6 +465,12 @@ def main() -> None:
         f"{sum(r['changed'] for r in results)} changed, "
         f"{sum(r['lines_dropped'] for r in results)} furniture lines removed"
     )
+    if args.list_furniture:
+        for r in results:
+            print(f"\n{r['slug']}: {len(r['lines_removed'])} distinct lines "
+                  f"{'would be ' if args.dry_run else ''}deleted")
+            for line, n in sorted(r["lines_removed"].items(), key=lambda kv: (-kv[1], kv[0])):
+                print(f"  {n:6d}x  {line[:100]!r}")
     if args.dry_run:
         print("\nsample furniture patterns detected:")
         for r in results[:4]:

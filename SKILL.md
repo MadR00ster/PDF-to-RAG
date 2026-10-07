@@ -106,10 +106,13 @@ What breaks, and what it damages:
 - **`enrich_chunks.py` rewrites section files and `manifest.json` in place, with
   no backup.** Its furniture pass deletes `Feedback` lines, lines matching the
   document's own title that recur in at least 3 sections, and the bare page
-  numbers and `Chapter N:` headers within 3 lines of either. That is right for
-  PDF page headers and footers; on text another tool produced it can delete a
-  short line that happens to start the title. Run `--dry-run` first on anything
-  this skill did not convert, and back the folder up.
+  numbers and `Chapter N:` headers within 3 lines of either. A line that only
+  begins the title is kept: it has to start with the title, or cover at least
+  60% of it. That is right for PDF page headers and footers; on text another
+  tool produced it can still delete a short line that happens to be most of
+  the title. Run `--dry-run --list-furniture` first on anything this skill did
+  not convert, to see every distinct line it would delete, and back the folder
+  up.
 - **`build_index.py` replaces `docs/index.json` and `docs/README.md` outright**,
   and stops with an error on a manifest missing `title`, `source_pdf`,
   `page_count` or `sections`.

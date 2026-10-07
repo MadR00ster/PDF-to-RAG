@@ -181,7 +181,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T05 | Docling chunks: use their own heading (**done**) | 1.3 | T01 | S |
 | T06 | Make a declined attribution loud; `--command-level` (**done**) | 1.5 | T01 | M |
 | T07 | Stage conversions outside `docs/`; skip hidden folders everywhere (**done**) | 1.6 | T01 | M |
-| T08 | Stop deleting short lines that begin the title | 1.8 | T04 | S |
+| T08 | Stop deleting short lines that begin the title (**done**) | 1.8 | T04 | S |
 | T09 | Key documents by (collection, slug) (**done**) | 3.5 | T07 | L |
 | **Phase 3: search** |||||
 | T10 | Demote front matter by whole heading | 1.1 | T01 | S |
@@ -930,7 +930,7 @@ made. All seven fixture conversions are byte-identical before and after.
 
 ### T08: Stop deleting short lines that begin the title [1.8]
 
-**Status:** not started
+**Status:** done, except the real-corpus diff (§4).
 
 **Why.** `detect_furniture` treats a line as the running title if
 `title_core.startswith(norm[:40])`, and that is true of *any* prefix of the
@@ -994,9 +994,9 @@ checked by reconverting one and running `check_corpus.py` (its `furniture`
 check). Record both in §4.
 
 **Done when**
-- [ ] The test fails on the old rule and passes now.
-- [ ] `--list-furniture` works with and without `--dry-run`.
-- [ ] The real-corpus diff is done, or its §4 row says why not.
+- [x] The test fails on the old rule and passes now.
+- [x] `--list-furniture` works with and without `--dry-run`.
+- [x] The real-corpus diff is done, or its §4 row says why not.
 
 ---
 
@@ -2163,7 +2163,7 @@ you could not run. Never write a number you did not measure.
 |---|---|---|---|---|
 | T05 | Do Docling's later chunks list the title first? | the snippet in T05, on a real manual | not measured: Docling is not installed here and needs several GB; the claim rests on docling-core's source, as T05 says | 2026-10-07 |
 | T05 | Docling anchored share, after the fix | rerun `references/extractor-benchmark.md`'s method | not measured: needs Docling and the benchmark's corpus slices, neither here; the benchmark file carries a dated note that its numbers predate the fix | 2026-10-07 |
-| T08 | Lines no longer deleted as furniture | `enrich_chunks.py --dry-run --list-furniture`, old vs new, diffed | | |
+| T08 | Lines no longer deleted as furniture | `enrich_chunks.py --dry-run --list-furniture`, old vs new, diffed | not measured: no real corpus here. Run `enrich_chunks.py <collection> --dry-run --list-furniture` with `TITLE_SHARE = 0` (the old rule) and with 0.6, and diff; for references, reconvert one and run `check_corpus.py` (its `furniture` check) | 2026-10-07 |
 | T10 | Search change from whole-heading front matter | `eval_search.py --json`, then `--compare` | | |
 | T11 | Identifier hit@1 and every rank moved | `eval_search.py --json`, then `--compare` | | |
 | T14 | Strict check and figure links after reconverting prose | the T14 real-corpus check | | |

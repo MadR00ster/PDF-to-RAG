@@ -461,5 +461,34 @@ class ConverterTest(unittest.TestCase):
         self.assertRegex(r.stderr, r"level 7.*levels here: 1")
 
 
+    def test_34_a_line_that_only_begins_the_title_is_kept(self):
+        """The running-title rule matched any prefix of the title, so a plain
+        "Design Compiler" line in three sections was deleted as furniture."""
+        ec = load_script("enrich_chunks")
+        title = "Design Compiler User Guide"
+
+        def furniture_for(line: str) -> set:
+            texts = [f"## Part {n}\n\nBody of part {n}.\n\n{line}\n" for n in range(4)]
+            return ec.detect_furniture(texts, title)
+
+        self.assertEqual(furniture_for("Design Compiler"), set(), "the product name alone was taken for furniture")
+        for line in ("Design Compiler User Guide", "Design Compiler User Guide V-2024.06",
+                     "Design Compiler User"):       # 77% of the title
+            self.assertIn(line, furniture_for(line), f"{line!r} is the running title")
+
+        # --list-furniture names every distinct line, with or without --dry-run.
+        coll = WS.collection("furniture", "prose")
+        r = run("convert_manual.py", str(coll / "widget-guide.pdf"), "--title", "Widget Guide", "--slug", "prose")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = run("enrich_chunks.py", str(coll), "--dry-run", "--list-furniture")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"would be deleted")
+        self.assertRegex(r.stdout, r"\d+x  'Feedback'")
+        r = run("enrich_chunks.py", str(coll), "--list-furniture")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"\d+x  'Feedback'")
+        self.assertNotIn("would be", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
