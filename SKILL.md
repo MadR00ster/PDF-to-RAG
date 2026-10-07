@@ -544,7 +544,8 @@ hours. Earn confidence before writing.
 
 ## Bundled scripts
 
-Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
+Install: `pip install -r scripts/requirements.txt` (pymupdf4llm). Needs Python 3.10 or later,
+which pymupdf4llm 1.28 requires.
 
 | Script | Use |
 |---|---|

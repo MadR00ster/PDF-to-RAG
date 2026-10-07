@@ -63,6 +63,8 @@ that writes the answer itself is planned, not built: see
 
 ## Quick start
 
+Needs Python 3.10 or later: pymupdf4llm 1.28 requires it.
+
 ```bash
 pip install -r scripts/requirements.txt
 ```
@@ -194,6 +196,8 @@ python tests/test_pipeline.py
 
 Plain `unittest`. The fixture PDFs are generated with a known table of
 contents, so nothing is checked in. Run it before changing a converter.
+GitHub Actions runs it on Linux and Windows, with Python 3.10 and 3.13,
+on every push.
 
 ## Licence
 
