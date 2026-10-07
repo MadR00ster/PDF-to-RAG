@@ -110,7 +110,8 @@ def missing_answers(questions: list[dict]) -> list[str]:
     out = []
     for q in questions:
         for a in q["answers"]:
-            sql, params = "SELECT 1 FROM chunks WHERE slug = ? AND file LIKE ?", [a["slug"], "%/" + a["file"].lstrip("/")]
+            sql = "SELECT 1 FROM chunks WHERE slug = ? AND file LIKE ? ESCAPE '\\'"
+            params = [a["slug"], "%/" + mcp_server.like_escape(a["file"].lstrip("/"))]
             if a.get("collection"):
                 sql += " AND collection = ?"
                 params.append(a["collection"])

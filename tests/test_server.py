@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import WS, run, handmade_document, load_script  # noqa: E402
+from _support import WS, run, handmade_document, load_script, edition_reference_fixture, LONG_ENTRY  # noqa: E402
 
 
 class ServerTest(unittest.TestCase):
@@ -517,6 +517,56 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
         self.assertIn("Stale index", server.tool_list_documents({}))
         self.assertIn("Stale index", server.tool_search_docs({"query": "widget"}))
+
+
+    def test_43_a_file_name_is_not_a_pattern(self):
+        """`_` is a wildcard in LIKE and nearly every section file has one, so a
+        request for sections/0001-set_x.md was answered with 0001-setax.md."""
+        root = self.tmp / "Underscore"
+        doc = root / "docs" / "one"
+        (doc / "sections").mkdir(parents=True)
+        text = "*One › Setting*\n\n## Setting\n\nThe setax option sets a value.\n"
+        (doc / "sections" / "0001-setax.md").write_text(text, encoding="utf-8")
+        (doc / "full.md").write_text(text, encoding="utf-8")
+        (doc / "manifest.json").write_text(json.dumps({
+            "slug": "one", "title": "One", "source_pdf": "one.pdf", "page_count": 1,
+            "sections": [{"file": "sections/0001-setax.md", "heading": "Setting", "level": 2,
+                          "breadcrumb": "One › Setting"}]}), encoding="utf-8")
+        db = self.tmp / "underscore.sqlite3"
+        r = run("build_search_db.py", "--root", str(root), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        server = load_script("mcp_server")
+        server.CORPUS = server.Corpus(db)
+        self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
+        self.assertIn("setax option", server.tool_get_section({"file": "sections/0001-setax.md"}))
+        self.assertIn("setax option", server.tool_get_section({"file": "0001-setax.md"}))
+        for wrong in ("sections/0001-set_x.md", "sections/0001-set%x.md", "001-setax.md", "1-setax.md"):
+            with self.assertRaises(ValueError, msg=wrong) as raised:
+                server.tool_get_section({"file": wrong})
+            self.assertIn("No section matching", str(raised.exception))
+        self.assertEqual(server.like_escape(r"a_b%c\d"), r"a\_b\%c\\d")
+
+    def test_44_lookup_budget_covers_the_whole_response(self):
+        """The 40,000-character budget was reset for each document that has the
+        entry, so an entry in two documents came back at twice the size."""
+        coll = WS.collection("twice")
+        for name in ("a", "b"):
+            edition_reference_fixture(coll / f"ref-{name}.pdf", list(range(25)), f"The last setting of {name}.")
+            r = run("rebuild_reference.py", str(coll / f"ref-{name}.pdf"), "--title", f"Reference {name}",
+                    "--slug", f"ref-{name}", "--doc-id", f"ref-{name}")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        db = self.tmp / "twice.sqlite3"
+        r = run("build_search_db.py", str(coll), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        server = load_script("mcp_server")
+        server.CORPUS = server.Corpus(db)
+        self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
+        answer = server.tool_lookup_entity({"name": LONG_ENTRY})
+        self.assertLessEqual(len(answer), server.MAX_SECTION_CHARS + 1000, "the budget was spent twice")
+        self.assertIn("1 more document(s) have this entry: ref-b", answer)
+        self.assertIn("ref-a", answer)
+        # asked for by name, the second one is read
+        self.assertIn("ref-b", server.tool_lookup_entity({"name": LONG_ENTRY, "document": "ref-b"}))
 
 
 if __name__ == "__main__":

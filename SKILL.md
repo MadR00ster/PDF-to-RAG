@@ -705,6 +705,11 @@ python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
 The first writes one SQLite FTS5 index plus a `.vscode/mcp.json`; the second
 drives a real handshake and every tool. Collections are discovered from disk,
 so nothing is hardcoded per corpus.
+Every tool is declared read-only (`readOnlyHint`, with a title), so a client that
+honours MCP's tool annotations can skip its confirmation prompt. The smoke test
+also sends the server what is not a JSON-RPC object (a batch, a bare string, a
+number) and checks that it answers with an error and carries on: the server is
+one process, and a message that killed it left every later request unanswered.
 
 **The corpus folder serves itself.** `--emit-vscode-config` copies
 `mcp_server.py` beside the index and writes every path in `.vscode/mcp.json`

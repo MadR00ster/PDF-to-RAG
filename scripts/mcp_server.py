@@ -48,7 +48,7 @@ from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 PROTOCOL_VERSION = "2025-06-18"
 KNOWN_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18")
 
@@ -740,6 +740,12 @@ def tool_search_docs(args: dict) -> str:
     )
 
 
+def like_escape(text: str) -> str:
+    """`text` as the literal pattern of a LIKE ... ESCAPE '\\': `_` and `%` are
+    wildcards, and nearly every section file has an underscore."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def tool_get_section(args: dict) -> str:
     section_id, file_arg = args.get("section_id"), args.get("file")
     if section_id is not None:
@@ -756,7 +762,8 @@ def tool_get_section(args: dict) -> str:
             ", ((collection, slug) IN (SELECT collection, slug FROM documents WHERE is_current = 1)) DESC"
             if CORPUS.has_editions else "")
         row = CORPUS.db.execute(
-            SECTION_SELECT + " WHERE file = ? OR file LIKE ?" + order, (needle, f"%{needle}", needle)
+            SECTION_SELECT + " WHERE file = ? OR file LIKE ? ESCAPE '\\'" + order,
+            (needle, "%/" + like_escape(needle), needle)
         ).fetchone()
         if not row:
             raise ValueError(f"No section matching file '{file_arg}'.")
@@ -801,7 +808,13 @@ def tool_lookup_entity(args: dict) -> str:
         return suggest_entities(name, collection, document)
 
     out = []
-    for hit in hits:
+    budget = MAX_SECTION_CHARS      # for the whole answer, not for each document that has the entry
+    for n, hit in enumerate(hits):
+        if budget <= 0:
+            rest = [h["slug"] for h in hits[n:]]
+            out.append(f"…[{len(rest)} more document(s) have this entry: {', '.join(rest)}. "
+                       "Pass `document` to read one.]")
+            break
         chunks = CORPUS.db.execute(
             SECTION_SELECT + " WHERE slug = ? AND collection = ? AND entity = ? ORDER BY ord",
             (hit["slug"], hit["collection"], hit["name"])
@@ -816,7 +829,6 @@ def tool_lookup_entity(args: dict) -> str:
             )
         out.append(f"# `{hit['name']}`\n{document_label(hit['collection'], hit['slug'])}{pages}"
                    f" · {len(chunks)} chunk(s)\n")
-        budget = MAX_SECTION_CHARS
         for c in chunks:
             body = c["body"]
             if budget <= 0:
@@ -1402,6 +1414,18 @@ def tool_compare_versions(args: dict) -> str:
     return compare_entry(old, new, name) if name else compare_listing(old, new)
 
 
+TOOL_TITLES = {
+    "search_docs": "Search the documentation",
+    "get_section": "Read a section",
+    "lookup_entity": "Look up an entry",
+    "list_documents": "List documents",
+    "get_toc": "Table of contents",
+    "compare_versions": "Compare editions",
+    "get_figure": "Show a figure",
+    "get_page_image": "Show a PDF page",
+}
+
+
 def build_tools() -> list[dict]:
     """Tool schemas, with the corpus's own collections named in the text.
 
@@ -1427,7 +1451,7 @@ def build_tools() -> list[dict]:
                                                        "`document`. A release no edition covers is "
                                                        "refused, not approximated."}
 
-    return [
+    tools = [
         {
             "name": "search_docs",
             "description": (
@@ -1571,6 +1595,13 @@ def build_tools() -> list[dict]:
             },
         },
     ]
+    for tool in tools:
+        # Every tool only reads, and none reaches beyond the corpus. Clients that
+        # follow MCP 2025-06-18 use these to skip a confirmation prompt; older
+        # ones ignore the fields.
+        tool["title"] = TOOL_TITLES[tool["name"]]
+        tool["annotations"] = {"readOnlyHint": True, "openWorldHint": False}
+    return tools
 
 
 HANDLERS = {
@@ -1689,11 +1720,26 @@ def main() -> int:
             log(f"ignoring non-JSON input: {line[:120]!r}")
             continue
 
+        if not isinstance(msg, dict):
+            # A batch, a bare string, a number. The next request still has to
+            # be answered, and this one is told why it was not.
+            stdout.write(json.dumps({"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32600,
+                "message": "Invalid Request: expected one JSON-RPC object (batches are not supported)"}}) + "\n")
+            stdout.flush()
+            continue
         req_id, method = msg.get("id"), msg.get("method")
         if method is None:
             continue  # a response to something we sent; we send no requests
+        params = msg.get("params")
+        if params is not None and not isinstance(params, dict):
+            if req_id is not None:
+                stdout.write(json.dumps({"jsonrpc": "2.0", "id": req_id, "error": {
+                    "code": -32602, "message": "Invalid params: expected an object"}}) + "\n")
+                stdout.flush()
+            continue
         try:
-            response = {"jsonrpc": "2.0", "id": req_id, "result": handle_request(method, msg.get("params") or {})}
+            response = {"jsonrpc": "2.0", "id": req_id, "result": handle_request(method, params or {})}
         except MethodNotFound as exc:
             response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not found: {exc}"}}
         except Exception as exc:

@@ -55,6 +55,15 @@ class Client:
             raise RuntimeError(f"server closed the connection\n{self.proc.stderr.read()}")
         return json.loads(line)
 
+    def send_raw(self, line: str) -> dict:
+        """One line exactly as given, valid JSON-RPC or not, and the reply to it."""
+        self.proc.stdin.write(line + "\n")
+        self.proc.stdin.flush()
+        reply = self.proc.stdout.readline()
+        if not reply:
+            raise RuntimeError(f"server closed the connection\n{self.proc.stderr.read()}")
+        return json.loads(reply)
+
     def notify(self, method: str) -> None:
         self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method}) + "\n")
         self.proc.stdin.flush()
@@ -168,10 +177,26 @@ def main() -> int:
         client.notify("notifications/initialized")
         check("ping", client.call("ping").get("result") == {})
 
-        names = {t["name"] for t in (client.call("tools/list").get("result") or {}).get("tools", [])}
+        listed = (client.call("tools/list").get("result") or {}).get("tools", [])
+        names = {t["name"] for t in listed}
         check("tools/list", {"search_docs", "get_section", "lookup_entity", "list_documents", "get_toc",
                              "compare_versions", "get_figure", "get_page_image"} <= names,
               f"got {sorted(names)}")
+        check("every tool is declared read-only",
+              bool(listed) and all((t.get("annotations") or {}).get("readOnlyHint") is True and t.get("title")
+                                   for t in listed))
+
+        # A message that is not a JSON-RPC object must be answered, and must not
+        # take the server down: the next request still has to work.
+        for raw in ("[1,2]", '"ping"', "42"):
+            bad = client.send_raw(raw)
+            check(f"{raw} is refused, not fatal",
+                  bad.get("id") is None and (bad.get("error") or {}).get("code") == -32600, json.dumps(bad)[:160])
+            check(f"ping after {raw}", client.call("ping").get("result") == {})
+        check("params that are not an object are refused",
+              client.send_raw('{"jsonrpc": "2.0", "id": 99, "method": "tools/list", "params": [1]}')
+              .get("error", {}).get("code") == -32602)
+        check("ping after bad params", client.call("ping").get("result") == {})
 
         print("\nTools:")
         tool("list_documents", {}, "document(s) in the corpus")

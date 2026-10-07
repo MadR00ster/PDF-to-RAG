@@ -202,7 +202,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T23 | One `collection.json` (**not now: skip**) | 3.6 | — | — |
 | T24 | Remove accidental duplication (**done**) | 4.3 | T06, T07 | M |
 | T25 | Consistent command lines (**done**) | 4.4 | T07 | M |
-| T26 | Server robustness and tool metadata | 4.5 | T01 | S |
+| T26 | Server robustness and tool metadata (**done**) | 4.5 | T01 | S |
 
 T26 is independent and small, so it can be done any time after T01. The
 `--slug` part of T25 can come earlier too. T02 is already done, and T23 is
@@ -2094,7 +2094,7 @@ copies, each held by a cross-check test.
 
 ### T26: Server robustness and tool metadata [4.5]
 
-**Status:** not started
+**Status:** done. Tests: test_43 and test_44; the smoke test (run by test_10 and test_13) sends `[1,2]`, a string and a number, and checks the annotations.
 
 **Files.** `scripts/mcp_server.py`, `scripts/mcp_smoke_test.py`,
 `scripts/eval_search.py`, tests.
@@ -2155,9 +2155,9 @@ copies, each held by a cross-check test.
   characters of headers, and names the second document as not shown.
 
 **Done when**
-- [ ] The server survives `[1,2]`, a bare string and a number, and answers
+- [x] The server survives `[1,2]`, a bare string and a number, and answers
       the next request.
-- [ ] All four sub-items are tested.
+- [x] All four sub-items are tested.
 
 ---
 
