@@ -408,5 +408,44 @@ class ServerTest(unittest.TestCase):
                 server.CORPUS._db.close()
 
 
+    def test_49_export_writes_every_chunk_once_and_stops_on_a_hole(self):
+        corpus = WS.corpus()
+        out = self.tmp / "chunks.jsonl"
+        r = run("export_chunks.py", "--root", str(corpus), "--out", str(out))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+        wanted = []
+        for manifest in sorted((corpus / "docs").glob("*/manifest.json")):
+            wanted += [(manifest.parent.name, s["file"]) for s in json.loads(manifest.read_text(encoding="utf-8"))["sections"]]
+        self.assertEqual(len(rows), len(wanted))
+        self.assertEqual(len({x["id"] for x in rows}), len(rows), "an id repeats")
+        self.assertEqual({(x["slug"], x["file"]) for x in rows}, set(wanted))
+        for x in rows:
+            self.assertEqual(x["text"], (corpus / "docs" / x["slug"] / x["file"]).read_text(encoding="utf-8"))
+            self.assertTrue(x["id"].startswith(f"{x['collection']}/{x['slug']}/"))
+        ref = next(x for x in rows if x["slug"] == "ref")
+        self.assertEqual(ref["entity"], ref["breadcrumb"].rsplit(" › ", 1)[-1])
+        self.assertIsNone(next(x for x in rows if x["slug"] == "prose")["entity"])
+        self.assertTrue(all(x["is_current"] for x in rows))
+
+        # two editions of one manual: --current-only keeps the one search answers from
+        root, _coll = WS.gadgets()
+        root = WS.fresh(root, "export-gadgets")
+        r = run("export_chunks.py", "--root", str(root), "--out", str(out), "--current-only")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual({json.loads(l)["slug"] for l in out.read_text(encoding="utf-8").splitlines()}, {"gadget-2026-1"})
+        r = run("export_chunks.py", "--root", str(root), "--out", str(out))
+        self.assertEqual({json.loads(l)["slug"] for l in out.read_text(encoding="utf-8").splitlines()},
+                         {"gadget-2025-1", "gadget-2026-1"})
+
+        # a section that cannot be read leaves the old export alone and says which
+        before = out.read_bytes()
+        (root / "Gadgets" / "docs" / "gadget-2026-1" / "sections" / "0002-unpacking.md").unlink()
+        r = run("export_chunks.py", "--root", str(root), "--out", str(out))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("0002-unpacking.md", r.stderr)
+        self.assertEqual(out.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

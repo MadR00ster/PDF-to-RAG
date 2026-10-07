@@ -156,6 +156,7 @@ useless fragments.
 | `editions.py` | list editions and pins; add versions to an older corpus; move its PDFs into `source/` |
 | `check_corpus.py` | check any converted document against the output contract |
 | `build_search_db.py` | corpus to one SQLite FTS5 index |
+| `export_chunks.py` | every chunk as one JSON line, for a vector store or another pipeline |
 | `mcp_server.py`, `mcp_smoke_test.py` | serve the index; test the server end to end |
 | `sample_sections.py`, `eval_search.py` | build a question set; score search against it |
 

@@ -619,6 +619,7 @@ which pymupdf4llm 1.28 requires.
 | `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
 | `sample_sections.py` | Stratified sample of sections to write test questions from; `--figures` for sections with figures. |
 | `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. `--compare` shows what moved between two saved runs. |
+| `export_chunks.py` | Every chunk as one line of JSONL, with its document, edition, breadcrumb, pages and entry, for a vector store or another pipeline. `--current-only`. |
 | `remap_answers.py` | Carries a question file's answers across a reconversion by matching the old sections' text to the new ones. |
 
 They are parameterized by corpus directory and slug, and assume the target
@@ -824,6 +825,11 @@ rate from 92% to 88%: identifier-dense manuals are where lexical search is
 strongest and a small model blurs what it matches exactly
 (`references/retrieval-measurement.md`). Real users' questions missing in a way
 a test set does not are the reason to revisit, not the promise of the technique.
+
+To feed that layer, `scripts/export_chunks.py --root <corpus> --out chunks.jsonl` writes
+every chunk as one JSON line (its text exactly as on disk, its document, edition,
+breadcrumb, pages and entry), `--current-only` for the edition search answers
+from. It stops on a section it cannot read rather than export a corpus with holes.
 
 For the layer above, the community `rag-architect` skills cover vector store
 selection, embedding models, hybrid BM25 + vector search, reranking, and

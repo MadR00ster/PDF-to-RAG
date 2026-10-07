@@ -197,7 +197,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T18 | Retrieval experiments behind flags (**done**) | 2.5 | T11, T12 | M |
 | T19 | Say which copy of a field is canonical; stop writing `chars` (**done**) | 3.1 | T07 | M |
 | T20 | Manifest schema and provenance (**done**) | 3.2 | T06 | M |
-| T21 | Export chunks as JSONL | 3.3 | T07 | S |
+| T21 | Export chunks as JSONL (**done**) | 3.3 | T07 | S |
 | T22 | Warn when the index is stale | 3.4 | T07 | M |
 | T23 | One `collection.json` (**not now: skip**) | 3.6 | — | — |
 | T24 | Remove accidental duplication | 4.3 | T06, T07 | M |
@@ -1875,7 +1875,7 @@ rule to catch the copies drifting apart:
 
 ### T21: Export chunks as JSONL [3.3]
 
-**Status:** not started
+**Status:** done. Test: test_49 (the TODO left it unnumbered).
 
 **Files.** `scripts/export_chunks.py` (new), SKILL.md ("Bundled scripts",
 "Where this skill stops"), README.md, tests.
