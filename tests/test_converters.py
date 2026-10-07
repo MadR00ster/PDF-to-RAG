@@ -29,6 +29,9 @@ class ConverterTest(unittest.TestCase):
     def manifest(self, slug: str) -> dict:
         return json.loads((self.corpus / "docs" / slug / "manifest.json").read_text(encoding="utf-8"))
 
+    def manifest_of(self, coll: Path, slug: str) -> dict:
+        return json.loads((coll / "docs" / slug / "manifest.json").read_text(encoding="utf-8"))
+
     def test_01_prose_conversion_contract(self):
         self.corpus = WS.collection("prose", "prose")
         r = run("convert_manual.py", str(self.corpus / "widget-guide.pdf"), "--title", "Widget Guide", "--slug", "prose")
@@ -617,6 +620,50 @@ class ConverterTest(unittest.TestCase):
         r = run("convert_manual.py", str(coll / "widget-guide.pdf"), "--title", "T", "--slug", "doc",
                 "--shape", "prose", "--command-level", "1", "--replace")
         self.assertNotEqual(r.returncode, 0, "--command-level was accepted for a prose conversion")
+
+
+    def test_41e_reference_breadcrumbs_follow_the_toc_chain(self):
+        """A reference's breadcrumb was `Title › command`, though the TOC says
+        which chapter holds the entry and every region starts at a known one."""
+        coll = WS.collection("chain", "nested")
+        r = run("rebuild_reference.py", str(coll / "nested-commands.pdf"), "--title", "Widget Commands", "--slug", "nested")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        sections = self.manifest_of(coll, "nested")["sections"]
+        crumbs = {s["file"]: s["breadcrumb"] for s in sections}
+        commands = [s for s in sections if s["command"]]
+        self.assertEqual(len(commands), 22)
+        for s in commands:
+            self.assertEqual(s["breadcrumb"], f"Widget Commands › Command Reference › {s['command']}")
+        self.assertIn("Widget Commands › Appendix A Troubleshooting", crumbs.values())
+        self.assertIn("Widget Commands › End-User License Agreement", crumbs.values())
+        self.assertIn("Widget Commands › Command Reference", crumbs.values())     # the chapter's own introduction
+        text = (coll / "docs" / "nested" / commands[0]["file"]).read_text(encoding="utf-8")
+        self.assertTrue(text.startswith(f"*{commands[0]['breadcrumb']}*"))
+
+        out = self.tmp / "chain-check.json"
+        r = run("check_corpus.py", str(coll), "--only", "nested", "--json", str(out))
+        report = json.loads(out.read_text(encoding="utf-8"))
+        raised = {p["check"] for d in report["documents"] for p in d["problems"]}
+        self.assertFalse({c for c in raised if c.split("-")[0] in ("ancestor", "entity", "breadcrumb")},
+                         f"chain breadcrumbs raised {raised}\n{r.stdout}")
+
+    def test_41f_prose_outside_entries_is_opt_in(self):
+        """In a document that is part reference, a chapter title at the command
+        level is not a command, if asked."""
+        coll = WS.collection("proseout")
+        mixed_fixture(coll / "mixed.pdf")
+
+        def commands(*extra):
+            r = run("convert_manual.py", str(coll / "mixed.pdf"), "--title", "Mixed", "--slug", "mixed",
+                    "--shape", "reference", "--replace", *extra)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return {s["command"] for s in self.manifest_of(coll, "mixed")["sections"] if s["command"]}
+
+        plain = commands()
+        self.assertTrue(any(c.startswith("Chapter") for c in plain), "the default changed what it attributes")
+        chosen = commands("--prose-outside-entries")
+        self.assertEqual(chosen, {c for c in plain if c.startswith("set_gadget_option_")})
+        self.assertEqual(len(chosen), 20)
 
 
 if __name__ == "__main__":

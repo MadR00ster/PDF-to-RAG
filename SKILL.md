@@ -197,6 +197,12 @@ Prose and reference documents scored oppositely, by wide margins:
 | no bookmark TOC | either, warily | nothing can verify a breadcrumb; treat every ancestor as unverified |
 | no text layer | neither | OCR first — the `pdf` skill bundled with Claude covers it |
 
+A reference chunk's breadcrumb is the TOC chain down to its entry (`Title › Chapter
+› command`), and a chapter's own text takes the chapter's chain. For a document
+that is part reference, `--prose-outside-entries` attributes only the titles at
+the command level that look like commands and chunks the rest as prose; it
+changes what is attributed, so measure before relying on it.
+
 `rebuild_reference.py` takes the TOC level whose titles look like commands (an
 underscore, ` -`, or a message code; 20 or more of them). Where none has that
 many, it converts without attributing a chunk, says so on a line beginning

@@ -72,7 +72,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
 import enrich_chunks as ec  # noqa: E402
-from _common import MIN_COMMANDS, detect_shape, pick_command_level  # noqa: E402
+from _common import MIN_COMMANDS, detect_shape, looks_like_entry, pick_command_level  # noqa: E402
 
 MAX_CHUNK = 9000
 
@@ -387,13 +387,24 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
     print(f'Next: python scripts/build_index.py "{plan.collection}"')
 
 
-def convert_reference(plan: editions.Plan, title: str, command_level: int | None) -> None:
+def convert_reference(plan: editions.Plan, title: str, command_level: int | None,
+                      prose_outside_entries: bool = False) -> None:
     """A command reference: the same pages and chunker as `convert`, but the
     text is first split into one region per entry, so a chunk can belong to
     exactly one command, and each chunk is written with the command it
     documents. `command_level` names the TOC level of the entries; where it is
     not given the level is picked from the TOC, and where none qualifies no
-    chunk is attributed, which the manifest records."""
+    chunk is attributed, which the manifest records.
+
+    A chunk's breadcrumb is the TOC chain down to its entry: the document's
+    title, the chapters the entry sits in, and the command last. A region that
+    belongs to no command but starts at a shallower entry (a chapter, an
+    appendix) takes that entry's chain.
+
+    `prose_outside_entries` is for a document that is part reference: only the
+    titles at the command level that look like commands are commands, and the
+    rest of the text is chunked as prose. It changes what is attributed, so it
+    is off unless asked for."""
     pdf_path, slug, out_root = plan.pdf, plan.slug, plan.out_root
     out_dir = out_root / slug
     print(f"[{slug}] extracting {pdf_path.name} with page tracking ...", flush=True)
@@ -427,9 +438,9 @@ def convert_reference(plan: editions.Plan, title: str, command_level: int | None
             entry = (entry or "").strip()
             if not entry:
                 continue
-            if lvl == cmd_level:
+            if lvl == cmd_level and not (prose_outside_entries and not looks_like_entry(entry)):
                 boundaries.append((page, i, entry, entry))
-            elif lvl < cmd_level and page >= 1:
+            elif lvl <= cmd_level and page >= 1:
                 boundaries.append((page, i, entry, None))
         # By page, then TOC order: where two entries share a page, TOC order
         # is document order and alphabetical order need not be.
@@ -472,41 +483,52 @@ def convert_reference(plan: editions.Plan, title: str, command_level: int | None
         hit = pat.search(full_md, base, window_end)
         return hit.start() if hit else base
 
-    regions = []  # (start, end, command|None)
+    # Each TOC entry's chain from the top, itself last, without any entry that
+    # repeats the document's title: the breadcrumb starts with that already.
+    manual_norm = ec.normalize_title(title)
+    chains, stack = [], []
+    for lvl, name, _page in toc:
+        name = (name or "").strip()
+        while stack and stack[-1][0] >= lvl:
+            stack.pop()
+        stack.append((lvl, name))
+        chains.append([t for _l, t in stack if t and ec.normalize_title(t) != manual_norm])
+
+    regions = []  # (start, end, command|None, TOC entry the region starts at|None)
     floor = 0
     starts = []
-    for page, _i, entry, command in boundaries:
+    for page, i, entry, command in boundaries:
         off = entry_offset(page, entry, floor)
-        starts.append((off, command))
+        starts.append((off, command, i))
         floor = off
     if starts and starts[0][0] > 0:
-        regions.append((0, starts[0][0], None))
+        regions.append((0, starts[0][0], None, None))
     elif not starts:
-        regions.append((0, len(full_md), None))
-    for i, (off, name) in enumerate(starts):
-        end = starts[i + 1][0] if i + 1 < len(starts) else len(full_md)
+        regions.append((0, len(full_md), None, None))
+    for n, (off, name, i) in enumerate(starts):
+        end = starts[n + 1][0] if n + 1 < len(starts) else len(full_md)
         if end > off:
-            regions.append((off, end, name))
+            regions.append((off, end, name, i))
 
     print(
         f"[{slug}] chunking {len(regions)} command regions ...", flush=True
     )
-    chunks = []  # (heading, level, body, abs_offset, command)
-    for r_start, r_end, name in regions:
+    chunks = []  # (heading, level, body, abs_offset, command, breadcrumb)
+    for r_start, r_end, name, entry_index in regions:
         region = full_md[r_start:r_end]
-        for span in chunk_spans(region, dictionary=True):
-            chunks.append((span.heading, span.level, region[span.start:span.end], r_start + span.start, name))
+        crumb = ec.BREADCRUMB_SEP.join([title, *(chains[entry_index] if entry_index is not None else [])])
+        for span in chunk_spans(region, dictionary=name is not None or not prose_outside_entries):
+            chunks.append((span.heading, span.level, region[span.start:span.end], r_start + span.start, name, crumb))
 
     staging = editions.staging_dir(out_root, slug)
     sections_dir = staging / "sections"
     sections_dir.mkdir()
 
     seen, entries = {}, []
-    for i, (heading, level, body, off, command) in enumerate(chunks, start=1):
+    for i, (heading, level, body, off, command, crumb) in enumerate(chunks, start=1):
         c_start, c_end = trim_span(full_md, off, off + len(body))
         p_start, p_end = page_range(page_starts, page_numbers, c_start, max(c_end, c_start + 1))
 
-        crumb = title + (f"{ec.BREADCRUMB_SEP}{command}" if command else "")
         text = ec.apply_breadcrumb(body.strip() + "\n", crumb, title)
 
         fname = f"{i:04d}-{dedupe_slug(slugify(heading), seen)}.md"
@@ -595,6 +617,10 @@ def main(shape: str | None = None, description: str | None = None) -> None:
                     help="a reference's entries are at TOC level N. By default it is the level where "
                     "20 or more titles look like commands (an underscore, ' -', or a message code); "
                     "a reference whose entries are plain words has none, and is declined")
+    ap.add_argument("--prose-outside-entries", action="store_true",
+                    help="for a document that is part reference: only the titles at the command level "
+                    "that look like commands are attributed, and the rest is chunked as prose. It "
+                    "changes what is attributed; measure before relying on it")
     ap.add_argument("--out-root", type=Path,
                     help="Where to write docs/<slug>/ (default: docs/ in the PDF's collection)")
     editions.add_arguments(ap)
@@ -635,8 +661,8 @@ def main(shape: str | None = None, description: str | None = None) -> None:
             sys.exit("This is part prose and part reference. Convert it with --shape prose or --shape "
                      "reference, whichever holds most of it, or split the PDF.")
         shape = found
-    if shape == "prose" and args.command_level is not None:
-        sys.exit("--command-level names the entries of a reference; this is converted as prose")
+    if shape == "prose" and (args.command_level is not None or args.prose_outside_entries):
+        sys.exit("--command-level and --prose-outside-entries are for a reference; this is converted as prose")
 
     plan = editions.plan(pdf_path, args.slug, out_root, args.version or prior.get("version"),
                          args.doc_id or prior.get("doc_id"),
@@ -644,7 +670,7 @@ def main(shape: str | None = None, description: str | None = None) -> None:
     refuse_existing(plan.slug)
 
     if shape == "reference":
-        convert_reference(plan, title, args.command_level)
+        convert_reference(plan, title, args.command_level, args.prose_outside_entries)
     else:
         convert(plan, title, dictionary)
 

@@ -134,6 +134,8 @@ def report(path: Path, verbose: bool) -> None:
         print("     Inspect before converting. If the entries sit in their own")
         print("     chapters, convert those with rebuild_reference.py and the rest")
         print("     as prose, rather than forcing one path over the whole document.")
+        print("     Or convert_manual.py --shape reference --prose-outside-entries, which")
+        print("     attributes only the titles that look like commands (measure before relying on it).")
         doc.close()
         return
 

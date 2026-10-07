@@ -192,7 +192,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T14 | Page numbers on the light prose path (**done**) | 2.1 | T03, T13 | L |
 | T15 | One pymupdf4llm converter (**done**) | 2.1 "next step" | T14 | L |
 | **Phase 5: later** |||||
-| T16 | Reference breadcrumbs from the TOC chain | 2.3 | T06 | M |
+| T16 | Reference breadcrumbs from the TOC chain (**done**) | 2.3 | T06 | M |
 | T17 | Section identity across reconversions | 2.4 | T12 | M |
 | T18 | Retrieval experiments behind flags | 2.5 | T11, T12 | M |
 | T19 | Say which copy of a field is canonical; stop writing `chars` | 3.1 | T07 | M |
@@ -1601,7 +1601,7 @@ before chunking. Two scripts to keep in step is how features drift (SKILL.md
 
 ### T16: Reference breadcrumbs from the TOC chain [2.3]
 
-**Status:** not started
+**Status:** done, except the eval comparison (§4). Tests are test_41e and test_41f.
 
 **Why.** Reference breadcrumbs are `Title › command`. Each region starts at a
 known TOC entry, so its enclosing chain is known exactly and costs nothing to
@@ -1646,8 +1646,8 @@ reconvert the two references and compare `eval_search.py` runs before and
 after (T12). Record in §4.
 
 **Done when**
-- [ ] Chain breadcrumbs pass the checker on all reference fixtures.
-- [ ] The opt-in flag is tested and documented.
+- [x] Chain breadcrumbs pass the checker on all reference fixtures.
+- [x] The opt-in flag is tested and documented.
 
 ---
 
@@ -2176,7 +2176,7 @@ you could not run. Never write a number you did not measure.
 | T10 | Search change from whole-heading front matter | `eval_search.py --json`, then `--compare` | not measured: needs the user's corpus and its eval questions. Rebuild the index with this commit (`noise` is stored at build time, so an existing index does not change) and compare with a run from before using T12's `--compare` | 2026-10-07 |
 | T11 | Identifier hit@1 and every rank moved | `eval_search.py --json`, then `--compare` | not measured: needs the user's corpus and its eval questions. Run `eval_search.py --json` on an index built before this commit and on one built after, compare with T12's `--compare`, and read every question whose rank moved | 2026-10-07 |
 | T14 | Strict check and figure links after reconverting prose | the T14 real-corpus check | not measured: needs two or three of the user's prose manuals. Reconvert them, run `check_corpus.py --strict` and the content check, and compare `extract_figures.py`'s summary (links by caption, page and context, and how often each fallback agrees with the caption) with the old conversion | 2026-10-07 |
-| T16 | Search change from chain breadcrumbs | `--compare` after reconverting the references | | |
+| T16 | Search change from chain breadcrumbs | `--compare` after reconverting the references | not measured: needs the user's two references and eval questions. Breadcrumbs are indexed with weight 3: `eval_search.py --json` before reconverting and after, then `--compare` | 2026-10-07 |
 | T18 | Each experiment flag against the default | `--compare` | | |
 
 ## 5. Found along the way
