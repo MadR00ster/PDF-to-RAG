@@ -2146,4 +2146,7 @@ you could not run. Never write a number you did not measure.
 Problems noticed while executing that no task covers. Add a line, don't fix
 it.
 
-- (none yet)
+- CI warns that `actions/checkout@v4` and `actions/setup-python@v5` target
+  Node.js 20, which GitHub has deprecated; for now it runs them on Node.js
+  24. Harmless today. Bump them to the releases that target Node.js 24 when
+  convenient, and check the next run stays green.
