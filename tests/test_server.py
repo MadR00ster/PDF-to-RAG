@@ -554,6 +554,8 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(live.staleness_warning(), "", "rechecked within STALE_RECHECK")
         live._stale_checked -= server.STALE_RECHECK
         self.assertIn("Stale index", live.staleness_warning(), "a change after the first check was never seen")
+        live._db.close()   # Windows will not replace a file that is open
+        live._db = None
 
         # figures extracted after the build
         manifest.write_bytes(original)
