@@ -41,10 +41,11 @@ Per document:
                without pages it can only compare with the whole document, so
                it catches text lost wholesale and not a single missing chunk.
 Per collection:
-  document folder names two collections share (build_search_db.py stops on
-  one), manifests left in folders every tool skips (.old, .new, dot,
+  collection folders whose names give one key (build_search_db.py stops on
+  that), manifests left in folders every tool skips (.old, .new, dot,
   underscore), a stale index.json, PDFs neither converted nor marked
-  superseded.
+  superseded. Two collections may each have a document of one name: the
+  index keys documents by collection and slug.
   editions     documents sharing a `doc_id` are releases of one manual. Each
                needs a version the others can be ordered against, no two the
                same, and a pin in current_versions.json has to name a release
@@ -88,8 +89,8 @@ from pathlib import Path, PurePosixPath
 
 BREADCRUMB_SEP = " › "
 REQUIRED_FIELDS = ("slug", "title", "source_pdf", "page_count", "sections")
-# Present is not enough: `"slug": null` passes a key check and then fails
-# build_search_db.py's NOT NULL primary key.
+# Present is not enough: `"slug": null` passed a key check once, and failed
+# the index build back when the index took a document's name from it.
 FIELD_VALID = {
     "slug": lambda v: isinstance(v, str) and bool(v.strip()),
     "title": lambda v: isinstance(v, str) and bool(v.strip()),
@@ -197,7 +198,7 @@ CHECKS = {
     "content-unchecked": (WARN, "the content check could not run -- PyMuPDF is missing or the PDF would not open -- so text and page numbers went unchecked"),
     "page-count-mismatch": (FAIL, "the manifest's page_count is not the source PDF's: page numbers are checked against a document that is not this one"),
     # collection
-    "duplicate-slug": (FAIL, "two collections hold a document folder of the same name; build_search_db.py stops on the second (documents.slug is its primary key)"),
+    "collection-clash": (FAIL, "two collection folders whose names give one collection key (letters and digits, lowercased); build_search_db.py stops"),
     "hidden-document": (WARN, "a folder under docs/ that every tool skips (.old, .new, dot, underscore) holds a manifest: a leftover backup or an interrupted build. Move it out of docs/"),
     "index-missing": (WARN, "no docs/index.json; run build_index.py"),
     "index-stale": (WARN, "docs/index.json disagrees with the manifests on disk; run build_index.py"),
@@ -778,6 +779,13 @@ def index_skips(name: str) -> bool:
     return name.endswith((".old", ".new")) or name.startswith((".", "_"))
 
 
+def collection_key(name: str) -> str:
+    """The key build_search_db.py gives a collection folder (its slugify).
+    Written out here, as this file imports nothing from the scripts; a test
+    holds the two together."""
+    return re.sub(r"[^0-9A-Za-z]+", "-", name).strip("-").lower() or "corpus"
+
+
 def find_source_pdf(collection_dir: Path, name) -> Path | None:
     """Where a collection keeps a converted document's PDF: source/, or the
     collection folder itself (every PDF's place before source/ existed). Not
@@ -1098,19 +1106,18 @@ def main() -> int:
               "<root>/<collection>/docs/<slug>/manifest.json, or a docs/<slug> folder.", file=sys.stderr)
         return 2
 
-    # A document folder name shared by two collections stops
-    # build_search_db.py: the folder name is the document's slug, and slugs
-    # are its primary key. Folders every tool skips are not documents.
+    # Two collection folders whose names give one key stop
+    # build_search_db.py: the index would merge their documents into one
+    # collection. Only folders holding a document count, as there.
     if collection_checks and not args.only:
         seen: dict[str, list[str]] = {}
         for collection_dir, doc_dirs, _hidden in targets:
-            for d in doc_dirs:
-                seen.setdefault(d.name, []).append(f"{collection_dir.name}/docs/{d.name}")
-        for slug, where in seen.items():
-            if len(where) > 1:
-                owner = where[1].split("/docs/")[0]
-                collection_findings.setdefault(owner, Findings()).add(
-                    "duplicate-slug", f"{slug!r} in {', '.join(where)}")
+            if doc_dirs:
+                seen.setdefault(collection_key(collection_dir.name), []).append(collection_dir.name)
+        for key, folders in seen.items():
+            if len(folders) > 1:
+                collection_findings.setdefault(folders[1], Findings()).add(
+                    "collection-clash", f"{', '.join(folders)} are all {key!r}")
 
     if pdf_pages and _pymupdf is False:
         print("note: pymupdf is not installed, so the content check did not run "

@@ -97,9 +97,8 @@ python tests/run_each.py                         # every test alone, each in its
 ```
 
 Baseline at `0e4dd59` (Python 3.13.16, Linux): **36 tests, OK, 2 skipped**
-(no Tesseract language data, no Docling), about 70 s. This branch adds
-test_22c with the Windows fix in T02, so it starts at **37 tests, OK, 2
-skipped**.
+(no Tesseract language data, no Docling), about 70 s. With T01, T02, T07
+and T09 done, the branch is at **44 tests, OK, 2 skipped**, about 85 s.
 
 Optional tools: Tesseract (test_14), Docling (test_09c and the check in T05).
 Neither is needed for the suite to pass.
@@ -183,7 +182,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T06 | Make a declined attribution loud; `--command-level` | 1.5 | T01 | M |
 | T07 | Stage conversions outside `docs/`; skip hidden folders everywhere (**done**) | 1.6 | T01 | M |
 | T08 | Stop deleting short lines that begin the title | 1.8 | T04 | S |
-| T09 | Key documents by (collection, slug) | 3.5 | T07 | L |
+| T09 | Key documents by (collection, slug) (**done**) | 3.5 | T07 | L |
 | **Phase 3: search** |||||
 | T10 | Demote front matter by whole heading | 1.1 | T01 | S |
 | T11 | Entity boost for identifiers inside a question | 1.2 | T01 | M |
@@ -1002,7 +1001,19 @@ check). Record both in §4.
 
 ### T09: Key documents by (collection, slug) [3.5]
 
-**Status:** not started
+**Status:** done, as specified below. Additions:
+- `search()` refuses a `document` given without its `collection`, so no
+  caller can narrow by slug alone again.
+- `mcp_smoke_test.py` names each document with its collection, and its
+  current-edition filter matches on both.
+- `sample_sections.py` keys its pools by (collection, slug); it overwrote
+  one collection's document with the other's. It names the collection when
+  a slug is shared.
+- ROADMAP's item for this bug is ticked.
+
+Tests: test_35 and test_35b in `test_server.py`. test_35c in
+`test_checker.py` replaces T07's test_33b and holds `collection_key` to
+`build_search_db.slugify`. All three fail on the old code.
 
 **Why.** `documents.slug` is the primary key (`build_search_db.py`, the
 `CREATE TABLE documents` block). Two vendors that both have a `user-guide`
@@ -1091,11 +1102,13 @@ Every table already has a `collection` column.
   must still pass unchanged.
 
 **Done when**
-- [ ] Every `slug = ?` in `mcp_server.py` comes with `collection = ?`, or
+- [x] Every `slug = ?` in `mcp_server.py` comes with `collection = ?`, or
       sits in a query already narrowed to one collection. Write the reasoning
       for any exception in the commit message.
-- [ ] The suite and the smoke test pass. An index built by `0e4dd59` (schema
-      3) still serves. Build one with the old code
+- [x] The suite and the smoke test pass. An index built by `0e4dd59` (schema
+      3) still serves. Checked with an index built by `1fbc596`, the last
+      schema-3 commit, on gadget editions plus a reference: the new smoke
+      test passed every check. Build one with the old code
       (`git worktree add ../old 0e4dd59`, then run
       `python ../old/scripts/build_search_db.py --root <fixture corpus> --out old.sqlite3`),
       and run the new `mcp_smoke_test.py --db old.sqlite3` on it.
@@ -1861,7 +1874,9 @@ rule to catch the copies drifting apart:
 
 1. `python scripts/export_chunks.py --root <corpus> --out chunks.jsonl [--current-only]`.
 2. Reuse `build_search_db.load_documents`, `resolve_editions` and
-   `read_chunk` by importing `build_search_db`. Stop on the same failures:
+   `read_chunk` by importing `build_search_db`. Since T09, `resolve_editions`
+   is keyed by `(collection key, slug)`, and `load_documents` has already set
+   each manifest's `slug` to its folder name (T07). Stop on the same failures:
    unreadable manifests, unorderable editions. Also stop on unreadable
    section files: an export with holes is worse than none.
 3. Write one JSON object per line, with `ensure_ascii=True`:

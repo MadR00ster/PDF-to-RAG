@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import WS, run  # noqa: E402
+from _support import WS, run, handmade_document, load_script  # noqa: E402
 
 
 class ServerTest(unittest.TestCase):
@@ -90,6 +90,65 @@ class ServerTest(unittest.TestCase):
         slugs = {row[0] for row in con.execute("SELECT slug FROM documents")}
         con.close()
         self.assertEqual(slugs, {"prose", "ref", "tiny", "nested"})
+
+    def test_35_two_collections_may_share_a_slug(self):
+        """Two vendors may each have a user-guide.
+
+        The index keyed documents by slug alone, so the second stopped the
+        build; and a lookup narrowed by slug alone could serve one vendor's
+        text as the other's -- the wrong answer that looks right.
+        """
+        root = self.tmp / "TwoVendors"
+        for coll in ("A", "B"):
+            handmade_document(root / coll, slug="user-guide")
+        b = root / "B" / "docs" / "user-guide"
+        m = json.loads((b / "manifest.json").read_text(encoding="utf-8"))
+        first = b / m["sections"][0]["file"]
+        first.write_text(first.read_text(encoding="utf-8") + "zebraword appears only in collection B.\n",
+                         encoding="utf-8")
+        m["sections"][0]["chars"] = len(first.read_text(encoding="utf-8"))
+        (b / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
+        db = self.tmp / "two-vendors.sqlite3"
+        r = run("build_search_db.py", "--root", str(root), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+        s = load_script("mcp_server")
+        s.CORPUS = s.Corpus(db)
+        self.addCleanup(lambda: s.CORPUS._db and s.CORPUS._db.close())
+        self.assertEqual(s.CORPUS.db.execute("SELECT COUNT(*) FROM documents").fetchone()[0], 2)
+        hits = s.search("zebraword")
+        self.assertEqual({(h["collection"], h["slug"]) for h in hits}, {("b", "user-guide")})
+        with self.assertRaises(ValueError) as ambiguous:
+            s.tool_get_toc({"document": "user-guide"})
+        self.assertIn("more than one collection", str(ambiguous.exception))
+        self.assertIn("Hand Guide", s.tool_get_toc({"document": "user-guide", "collection": "b"}))
+        self.assertIn("No matches", s.tool_search_docs({"query": "zebraword", "document": "user-guide",
+                                                        "collection": "a"}),
+                      "a search of collection A's user-guide returned B's text")
+        around = s.tool_get_section({"section_id": hits[0]["id"], "context": 1})
+        self.assertNotIn("A/docs/", around, "the sections around one of B's came from A as well")
+        listing = s.tool_list_documents({})
+        self.assertIn("## a", listing)
+        self.assertIn("## b", listing)
+        s.CORPUS._db.close()
+        s.CORPUS._db = None
+
+        r = run("mcp_smoke_test.py", "--db", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_35b_collection_folders_that_clash_stop_the_build(self):
+        """Two collection folders whose names give one key would merge two
+        vendors' documents into one collection. The build stops instead, and
+        writes nothing. Names that differ in more than case, so this runs
+        on any filesystem."""
+        root = self.tmp / "Clash"
+        handmade_document(root / "Tools Manual", slug="one")
+        handmade_document(root / "tools-manual", slug="two")
+        db = self.tmp / "clash.sqlite3"
+        r = run("build_search_db.py", "--root", str(root), "--out", str(db))
+        self.assertNotEqual(r.returncode, 0, "two folders sharing a collection key were indexed as one")
+        self.assertIn("tools-manual", r.stderr)
+        self.assertFalse(db.exists(), "a build that stopped wrote an index")
 
     def test_10_mcp_server_passes_its_smoke_test(self):
         """The server, driven over stdio the way an editor drives it.

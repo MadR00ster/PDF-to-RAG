@@ -72,8 +72,9 @@ SCHEMA = """
 PRAGMA journal_mode = OFF;
 PRAGMA synchronous = OFF;
 
+-- A document is (collection, slug): two vendors may each have a user-guide.
 CREATE TABLE documents (
-    slug          TEXT PRIMARY KEY,
+    slug          TEXT NOT NULL,
     collection    TEXT NOT NULL,
     collection_dir TEXT NOT NULL,
     title         TEXT NOT NULL,
@@ -92,7 +93,8 @@ CREATE TABLE documents (
     has_pages     INTEGER NOT NULL DEFAULT 0,
     has_entities  INTEGER NOT NULL DEFAULT 0,
     figure_count  INTEGER NOT NULL DEFAULT 0,
-    toc_json      TEXT
+    toc_json      TEXT,
+    PRIMARY KEY (collection, slug)
 );
 
 -- One row per section chunk. The five leading columns are searchable; the
@@ -139,7 +141,7 @@ CREATE TABLE entities (
     page_end    INTEGER
 );
 CREATE INDEX idx_entities_lower ON entities(name_lower);
-CREATE INDEX idx_entities_slug  ON entities(slug);
+CREATE INDEX idx_entities_slug  ON entities(collection, slug);
 
 -- Figures from extract_figures.py. section_ord ties one to the chunk it
 -- illustrates, and is NULL when nothing tied it without guessing.
@@ -158,7 +160,7 @@ CREATE TABLE figures (
     section_ord INTEGER,
     link        TEXT             -- how section_ord was decided: caption | page | context
 );
-CREATE INDEX idx_figures_section ON figures(slug, section_ord);
+CREATE INDEX idx_figures_section ON figures(collection, slug, section_ord);
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
@@ -309,13 +311,15 @@ def load_figures(doc_dir: Path) -> list[dict]:
         return []
 
 
-def resolve_editions(documents: list) -> tuple[dict[str, dict], list[str]]:
-    """{slug: doc_id, version, is_latest, is_current} for every document, and
-    whatever stops that being decided. Editions are grouped within a
-    collection: two vendors may both have a `user-guide`."""
+def resolve_editions(documents: list) -> tuple[dict[tuple[str, str], dict], list[str]]:
+    """{(collection, slug): doc_id, version, is_latest, is_current} for every
+    document, and whatever stops that being decided. Editions are grouped
+    within a collection: two vendors may both have a `user-guide`."""
     by_collection: dict[Path, list[dict]] = {}
-    for _key, _display, manifest_path, manifest in documents:
+    keys: dict[Path, str] = {}
+    for key, _display, manifest_path, manifest in documents:
         slug = manifest["slug"]
+        keys[manifest_path.parent.parent.parent] = key
         by_collection.setdefault(manifest_path.parent.parent.parent, []).append(
             {"slug": slug, "doc_id": manifest.get("doc_id") or slug, "version": manifest.get("version"),
              # Exactly true, as check_corpus.py reads it: "false" in quotes is
@@ -329,11 +333,25 @@ def resolve_editions(documents: list) -> tuple[dict[str, dict], list[str]]:
             pins = {}
             problems.append(str(exc))
         problems += [f"{collection_dir.name}: {p}" for p in editions.resolve_editions(docs, pins)]
-        resolved.update((d["slug"], d) for d in docs)
+        resolved.update(((keys[collection_dir], d["slug"]), d) for d in docs)
     return resolved, problems
 
 
 def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: bool = True) -> int:
+    # A collection is known in the index by a key made from its folder name,
+    # and a document by that key and its slug. Two folders giving one key
+    # would merge two vendors' documents into one collection.
+    by_key: dict[str, list[str]] = {}
+    for key, display, _docs in find_collections(root):
+        by_key.setdefault(key, []).append(display)
+    clashes = {k: v for k, v in by_key.items() if len(v) > 1}
+    if clashes:
+        print("Collection folders whose names give the same collection key:", file=sys.stderr)
+        for key, folders in sorted(clashes.items()):
+            print(f"  !! {', '.join(folders)} are all '{key}'", file=sys.stderr)
+        print("Nothing was written. Rename all but one, then rerun.", file=sys.stderr)
+        return 1
+
     documents, failed = load_documents(root)
     if failed:
         print("Manifests that could not be read:", file=sys.stderr)
@@ -366,7 +384,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         for key, _display, _mpath, manifest in documents:
             n = len(manifest.get("sections", []))
             total += n
-            e = edition_of[manifest["slug"]]
+            e = edition_of[(key, manifest["slug"])]
             note = "" if e["is_current"] else "  (not current)"
             shown = editions.display_version(e["version"], e["version_and_later"])
             print(f"{key:20s} {manifest['slug']:42s} {shown:16s} {n:5d} chunks{note}")
@@ -456,7 +474,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
-        edition = edition_of[slug]
+        edition = edition_of[(key, slug)]
         pdf = editions.find_source_pdf(doc_dir.parent.parent, manifest.get("source_pdf"))
         db.execute(
             "INSERT INTO documents (slug, collection, collection_dir, title, doc_id, version,"
@@ -517,7 +535,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         ("figures", str(total_figures)),
         ("figure_text", "1" if figure_text else "0"),
         ("unreadable", str(len(unreadable))),
-        ("schema_version", "3"),
+        ("schema_version", "4"),
     ):
         db.execute("INSERT INTO meta (key, value) VALUES (?,?)", (k, v))
 

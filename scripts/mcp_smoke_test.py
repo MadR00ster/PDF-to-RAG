@@ -78,7 +78,8 @@ def probes(db: Path) -> dict:
     """Pull real terms out of the index so the checks suit this corpus."""
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    out = {"entity": None, "collection": None, "figure": None, "editions": False, "latest": None}
+    out = {"entity": None, "collection": None, "figure": None, "editions": False, "latest": None,
+           "latest_collection": None}
     if "doc_id" in {r["name"] for r in con.execute("PRAGMA table_info(documents)")}:
         out["editions"] = True
         # The newest edition of a manual that has several, by its own slug. A
@@ -86,17 +87,21 @@ def probes(db: Path) -> dict:
         # earliest -- nothing to compare it with, in a healthy corpus -- and
         # two collections may share one.
         row = con.execute(
-            "SELECT slug FROM documents WHERE is_latest = 1 AND (collection, doc_id) IN"
+            "SELECT slug, collection FROM documents WHERE is_latest = 1 AND (collection, doc_id) IN"
             " (SELECT collection, doc_id FROM documents GROUP BY collection, doc_id HAVING COUNT(*) > 1)"
             " LIMIT 1").fetchone()
-        out["latest"] = row["slug"] if row else None
+        if row:
+            out["latest"], out["latest_collection"] = row["slug"], row["collection"]
     # Probe terms come from current editions, because that is what a search
     # without a document reads: a heading that exists only in an edition a
     # pin has set aside would fail a corpus with nothing wrong with it.
-    current = " AND slug IN (SELECT slug FROM documents WHERE is_current = 1)" if out["editions"] else ""
-    row = con.execute("SELECT slug, title FROM documents WHERE 1 = 1" + current
+    # A document is named with its collection: two may each have one slug.
+    current = (" AND (collection, slug) IN (SELECT collection, slug FROM documents WHERE is_current = 1)"
+               if out["editions"] else "")
+    row = con.execute("SELECT slug, collection, title FROM documents WHERE 1 = 1" + current
                       + " ORDER BY section_count DESC LIMIT 1").fetchone()
-    out["document"], out["title_word"] = row["slug"], (row["title"].split() or ["the"])[0]
+    out["document"], out["doc_collection"] = row["slug"], row["collection"]
+    out["title_word"] = (row["title"].split() or ["the"])[0]
     row = con.execute("SELECT name FROM entities WHERE 1 = 1" + current + " LIMIT 1").fetchone()
     if row:
         out["entity"] = row["name"]
@@ -175,8 +180,9 @@ def main() -> int:
             tool("list_documents", {"collection": p["collection"]}, "document(s)")
         tool("search_docs", {"query": p["title_word"], "limit": 3}, "result(s) for")
         tool("search_docs", {"query": f'"{p["phrase"]}"', "limit": 2}, "result(s) for")
-        tool("search_docs", {"query": p["title_word"], "document": p["document"], "limit": 2}, "result(s) for")
-        tool("get_toc", {"document": p["document"], "max_level": 1}, "pages")
+        doc = {"document": p["document"], "collection": p["doc_collection"]}
+        tool("search_docs", {"query": p["title_word"], **doc, "limit": 2}, "result(s) for")
+        tool("get_toc", {**doc, "max_level": 1}, "pages")
         tool("get_section", {"section_id": 1}, "file:")
         tool("get_section", {"section_id": 1, "context": 1}, "file:")
         if p["entity"]:
@@ -188,7 +194,7 @@ def main() -> int:
             image_tool("get_figure", {"figure_id": p["figure"]})
         else:
             print("  n/a   get_figure (this index has no figures)")
-        image_tool("get_page_image", {"document": p["document"], "page": 1})
+        image_tool("get_page_image", {**doc, "page": 1})
 
         print("\nEditions:")
         if not p["editions"]:
@@ -197,24 +203,25 @@ def main() -> int:
             # A version is per manual, and one that is not here is refused
             # with the list of those that are -- never answered from another.
             tool("search_docs", {"query": p["title_word"], "version": "1.0"}, "needs `document`", expect_error=True)
-            tool("search_docs", {"query": p["title_word"], "document": p["document"], "version": "0.0.0.1"},
+            tool("search_docs", {"query": p["title_word"], **doc, "version": "0.0.0.1"},
                  "nothing was substituted", expect_error=True)
             if p["latest"]:
                 tool("list_documents", {}, "not current")
                 # Its own slug in the answer: a comparison that ran. Not the
                 # wording of a finished one -- a prose manual with no bookmark
                 # outline has no headings to compare, and nothing wrong with it.
-                tool("compare_versions", {"document": p["latest"]}, f"({p['latest']})")
-                tool("get_toc", {"document": p["latest"], "max_level": 1}, "pages")
+                latest = {"document": p["latest"], "collection": p["latest_collection"]}
+                tool("compare_versions", latest, f"({p['latest']})")
+                tool("get_toc", {**latest, "max_level": 1}, "pages")
             else:
-                tool("compare_versions", {"document": p["document"]}, "only one edition", expect_error=True)
+                tool("compare_versions", doc, "only one edition", expect_error=True)
 
         print("\nError handling:")
         tool("search_docs", {"query": "((("}, "no searchable words", expect_error=True)
         tool("get_toc", {"document": "does-not-exist"}, "unknown document slug", expect_error=True)
         tool("get_section", {}, "section_id", expect_error=True)
         tool("get_figure", {"figure_id": 999999999}, "figure", expect_error=True)
-        tool("get_page_image", {"document": p["document"], "page": 0}, "page", expect_error=True)
+        tool("get_page_image", {**doc, "page": 0}, "page", expect_error=True)
         tool("search_docs", {"query": "x", "collection": "nope-not-real"}, "unknown collection", expect_error=True)
         tool("search_docs", {"query": "zzzqqxyw", "limit": 3}, "no matches")
         # One impossible word must not sink an otherwise good question -- nor

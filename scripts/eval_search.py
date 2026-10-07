@@ -19,7 +19,8 @@ questions.jsonl holds one object per line:
    "note": "optional: why that section answers it"}
 
 `answers` lists every section that answers the question, and a hit on any of
-them counts. When a miss turns out to be another section that answers just as
+them counts. Where two collections each have a document of that slug, add
+`"collection"` (the collection's key, as list_documents shows it) to say which. When a miss turns out to be another section that answers just as
 well, add it there: a test that marks right answers wrong under-reports, and
 the misses are where to look.
 
@@ -60,6 +61,7 @@ def load_questions(path: Path) -> list[dict]:
 
 def is_answer(row, answers: list[dict]) -> bool:
     return any(row["slug"] == a["slug"] and row["file"].endswith("/" + a["file"].lstrip("/"))
+               and a.get("collection") in (None, row["collection"])
                for a in answers)
 
 
@@ -69,10 +71,11 @@ def missing_answers(questions: list[dict]) -> list[str]:
     out = []
     for q in questions:
         for a in q["answers"]:
-            hit = mcp_server.CORPUS.db.execute(
-                "SELECT 1 FROM chunks WHERE slug = ? AND file LIKE ?",
-                (a["slug"], "%/" + a["file"].lstrip("/")),
-            ).fetchone()
+            sql, params = "SELECT 1 FROM chunks WHERE slug = ? AND file LIKE ?", [a["slug"], "%/" + a["file"].lstrip("/")]
+            if a.get("collection"):
+                sql += " AND collection = ?"
+                params.append(a["collection"])
+            hit = mcp_server.CORPUS.db.execute(sql, params).fetchone()
             if not hit:
                 out.append(f"{q['id']}: {a['slug']} {a['file']}")
     return out

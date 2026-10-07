@@ -45,7 +45,9 @@ recall for anything destructive.
 ```
 
 A corpus holding several collections (one per vendor, say) repeats this under
-each collection folder. A converter moves a PDF from `new_docs/` to `source/`
+each collection folder. Two collections may each have a document of the same
+slug: the index keys documents by collection and slug, and a tool call naming
+such a document passes `collection` as well. A converter moves a PDF from `new_docs/` to `source/`
 as its last step, so what is left in `new_docs/` is what has not been
 converted. A collection that still has its PDFs beside `docs/` works unchanged;
 `scripts/editions.py migrate` moves them.

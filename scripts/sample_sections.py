@@ -64,9 +64,11 @@ def answered(path: Path | None) -> set[tuple[str, str]]:
 
 
 def pools(root: Path, min_chars: int, used: set, figures_only: bool) -> dict:
-    """slug -> (doc_dir, [(section, its figures)]) of sections worth asking about."""
+    """(collection, slug) -> (doc_dir, [(section, its figures)]) of sections
+    worth asking about. Keyed by both: two collections may each have a
+    document of one slug."""
     out = {}
-    for _key, _display, docs in find_collections(root):
+    for key, _display, docs in find_collections(root):
         # A document is its folder, as it is to the index build.
         manifests = {d / "manifest.json": json.loads((d / "manifest.json").read_text(encoding="utf-8-sig"))
                      for d in editions.document_dirs(docs)}
@@ -101,7 +103,7 @@ def pools(root: Path, min_chars: int, used: set, figures_only: bool) -> dict:
                     continue
                 pool.append((s, figures.get(s["file"], [])))
             if pool:
-                out[manifest["slug"]] = (mp.parent, pool)
+                out[(key, manifest["slug"])] = (mp.parent, pool)
     return out
 
 
@@ -122,13 +124,16 @@ def main() -> int:
         print("Nothing to sample -- check --root, and for --figures that extract_figures.py has run.",
               file=sys.stderr)
         return 1
-    weight = {slug: math.sqrt(len(pool)) for slug, (_, pool) in docs.items()}
+    weight = {doc: math.sqrt(len(pool)) for doc, (_, pool) in docs.items()}
     total = sum(weight.values())
+    # The collection is named only where the slug alone is ambiguous.
+    shared = {slug for _key, slug in docs if sum(1 for _k, s in docs if s == slug) > 1}
 
     n = 0
-    for slug in sorted(docs):
-        doc_dir, pool = docs[slug]
-        quota = max(1, round(args.n * weight[slug] / total))
+    for doc in sorted(docs):
+        key, slug = doc
+        doc_dir, pool = docs[doc]
+        quota = max(1, round(args.n * weight[doc] / total))
         rng.shuffle(pool)
         taken = 0
         for section, figures in pool:
@@ -140,7 +145,7 @@ def main() -> int:
                 continue  # contents pages and figure lists answer nothing
             taken += 1
             n += 1
-            print(f"=== [{n}] {slug} · {section['file']}")
+            print(f"=== [{n}] {slug} · {section['file']}" + (f" · collection {key}" if slug in shared else ""))
             print(f"heading: {heading}")
             for f in figures:
                 print(f"figure: {f.get('caption') or '(no caption)'} -> {(doc_dir / f['file']).as_posix()}")

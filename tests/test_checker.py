@@ -195,17 +195,25 @@ class CheckerTest(unittest.TestCase):
         for name in ("x.old", "x.new", ".x", "_x", "x", "a.b", "x.older", "x.new.bak", "docs"):
             self.assertEqual(checker.index_skips(name), editions.skips_name(name), name)
 
-    def test_33b_a_folder_name_two_collections_share_fails_the_check(self):
-        """Until documents are keyed by collection as well as name, two
-        collections holding a folder of the same name stop
-        build_search_db.py, so the checker fails them too. The backup the
-        same check used to catch is no longer read (test_31)."""
+    def test_35c_the_checker_fails_what_stops_the_build_and_passes_what_does_not(self):
+        """Two collections may each hold a document of one name: the index
+        keys documents by collection too (test_35). Two collection folders
+        whose names give one key still stop the build, so the checker fails
+        those, by the same rule build_search_db.py uses."""
         root = self.tmp / "TwoHands"
         for coll in ("A", "B"):
             shutil.copytree(WS.hand_corpus(), root / coll)
         r, raised = self.check(root, "--no-pdf")
-        self.assertIn("duplicate-slug", raised, r.stdout)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn("collection-clash", raised)
+        shutil.copytree(WS.hand_corpus(), root / "a-")      # gives the key "a" too
+        r, raised = self.check(root, "--no-pdf")
+        self.assertIn("collection-clash", raised, r.stdout)
         self.assertEqual(r.returncode, 1, r.stdout)
+        db = load_script("build_search_db")
+        checker = load_script("check_corpus")
+        for name in ("Tessent Manual", "tessent-manual", "A", "a-", "Ünïcode", "___", "x.y_z"):
+            self.assertEqual(checker.collection_key(name), db.slugify(name), name)
 
     def test_23_checker_catches_edition_defects(self):
         """Each way a set of editions can be undecidable, planted alone."""
