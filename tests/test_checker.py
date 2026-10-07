@@ -341,6 +341,9 @@ class CheckerTest(unittest.TestCase):
         self.assertGreaterEqual(seen, 8)
         self.assertEqual(schema_errors({"slug": "a", "title": "t", "source_pdf": "x", "page_count": 0, "sections": []}, schema),
                          ["$.page_count: 0 is below 1"], "the validator accepts what the schema forbids")
+        # the checker refuses an empty required string, so the schema does too
+        self.assertEqual(schema_errors({"slug": "", "title": "t", "source_pdf": "x", "page_count": 1, "sections": []}, schema),
+                         ["$.slug: '' is shorter than 1"])
 
         # enrich reads the manifest's own word for who wrote a breadcrumb, and
         # reads the sections where an older manifest has none

@@ -74,6 +74,20 @@ class ServerTest(unittest.TestCase):
         for name in ("prose.new", "_scratch"):
             self.assertNotIn(name, r.stdout, f"sample_sections.py drew from docs/{name}")
 
+        # --exclude takes a question file with quote answers, and an answer
+        # naming another collection excludes nothing here
+        ref = json.loads((docs / "ref" / "manifest.json").read_text(encoding="utf-8"))["sections"][2]["file"]
+        prose = json.loads((docs / "prose" / "manifest.json").read_text(encoding="utf-8"))["sections"][1]["file"]
+        exclude = self.tmp / "exclude.jsonl"
+        exclude.write_text("\n".join(json.dumps(q) for q in (
+            {"id": "a", "answers": [{"doc_id": "prose", "quote": "anything"}]},
+            {"id": "b", "answers": [{"slug": "ref", "file": ref}]},
+            {"id": "c", "answers": [{"slug": "prose", "file": prose, "collection": "elsewhere"}]})), encoding="utf-8")
+        r = run("sample_sections.py", "--root", str(corpus), "--n", "500", "--min-chars", "1", "--exclude", str(exclude))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn(f"ref · {ref}", r.stdout, "an answered section was sampled")
+        self.assertIn(f"prose · {prose}", r.stdout, "an answer in another collection excluded this one")
+
     def test_33_the_folder_names_the_document(self):
         """The folder name is the document's slug in every tool. The index
         used the manifest's copy while build_index.py used the folder, so one
@@ -252,6 +266,19 @@ class ServerTest(unittest.TestCase):
         self.assertRegex(r.stdout, r"\[q1\] identifier\s+3 -> 1\s+question q1")
         self.assertRegex(r.stdout, r"\[q3\] concept\s+- -> 7\s+question q3")
         self.assertIn("Only in A: q7", r.stdout)
+
+        # questions without an id are told apart by their text
+        def idless(name, ranks):
+            path = self.tmp / name
+            path.write_text(json.dumps({"db": "x", "summary": {}, "errors": [], "results": [
+                {"id": None, "kind": "concept", "question": q, "rank": rank, "top": []} for q, rank in ranks]}),
+                encoding="utf-8")
+            return path
+        r = run("eval_search.py", "--compare", str(idless("na.json", [("first", 1), ("second", 2)])),
+                str(idless("nb.json", [("first", 4), ("second", 2)])))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"concept\s+1 -> 4\s+first")
+        self.assertIn("Rank changes (rank 11+ shown as -): 1", r.stdout)
         self.assertNotIn("[q2]", r.stdout, "a question whose rank did not move was listed")
 
         questions = self.tmp / "questions.jsonl"
@@ -527,6 +554,17 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(live.staleness_warning(), "", "rechecked within STALE_RECHECK")
         live._stale_checked -= server.STALE_RECHECK
         self.assertIn("Stale index", live.staleness_warning(), "a change after the first check was never seen")
+
+        # figures extracted after the build
+        manifest.write_bytes(original)
+        figures = corpus / "docs" / "prose" / "figures.json"
+        figures.unlink(missing_ok=True)
+        r = run("build_search_db.py", "--root", str(corpus), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(warning(), "")
+        figures.write_text('{"figures": []}', encoding="utf-8")
+        self.assertIn("prose", warning(), "a figures.json the index never saw was not reported")
+        figures.unlink()
 
         # and it reaches an answer, wherever the partial-index warning would
         manifest.write_text(json.dumps(changed, indent=2), encoding="utf-8")

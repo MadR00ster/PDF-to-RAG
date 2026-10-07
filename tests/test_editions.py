@@ -623,6 +623,9 @@ class EditionsTest(unittest.TestCase):
         for vendor in ("Alpha", "Beta"):
             self.assertTrue((root / vendor / "docs" / "index.json").is_file(), vendor)
         self.assertFalse((root / "docs" / "index.json").exists(), "the empty docs/ was taken for the collection")
+        r = run("check_corpus.py", str(root), "--no-pdf")
+        self.assertNotIn("No documents found", r.stderr, "check_corpus.py stopped at the empty docs/")
+        self.assertIn("Alpha", r.stdout + r.stderr)
 
         waiting = self.tmp / "Waiting"
         (waiting / "docs").mkdir(parents=True)

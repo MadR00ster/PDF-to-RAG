@@ -83,7 +83,7 @@ JSON_TYPES = {"string": str, "boolean": bool, "array": list, "object": dict, "nu
 def schema_errors(value, schema: dict, path: str = "$") -> list[str]:
     """What is wrong with `value` under a JSON Schema, for the keywords
     scripts/manifest.schema.json uses: type, required, properties, items, enum,
-    const, minimum, pattern and additionalProperties (true). Anything else in a
+    const, minimum, minLength, pattern and additionalProperties (true). Anything else in a
     schema is documentation here."""
     errors = []
     if "type" in schema:
@@ -104,6 +104,8 @@ def schema_errors(value, schema: dict, path: str = "$") -> list[str]:
         errors.append(f"{path}: {value!r} is not {schema['const']!r}")
     if "minimum" in schema and isinstance(value, (int, float)) and value < schema["minimum"]:
         errors.append(f"{path}: {value} is below {schema['minimum']}")
+    if "minLength" in schema and isinstance(value, str) and len(value) < schema["minLength"]:
+        errors.append(f"{path}: {value!r} is shorter than {schema['minLength']}")
     if "pattern" in schema and isinstance(value, str) and not re.search(schema["pattern"], value):
         errors.append(f"{path}: {value!r} does not match {schema['pattern']}")
     if isinstance(value, dict):

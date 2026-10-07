@@ -167,14 +167,18 @@ def compare(path_a: Path, path_b: Path) -> None:
               f"{cell(sa, 'hit@5', '.0%'):>8} {cell(sb, 'hit@5', '.0%'):>8} "
               f"{cell(sa, 'mrr', '.3f'):>7} {cell(sb, 'mrr', '.3f'):>7}")
 
-    by_a = {r["id"]: r for r in a["results"]}
-    by_b = {r["id"]: r for r in b["results"]}
+    # A question without an id is known by its text, so two of them do not
+    # collapse into one key.
+    def qkey(r):
+        return r["id"] if r.get("id") is not None else r.get("question")
+    by_a = {qkey(r): r for r in a["results"]}
+    by_b = {qkey(r): r for r in b["results"]}
     moved = sorted((r for i, r in by_b.items() if i in by_a and by_a[i]["rank"] != r["rank"]),
-                   key=lambda r: (r["kind"], str(r["id"])))
+                   key=lambda r: (r["kind"], str(qkey(r))))
     print(f"\nRank changes (rank 11+ shown as -): {len(moved)}")
     for r in moved:
-        question = r.get("question") or by_a[r["id"]].get("question") or ""
-        print(f"  [{r['id']}] {r['kind']:12} {rank_text(by_a[r['id']]['rank']):>2} -> "
+        question = r.get("question") or by_a[qkey(r)].get("question") or ""
+        print(f"  [{r.get('id')}] {r['kind']:12} {rank_text(by_a[qkey(r)]['rank']):>2} -> "
               f"{rank_text(r['rank']):<2}  {question}")
     for label, only in (("A", sorted(set(by_a) - set(by_b), key=str)), ("B", sorted(set(by_b) - set(by_a), key=str))):
         if only:

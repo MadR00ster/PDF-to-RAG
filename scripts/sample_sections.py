@@ -49,14 +49,18 @@ BOILERPLATE_RE = re.compile(
     r"revision history|contacting|customer support|about this", re.I)
 
 
-def answered(path: Path | None) -> set[tuple[str, str]]:
-    """(slug, file) of every section some question already points at."""
+def answered(path: Path | None) -> set[tuple[str | None, str, str]]:
+    """(collection, slug, file) of every section some question already points
+    at; the collection is None where the answer does not name one, and then
+    stands for every collection. An answer given as a quote names no file and
+    excludes nothing."""
     used = set()
     if path and path.is_file():
         for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line and not line.startswith("//"):
-                used.update((a["slug"], a["file"]) for a in json.loads(line).get("answers", []))
+                used.update((a.get("collection"), a["slug"], a["file"])
+                            for a in json.loads(line).get("answers", []) if "slug" in a and "file" in a)
     return used
 
 
@@ -92,14 +96,13 @@ def pools(root: Path, min_chars: int, used: set, figures_only: bool) -> dict:
                         figures.setdefault(f["section"], []).append(f)
             pool = []
             for s in manifest.get("sections", []):
-                if (manifest["slug"], s["file"]) in used:
+                if {(key, manifest["slug"], s["file"]), (None, manifest["slug"], s["file"])} & used:
                     continue
                 if BOILERPLATE_RE.search(clean_heading(s.get("heading") or "")):
                     continue
-                # Bytes, not characters: close enough for a floor, and no
-                # section is read in full only to be measured.
+                # Read only once the heading has let it through.
                 try:
-                    size = (mp.parent / s["file"]).stat().st_size
+                    size = len((mp.parent / s["file"]).read_text(encoding="utf-8", errors="replace"))
                 except OSError:
                     continue
                 if size < min_chars:
@@ -131,8 +134,11 @@ def main() -> int:
         return 1
     weight = {doc: math.sqrt(len(pool)) for doc, (_, pool) in docs.items()}
     total = sum(weight.values())
-    # The collection is named only where the slug alone is ambiguous.
-    shared = {slug for _key, slug in docs if sum(1 for _k, s in docs if s == slug) > 1}
+    # The collection is named only where the slug alone is ambiguous: in the
+    # whole corpus, not only among the documents that had sections to sample.
+    every = [d.name for _key, _display, coll in find_collections(Path(args.root).resolve())
+             for d in editions.document_dirs(coll)]
+    shared = {slug for slug in every if every.count(slug) > 1}
 
     n = 0
     for doc in sorted(docs):

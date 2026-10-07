@@ -760,9 +760,9 @@ warns on every result until the index is whole.
 **So must a stale one.** The same failure arrives a rebuild later: the index
 answers confidently from manifests that have since changed. The build records
 each manifest, `figures.json` and `current_versions.json` by size, time and
-SHA-256, and the server compares them with the disk once per process. A
-changed file, a document folder the index does not know, or a pins file that
-appeared adds "Stale index" to every search and `list_documents` answer until
+SHA-256, and the server compares them with the disk, again every 30 seconds
+while they still match. A changed file, a document folder or `figures.json`
+the index does not know, or a pins file that appeared adds "Stale index" to every search and `list_documents` answer until
 the index is rebuilt. An index built before this, or copied without its corpus,
 says nothing, since there is nothing to compare.
 

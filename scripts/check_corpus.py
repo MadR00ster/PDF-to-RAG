@@ -1015,10 +1015,12 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
 def find_targets(path: Path):
     """[(collection_dir, doc_dirs, hidden_dirs)], and whether collection-level
     checks apply. Discovery follows build_search_db.py: <root>/docs is one
-    collection, otherwise every <root>/<collection>/docs."""
+    collection when it holds a document, otherwise every
+    <root>/<collection>/docs; an empty docs/ at the root hides nothing."""
     if (path / "manifest.json").is_file():
         return [(path.parent.parent, [path], [])], False
-    if (path / "docs").is_dir():
+    root_docs = path / "docs"
+    if root_docs.is_dir() and any((d / "manifest.json").is_file() for d in root_docs.iterdir()):
         collections = [path]
     else:
         collections = sorted(p for p in path.iterdir() if p.is_dir() and (p / "docs").is_dir())

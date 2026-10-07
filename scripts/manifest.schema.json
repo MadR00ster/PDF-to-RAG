@@ -7,9 +7,9 @@
   "required": ["slug", "title", "source_pdf", "page_count", "sections"],
   "additionalProperties": true,
   "properties": {
-    "source_pdf": {"type": "string"},
-    "title": {"type": "string"},
-    "slug": {"type": "string"},
+    "source_pdf": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "slug": {"type": "string", "minLength": 1},
     "doc_id": {"type": "string", "description": "the manual this is an edition of"},
     "version": {"type": "string", "description": "the tool release it applies to, as its cover prints it"},
     "version_and_later": {"const": true, "description": "present only when the cover says the document also covers later releases"},

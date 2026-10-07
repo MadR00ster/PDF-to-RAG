@@ -208,8 +208,12 @@ class Corpus:
             base = root / coll
             docs = base / "docs"
             for folder in sorted(docs.iterdir()) if docs.is_dir() else []:
-                rel = (folder / "manifest.json").relative_to(root).as_posix()
-                if (folder / "manifest.json").is_file() and not skips_folder(folder.name) and rel not in known:
+                if not (folder / "manifest.json").is_file() or skips_folder(folder.name):
+                    continue
+                # A document the index does not know, or a figures.json made
+                # after the build (extract_figures.py run later).
+                if any((folder / f).is_file() and (folder / f).relative_to(root).as_posix() not in known
+                       for f in ("manifest.json", "figures.json")):
                     changed[folder.name] = None
             pins = (base / "current_versions.json")
             if pins.is_file() and pins.relative_to(root).as_posix() not in known:

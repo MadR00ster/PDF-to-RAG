@@ -20,8 +20,8 @@ sections and left alone: a wrong answer is worse than a missing one, because
 it makes a miss look like a hit.
 
 The result goes to `--out` (default `<questions>.remapped.jsonl`), never over
-the input. Every other field and line is kept; lines that need no change are
-copied byte for byte. Exit status 1 if any answer was unresolved.
+the input. Every other field and line is kept; lines that need no change keep
+their text, written out as UTF-8 with LF line endings and no BOM. Exit status 1 if any answer was unresolved.
 """
 from __future__ import annotations
 
