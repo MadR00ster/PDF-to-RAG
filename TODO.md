@@ -178,7 +178,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T03 | Read pymupdf4llm's page number from the right key (**done**) | 1.4 | T01 | S |
 | T04 | Docs and code that disagree; dead code (**done**) | 1.7 | T01 | S |
 | **Phase 2: the corpus** |||||
-| T05 | Docling chunks: use their own heading | 1.3 | T01 | S |
+| T05 | Docling chunks: use their own heading (**done**) | 1.3 | T01 | S |
 | T06 | Make a declined attribution loud; `--command-level` | 1.5 | T01 | M |
 | T07 | Stage conversions outside `docs/`; skip hidden folders everywhere (**done**) | 1.6 | T01 | M |
 | T08 | Stop deleting short lines that begin the title | 1.8 | T04 | S |
@@ -587,7 +587,7 @@ every page after it, and nothing reports it.
 
 ### T05: Docling chunks use their own heading, not the outermost [1.3]
 
-**Status:** not started
+**Status:** done
 
 **Why.** Verified in the source of docling-core 2.100.0
 (`transforms/chunker/hierarchical_chunker.py`, lines 221–248 and 269–270).
@@ -645,10 +645,10 @@ Read that file's method section. If those numbers came from
 measured before this fix and have not been re-measured.
 
 **Done when**
-- [ ] Both `[0]` reads are `[-1]`. `grep -n 'headings"\] or \[""\])\[0\]' scripts/convert_docling.py`
+- [x] Both `[0]` reads are `[-1]`. `grep -n 'headings"\] or \[""\])\[0\]' scripts/convert_docling.py`
       finds nothing.
-- [ ] The new assertions fail on the old code and pass now.
-- [ ] The Docling confirmation and the benchmark rerun are done, or their
+- [x] The new assertions fail on the old code and pass now.
+- [x] The Docling confirmation and the benchmark rerun are done, or their
       §4 rows say why not.
 
 ---
@@ -2161,8 +2161,8 @@ you could not run. Never write a number you did not measure.
 
 | task | what to measure | how | result | date |
 |---|---|---|---|---|
-| T05 | Do Docling's later chunks list the title first? | the snippet in T05, on a real manual | | |
-| T05 | Docling anchored share, after the fix | rerun `references/extractor-benchmark.md`'s method | | |
+| T05 | Do Docling's later chunks list the title first? | the snippet in T05, on a real manual | not measured: Docling is not installed here and needs several GB; the claim rests on docling-core's source, as T05 says | 2026-10-07 |
+| T05 | Docling anchored share, after the fix | rerun `references/extractor-benchmark.md`'s method | not measured: needs Docling and the benchmark's corpus slices, neither here; the benchmark file carries a dated note that its numbers predate the fix | 2026-10-07 |
 | T08 | Lines no longer deleted as furniture | `enrich_chunks.py --dry-run --list-furniture`, old vs new, diffed | | |
 | T10 | Search change from whole-heading front matter | `eval_search.py --json`, then `--compare` | | |
 | T11 | Identifier hit@1 and every rank moved | `eval_search.py --json`, then `--compare` | | |

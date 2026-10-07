@@ -270,7 +270,7 @@ class ConverterTest(unittest.TestCase):
         toc_pos = cd.build_toc_positions(pdf, toc)
 
         def resolve(heading, pages):
-            c = {"headings": [heading], "pages": pages, "text": ""}
+            c = {"headings": heading if isinstance(heading, list) else [heading], "pages": pages, "text": ""}
             return cd.resolve_ancestors(c, toc, toc_pos, by_title, spans, pdf)
 
         self.assertEqual(resolve("Syntax", [4]), (["Commands", "beta"], "anchored"),
@@ -280,6 +280,11 @@ class ConverterTest(unittest.TestCase):
         self.assertEqual(how, "page", "anchored to a same-titled entry six pages on")
         self.assertEqual(ancestors, ["Commands", "alpha", "Syntax"])
         self.assertEqual(resolve("Setup", [9])[1], "page", "anchored to a bookmark with no page")
+        # Docling lists headings outermost first, the document's title among
+        # them once it has labelled the cover: the chunk's own is the last.
+        self.assertEqual(resolve(["Widget Guide", "Syntax"], [4]), (["Commands", "beta"], "anchored"),
+                         "a title ahead of the chunk's own heading hid it")
+        self.assertEqual(resolve(["Widget Guide"], [2])[1], "page")
         pdf.close()
 
     def test_09c_docling_records_the_edition_and_files_the_pdf(self):
@@ -398,6 +403,26 @@ class ConverterTest(unittest.TestCase):
                 numbers_for(pages(*bad))
         # the real library, end to end: the key it actually writes is read
         self.assertEqual(cm.page_markdown(pdf)[1], [1, 2, 3])
+
+
+    def test_29_docling_merge_names_its_sub_headings(self):
+        """merge_sections read the outermost heading, the document's title once
+        Docling had labelled the cover, so no `### sub-heading` was ever
+        written. Runs without Docling: merging is plain list work."""
+        cd = load_script("convert_docling")
+        ancestors = ["Commands", "alpha"]
+
+        def chunk(headings, text):
+            return {"headings": headings, "ancestors": ancestors, "confidence": "anchored",
+                    "pages": [1], "text": text}
+
+        merged = cd.merge_sections([chunk(["Widget Guide", "Setup"], "one"),
+                                    chunk(["Widget Guide", "Setup"], "two"),
+                                    chunk(["Widget Guide", "Use"], "three")], 9000)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["heading"], "Setup")
+        self.assertIn("\n\n### Use\n\n", merged[0]["text"])
+        self.assertNotIn("### Setup", merged[0]["text"], "a heading repeated within one section was written twice")
 
 
 if __name__ == "__main__":

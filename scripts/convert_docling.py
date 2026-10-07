@@ -188,10 +188,14 @@ def resolve_ancestors(c, toc, toc_pos, by_title, spans, doc):
     and taking the nearest match regardless labelled a page-180 chunk with a
     section on page 190, and a page-83 overview with chapter 5 on page 150,
     both as `anchored`: the confidence consumers trust most.
+
+    Docling lists a chunk's headings outermost first, so the chunk's own
+    heading is the last one; the first is the document's title once Docling
+    has labelled the cover.
     """
     pages = sorted(c["pages"])
     first = pages[0] if pages else None
-    norm = normalize((c["headings"] or [""])[0])
+    norm = normalize((c["headings"] or [""])[-1])
 
     if norm and norm in by_title and first is not None:
         last = pages[-1]
@@ -255,7 +259,7 @@ def merge_sections(resolved, max_chars):
     """
     merged, buf = [], None
     for r in resolved:
-        head = (r["headings"] or [""])[0]
+        head = (r["headings"] or [""])[-1]
         lineage = common_lineage(buf["ancestors"], r["ancestors"]) if buf else None
         if (lineage is not None
                 and len(buf["text"]) + len(r["text"]) + 80 <= max_chars):
