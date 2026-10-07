@@ -165,6 +165,38 @@ CREATE INDEX idx_figures_section ON figures(collection, slug, section_ord);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
+# Made only with --ident-index: the identifier-shaped words of each chunk, kept
+# whole, one row per chunk with the chunk's rowid. FTS5 splits `set_scan_configuration`
+# into three tokens for prose search; here `_` and `-` stay inside a token.
+IDENT_SCHEMA = """
+CREATE VIRTUAL TABLE idents USING fts5(words, tokenize = "unicode61 tokenchars '_-'");
+"""
+
+# Written out in mcp_server.py too, which runs on its own; a test holds them together.
+MESSAGE_CODE_RE = re.compile(r"[A-Z][A-Z0-9]{1,9}-\d{2,5}")
+
+
+def identifiers(*texts: str) -> list[str]:
+    """The identifier-shaped words of some text, lowercased and without the
+    punctuation around them: they hold `_`, start with `-`, or are a message
+    code (ADES-002). The rule the server applies to a query."""
+    found = []
+    for text in texts:
+        for raw in (text or "").split():
+            tok = raw.strip("`'\"()[]{}<>,;:?!").rstrip(".")
+            if tok and ("_" in tok or (tok.startswith("-") and len(tok) > 1) or MESSAGE_CODE_RE.fullmatch(tok)):
+                found.append(tok.lower())
+    return found
+
+
+def without_breadcrumb(body: str, breadcrumb: str | None) -> str:
+    """A chunk's text without the breadcrumb line its converter put first: the
+    chunk's own label, which the index holds in a column of its own. The rule
+    mcp_server.without_label applies."""
+    crumb = (breadcrumb or "").strip("*").strip()
+    first, _, rest = body.partition("\n")
+    return rest if crumb and first.strip().strip("*").strip() == crumb else body
+
 DOT_LEADER_RE = re.compile(r"\.\s?\.\s?\.\s?\.")
 # The whole heading, not its first word: "Index Types", "Contents of the
 # Install Kit" and "Feedback Loops in PLLs" are real sections. The chunker
@@ -341,7 +373,8 @@ def resolve_editions(documents: list) -> tuple[dict[tuple[str, str], dict], list
     return resolved, problems
 
 
-def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: bool = True) -> int:
+def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: bool = True,
+          body_without_breadcrumb: bool = False, ident_index: bool = False) -> int:
     # A collection is known in the index by a key made from its folder name,
     # and a document by that key and its slug. Two folders giving one key
     # would merge two vendors' documents into one collection.
@@ -449,7 +482,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
                 heading,
                 entity,
                 sec.get("breadcrumb") or "",
-                body,
+                without_breadcrumb(body, sec.get("breadcrumb")) if body_without_breadcrumb else body,
                 " ".join(figure_words.get(sec["file"], [])),
                 slug,
                 key,
@@ -538,11 +571,19 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         ("chunks", str(total_chunks)),
         ("figures", str(total_figures)),
         ("figure_text", "1" if figure_text else "0"),
+        ("body_without_breadcrumb", "1" if body_without_breadcrumb else "0"),
+        ("ident_index", "1" if ident_index else "0"),
         ("unreadable", str(len(unreadable))),
         ("schema_version", "4"),
     ):
         db.execute("INSERT INTO meta (key, value) VALUES (?,?)", (k, v))
 
+    if ident_index:
+        db.executescript(IDENT_SCHEMA)
+        db.executemany(
+            "INSERT INTO idents (rowid, words) VALUES (?, ?)",
+            [(rowid, " ".join(dict.fromkeys(identifiers(heading, entity, body))))
+             for rowid, heading, entity, body in db.execute("SELECT rowid, heading, entity, body FROM chunks")])
     db.execute("INSERT INTO chunks(chunks) VALUES ('optimize')")
     db.commit()
     db.execute("VACUUM")
@@ -681,6 +722,19 @@ def main() -> int:
         help="serve figures but keep their captions and labels out of search "
         "(for measuring what that text adds)",
     )
+    ap.add_argument(
+        "--body-without-breadcrumb",
+        action="store_true",
+        help="index each chunk's text without its first line when that line is its breadcrumb, which "
+        "the index already holds in a column of its own and so counts twice (an experiment: measure "
+        "with eval_search.py --compare before relying on it)",
+    )
+    ap.add_argument(
+        "--ident-index",
+        action="store_true",
+        help="also keep each chunk's identifier-shaped words whole, so a query naming one can favour "
+        "the chunks that hold it (an experiment, as above)",
+    )
     args = ap.parse_args()
 
     root = Path(args.root).resolve()
@@ -690,7 +744,8 @@ def main() -> int:
     out_path = Path(args.out).resolve() if args.out else root / DEFAULT_DB_NAME
 
     print(f"Indexing corpus at {root}")
-    code = build(root, out_path, stats_only=args.stats_only, figure_text=not args.no_figure_text)
+    code = build(root, out_path, stats_only=args.stats_only, figure_text=not args.no_figure_text,
+                 body_without_breadcrumb=args.body_without_breadcrumb, ident_index=args.ident_index)
 
     built = not args.stats_only and code != 1 and out_path.exists()
     # A copy already at the root is refreshed by every build: an index and a

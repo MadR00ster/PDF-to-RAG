@@ -356,5 +356,57 @@ class ServerTest(unittest.TestCase):
             self.assertIn(qid, r.stdout)
 
 
+    def test_47_the_search_experiments_are_flags_and_off_by_default(self):
+        """--body-without-breadcrumb and --ident-index change what is indexed,
+        and nothing about the default."""
+        corpus = WS.corpus()
+        built = {}
+        for name, flags in (("plain", ()), ("nocrumb", ("--body-without-breadcrumb",)), ("idents", ("--ident-index",))):
+            db = self.tmp / f"experiment-{name}.sqlite3"
+            r = run("build_search_db.py", "--root", str(corpus), "--out", str(db), *flags)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            built[name] = db
+
+        def rows(name, sql):
+            con = sqlite3.connect(built[name])
+            try:
+                return con.execute(sql).fetchall()
+            finally:
+                con.close()
+
+        def starting_with_own_breadcrumb(name):
+            return [1 for crumb, body in rows(name, "SELECT breadcrumb, body FROM chunks")
+                    if crumb and body.split("\n", 1)[0].strip("*").strip() == crumb.strip("*").strip()]
+        self.assertTrue(starting_with_own_breadcrumb("plain"), "the control index has no breadcrumb lines to remove")
+        self.assertFalse(starting_with_own_breadcrumb("nocrumb"))
+        self.assertEqual(dict(rows("nocrumb", "SELECT key, value FROM meta"))["body_without_breadcrumb"], "1")
+        self.assertEqual(dict(rows("plain", "SELECT key, value FROM meta"))["body_without_breadcrumb"], "0")
+        r = run("mcp_smoke_test.py", "--db", str(built["nocrumb"]))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(rows("plain", "SELECT name FROM sqlite_master WHERE name = 'idents'"), [])
+
+        # the server's rule for an identifier and the index's are the same rule
+        build, server = load_script("build_search_db"), load_script("mcp_server")
+        for sample in ("set_widget_option", "`set_widget_option`,", "-value", "-", "ADES-002", "ades-002", "X-1",
+                       "ADES-002x", "set", "word.", "a_b."):
+            self.assertEqual(bool(build.identifiers(sample)), any(ident for _t, ident in server.query_tokens(sample)), sample)
+            self.assertEqual(build.identifiers(sample), [t for t, ident in server.query_tokens(sample) if ident], sample)
+
+        query = "what does set_widget_option_05 do"
+        for name in ("plain", "idents"):
+            server.CORPUS = server.Corpus(built[name])
+            try:
+                self.assertEqual(server.search(query)[0]["entity"], "set_widget_option_05", name)
+                self.assertEqual(bool(server.ident_rows(query)), name == "idents")
+                if name == "idents":
+                    self.assertEqual(server.ident_rows("how do I set the clock"), frozenset())
+                    held = server.ident_rows(query)
+                    row = {"score": 0.0, "entity": "", "heading": "", "chars": 1000, "noise": 0, "id": next(iter(held))}
+                    self.assertEqual(server.rank_adjust(row, query, held), -3.0)
+                    self.assertEqual(server.rank_adjust(row, query), 0.0)
+            finally:
+                server.CORPUS._db.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

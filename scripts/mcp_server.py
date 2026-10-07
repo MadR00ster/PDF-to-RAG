@@ -124,6 +124,7 @@ class Corpus:
         self._root: Path | None = None
         self._has_figures: bool | None = None
         self._has_editions: bool | None = None
+        self._has_idents: bool | None = None
         self._documents: dict[tuple[str, str], sqlite3.Row] | None = None
         self.name = db_path.stem
 
@@ -204,6 +205,15 @@ class Corpus:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'figures'"
             ).fetchone())
         return self._has_figures
+
+    @property
+    def has_idents(self) -> bool:
+        """True for an index built with --ident-index."""
+        if self._has_idents is None:
+            self._has_idents = bool(self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'idents'"
+            ).fetchone())
+        return self._has_idents
 
     @property
     def has_editions(self) -> bool:
@@ -478,7 +488,8 @@ def search(query: str, collection=None, document=None, limit=10, max_per_documen
         # to stay one phrase rather than become "set OR scan OR ...".
         rows = run_match(" OR ".join(terms), collection, document, limit)
 
-    scored = sorted(((rank_adjust(r, query), r) for r in rows), key=lambda pair: pair[0])
+    holding = ident_rows(query) if rows else frozenset()
+    scored = sorted(((rank_adjust(r, query, holding), r) for r in rows), key=lambda pair: pair[0])
     picked: list[sqlite3.Row] = []
     per_doc: dict[tuple[str, str], int] = {}
     for _score, row in scored:
@@ -494,7 +505,22 @@ def search(query: str, collection=None, document=None, limit=10, max_per_documen
     return picked
 
 
-def rank_adjust(row: sqlite3.Row, query: str) -> float:
+def ident_rows(query: str) -> frozenset[int]:
+    """Rowids of the chunks that hold an identifier the query names, in an index
+    built with --ident-index; empty where there is none or the query names none."""
+    if not CORPUS.has_idents:
+        return frozenset()
+    named = dict.fromkeys(t for t, ident in query_tokens(query) if ident)
+    if not named:
+        return frozenset()
+    expr = " OR ".join('"' + t.replace('"', "") + '"' for t in named)
+    try:
+        return frozenset(r[0] for r in CORPUS.db.execute("SELECT rowid FROM idents WHERE idents MATCH ?", (expr,)))
+    except sqlite3.OperationalError:
+        return frozenset()
+
+
+def rank_adjust(row: sqlite3.Row, query: str, holding: frozenset[int] = frozenset()) -> float:
     """Nudge BM25 (lower is better) using signals BM25 cannot see.
 
     An entity is boosted when the query is the entity, or names it: an
@@ -526,6 +552,9 @@ def rank_adjust(row: sqlite3.Row, query: str) -> float:
             content = {w for w in words if w not in STOPWORDS}
             if content and content <= set(WORD_RE.findall(heading)):
                 score -= 1.5
+
+    if holding and row["id"] in holding:
+        score -= 3.0          # holds an identifier the query names, whole
 
     # Near-empty stubs ("See Also" lists, one-line cross references) match
     # cheaply and answer nothing.

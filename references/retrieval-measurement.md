@@ -53,6 +53,27 @@ them, matched these totals unstemmed but ranked answers lower when stemmed.
 On 57 questions one question is 1.75 points. Read the per-question changes
 (`eval_search.py --json` keeps them), not just the totals.
 
+## Experiments left off
+
+Two changes to the index are built, tested and off by default. Neither has been
+measured here, and choosing a default is a separate decision from building them.
+
+- `build_search_db.py --body-without-breadcrumb` indexes a chunk's text without
+  its first line when that line is its breadcrumb. The breadcrumb has a column of
+  its own (weight 3), so with the line in the body as well it counts twice.
+- `build_search_db.py --ident-index` keeps each chunk's identifier-shaped words
+  whole in a second index. A query naming one gives the chunks that hold it a
+  further boost of 3.0 in the server, on top of the entity and heading rules.
+
+Measure each against the default on the same questions with
+`eval_search.py --compare`. Adopt one only if identifier hit@1 rises and no kind
+falls.
+
+The BM25 weights, `(10, 8, 3, 1, 1)`, stay as they are. Tuning them on the 76
+questions they were scored on measures nothing: any weights can be fitted to
+the questions that chose them. They are worth revisiting once there are
+held-out `real` questions, asked by someone who had not read the answer.
+
 ## Orphaned sub-chunks
 
 Eleven questions have as their answer a chunk headed only "Arguments", "Note",

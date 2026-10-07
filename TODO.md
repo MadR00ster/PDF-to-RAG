@@ -194,7 +194,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | **Phase 5: later** |||||
 | T16 | Reference breadcrumbs from the TOC chain (**done**) | 2.3 | T06 | M |
 | T17 | Section identity across reconversions (**done**) | 2.4 | T12 | M |
-| T18 | Retrieval experiments behind flags | 2.5 | T11, T12 | M |
+| T18 | Retrieval experiments behind flags (**done**) | 2.5 | T11, T12 | M |
 | T19 | Say which copy of a field is canonical; stop writing `chars` | 3.1 | T07 | M |
 | T20 | Manifest schema and provenance | 3.2 | T06 | M |
 | T21 | Export chunks as JSONL | 3.3 | T07 | S |
@@ -1729,7 +1729,7 @@ stale answer.
 
 ### T18: Retrieval experiments behind flags [2.5]
 
-**Status:** not started. Each change ships as a flag, **off by default**.
+**Status:** done: both flags are built and off by default; the weights sentence is in retrieval-measurement.md; the comparison is owed (§4). Test: test_47. Each change ships as a flag, **off by default**.
 Build and test the flags; don't turn any on. Whether one becomes the default
 is decided later, from the user's eval (§4), and is not part of this work.
 
@@ -2177,7 +2177,7 @@ you could not run. Never write a number you did not measure.
 | T11 | Identifier hit@1 and every rank moved | `eval_search.py --json`, then `--compare` | not measured: needs the user's corpus and its eval questions. Run `eval_search.py --json` on an index built before this commit and on one built after, compare with T12's `--compare`, and read every question whose rank moved | 2026-10-07 |
 | T14 | Strict check and figure links after reconverting prose | the T14 real-corpus check | not measured: needs two or three of the user's prose manuals. Reconvert them, run `check_corpus.py --strict` and the content check, and compare `extract_figures.py`'s summary (links by caption, page and context, and how often each fallback agrees with the caption) with the old conversion | 2026-10-07 |
 | T16 | Search change from chain breadcrumbs | `--compare` after reconverting the references | not measured: needs the user's two references and eval questions. Breadcrumbs are indexed with weight 3: `eval_search.py --json` before reconverting and after, then `--compare` | 2026-10-07 |
-| T18 | Each experiment flag against the default | `--compare` | | |
+| T18 | Each experiment flag against the default | `--compare` | not measured: needs the user's corpus and eval questions. Build an index with each flag and one without, run `eval_search.py --json` on each and `--compare`; adopt a flag only if identifier hit@1 rises and no kind falls | 2026-10-07 |
 
 ## 5. Found along the way
 
