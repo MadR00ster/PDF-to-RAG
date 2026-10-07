@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import base64
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -125,6 +126,7 @@ class Corpus:
         self._has_figures: bool | None = None
         self._has_editions: bool | None = None
         self._has_idents: bool | None = None
+        self._stale: str | None = None
         self._documents: dict[tuple[str, str], sqlite3.Row] | None = None
         self.name = db_path.stem
 
@@ -145,6 +147,67 @@ class Corpus:
         return self._db
 
     def coverage_warning(self) -> str:
+        """What to append to an answer when the index cannot be trusted to
+        cover the corpus: it is partial, or the corpus has changed since."""
+        return self._partial_warning() + self.staleness_warning()
+
+    def staleness_warning(self) -> str:
+        """A line to append when the corpus has changed since the index was built.
+
+        The same failure as a partial index, one rebuild later: search answers
+        confidently from manifests that are gone. Worked out once per process,
+        from the files the index recorded (manifests, figures.json and
+        current_versions.json, each by size, then mtime, then content) and from
+        any document folder it did not know. Empty where there is no record,
+        or where none of the recorded files can be found: an index copied
+        without its corpus has nothing to be compared with.
+        """
+        if self._stale is None:
+            self._stale = self._compute_staleness()
+        return self._stale
+
+    def _compute_staleness(self) -> str:
+        try:
+            recorded = self.db.execute("SELECT path, size, mtime_ns, sha256 FROM sources").fetchall()
+        except sqlite3.OperationalError:
+            return ""
+        root = self.root
+        if not recorded or not any((root / r["path"]).exists() for r in recorded):
+            return ""
+
+        def name(path: str) -> str:
+            parts = path.split("/")
+            return parts[-2] if parts[-1] in ("manifest.json", "figures.json") and len(parts) > 1 else path
+        changed: dict[str, None] = {}
+        for r in recorded:
+            file = root / r["path"]
+            try:
+                st = file.stat()
+                same = st.st_size == r["size"] and (
+                    st.st_mtime_ns == r["mtime_ns"] or hashlib.sha256(file.read_bytes()).hexdigest() == r["sha256"])
+            except OSError:
+                same = False
+            if not same:
+                changed[name(r["path"])] = None
+        known = {r["path"] for r in recorded}
+        for coll in sorted({r["collection_dir"] for r in self.db.execute("SELECT DISTINCT collection_dir FROM documents")}):
+            base = root / coll
+            docs = base / "docs"
+            for folder in sorted(docs.iterdir()) if docs.is_dir() else []:
+                rel = (folder / "manifest.json").relative_to(root).as_posix()
+                if (folder / "manifest.json").is_file() and not skips_folder(folder.name) and rel not in known:
+                    changed[folder.name] = None
+            pins = (base / "current_versions.json")
+            if pins.is_file() and pins.relative_to(root).as_posix() not in known:
+                changed[pins.relative_to(root).as_posix()] = None
+        if not changed:
+            return ""
+        names = list(changed)
+        shown = ", ".join(names[:3]) + (f", and {len(names) - 3} more" if len(names) > 3 else "")
+        return (f"\n\n> **Stale index:** {len(names)} document(s) changed on disk since this index was "
+                f"built ({shown}). Answers may not match the corpus. Rebuild with build_search_db.py.")
+
+    def _partial_warning(self) -> str:
         """A line to append when the index does not cover the whole corpus.
 
         A partially built index is the one failure mode that looks like a
@@ -231,6 +294,14 @@ class Corpus:
         if self._documents is None:
             self._documents = {(r["collection"], r["slug"]): r for r in self.db.execute("SELECT * FROM documents")}
         return self._documents.get((collection, slug))
+
+
+def skips_folder(name: str) -> bool:
+    """A folder under docs/ that is not a document: a backup (.old), an
+    interrupted build (.new), or anything hidden or private. editions.skips_name
+    is the rule; this file imports nothing from the scripts, so it has its own
+    copy, and a test holds the two together."""
+    return name.endswith((".old", ".new")) or name.startswith((".", "_"))
 
 
 class CorpusMissing(Exception):

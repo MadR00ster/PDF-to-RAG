@@ -198,7 +198,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T19 | Say which copy of a field is canonical; stop writing `chars` (**done**) | 3.1 | T07 | M |
 | T20 | Manifest schema and provenance (**done**) | 3.2 | T06 | M |
 | T21 | Export chunks as JSONL (**done**) | 3.3 | T07 | S |
-| T22 | Warn when the index is stale | 3.4 | T07 | M |
+| T22 | Warn when the index is stale (**done**) | 3.4 | T07 | M |
 | T23 | One `collection.json` (**not now: skip**) | 3.6 | — | — |
 | T24 | Remove accidental duplication | 4.3 | T06, T07 | M |
 | T25 | Consistent command lines | 4.4 | T07 | M |
@@ -1911,7 +1911,7 @@ rule to catch the copies drifting apart:
 
 ### T22: Warn when the index is stale [3.4]
 
-**Status:** not started
+**Status:** done. Test: test_42, and the server's skip rule is in test_31b.
 
 **Why.** The server already warns when its index is partial, on the principle
 that a missing result must not pass for a complete one. A stale index fails
@@ -1956,9 +1956,9 @@ of `WS.corpus()`, then use a new `Corpus` instance for each step:
   what an index built before this task looks like): no warning, no error.
 
 **Done when**
-- [ ] The warning appears in `search_docs` and `list_documents` output when
+- [x] The warning appears in `search_docs` and `list_documents` output when
       stale, and nowhere otherwise.
-- [ ] SKILL.md says so.
+- [x] SKILL.md says so.
 
 ---
 

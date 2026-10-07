@@ -195,8 +195,10 @@ class CheckerTest(unittest.TestCase):
         places that must not import one another: editions.py for the
         scripts, check_corpus.py, and (from T22) the server."""
         editions, checker = load_script("editions"), load_script("check_corpus")
+        server = load_script("mcp_server")
         for name in ("x.old", "x.new", ".x", "_x", "x", "a.b", "x.older", "x.new.bak", "docs"):
             self.assertEqual(checker.index_skips(name), editions.skips_name(name), name)
+            self.assertEqual(server.skips_folder(name), editions.skips_name(name), name)
 
     def test_35c_the_checker_fails_what_stops_the_build_and_passes_what_does_not(self):
         """Two collections may each hold a document of one name: the index

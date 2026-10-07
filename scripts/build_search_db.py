@@ -45,6 +45,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -163,6 +164,16 @@ CREATE TABLE figures (
 CREATE INDEX idx_figures_section ON figures(collection, slug, section_ord);
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+
+-- The files this index was built from, as they were. The server compares them
+-- with what is on disk and says when the corpus has moved on: an index nobody
+-- rebuilt answers confidently from a corpus that is gone.
+CREATE TABLE sources (
+    path     TEXT PRIMARY KEY,   -- relative to the corpus root, with /
+    size     INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    sha256   TEXT NOT NULL
+);
 """
 
 # Made only with --ident-index: the identifier-shaped words of each chunk, kept
@@ -345,6 +356,23 @@ def load_figures(doc_dir: Path) -> list[dict]:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  !! skipping {path}: {exc}", file=sys.stderr)
         return []
+
+
+def record_sources(db: sqlite3.Connection, root: Path, documents: list) -> None:
+    """Note every file the index depends on besides the sections: each manifest,
+    each figures.json, and each collection's current_versions.json."""
+    files = []
+    for _key, _display, manifest_path, _manifest in documents:
+        files += [manifest_path, manifest_path.parent / "figures.json"]
+        files.append(manifest_path.parent.parent.parent / editions.PINS_FILE)
+    rows = {}
+    for path in files:
+        if path.is_file():
+            st = path.stat()
+            rows[path.relative_to(root).as_posix()] = (
+                st.st_size, st.st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest())
+    db.executemany("INSERT INTO sources (path, size, mtime_ns, sha256) VALUES (?,?,?,?)",
+                   [(p, *v) for p, v in sorted(rows.items())])
 
 
 def resolve_editions(documents: list) -> tuple[dict[tuple[str, str], dict], list[str]]:
@@ -557,6 +585,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
             note += "  (not current)"
         print(f"  {key:18s} {slug:40s} {len(rows):5d} chunks  {chars_here:>10,} chars{figs}{note}")
 
+    record_sources(db, root, documents)
     for k, v in (
         ("built_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
         ("root", str(root)),

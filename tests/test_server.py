@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -445,6 +446,77 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("0002-unpacking.md", r.stderr)
         self.assertEqual(out.read_bytes(), before)
+
+
+    def test_42_a_stale_index_says_so(self):
+        """An index nobody rebuilt answers confidently from a corpus that has
+        moved on; the server says so, the way it does for a partial one."""
+        corpus = WS.fresh(WS.corpus(), "stale")
+        db = corpus / "mcp-index.sqlite3"
+        r = run("build_search_db.py", "--root", str(corpus), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        server = load_script("mcp_server")
+
+        def warning(path=db) -> str:
+            c = server.Corpus(path)
+            try:
+                return c.staleness_warning()
+            finally:
+                c._db.close()
+
+        self.assertEqual(warning(), "")
+        manifest = corpus / "docs" / "prose" / "manifest.json"
+        original = manifest.read_bytes()
+        changed = json.loads(original)
+        changed["title"] = "Widget Guide, Second Edition"
+        manifest.write_text(json.dumps(changed, indent=2), encoding="utf-8")
+        said = warning()
+        self.assertIn("Stale index", said)
+        self.assertIn("prose", said)
+
+        # the same bytes again, under a newer mtime, as a synced copy has
+        manifest.write_bytes(original)
+        later = manifest.stat().st_mtime + 100
+        os.utime(manifest, (later, later))
+        self.assertEqual(warning(), "", "an unchanged file with a new mtime was reported")
+
+        shutil.copytree(corpus / "docs" / "prose", corpus / "docs" / "prose-copy")
+        self.assertIn("prose-copy", warning())
+        shutil.rmtree(corpus / "docs" / "prose-copy")
+        shutil.copytree(corpus / "docs" / "prose", corpus / "docs" / "prose.old")
+        shutil.copytree(corpus / "docs" / "prose", corpus / "docs" / "_scratch")
+        self.assertEqual(warning(), "", "a backup folder was taken for a new document")
+        shutil.rmtree(corpus / "docs" / "prose.old")
+        shutil.rmtree(corpus / "docs" / "_scratch")
+
+        (corpus / "current_versions.json").write_text("{}", encoding="utf-8")
+        self.assertIn("current_versions.json", warning())
+        (corpus / "current_versions.json").unlink()
+        (corpus / "docs" / "ref" / "manifest.json").unlink()
+        self.assertIn("ref", warning(), "a manifest that is gone was not reported")
+
+        # an index made before the table existed, or copied away from its corpus
+        old = self.tmp / "before-sources.sqlite3"
+        shutil.copy(db, old)
+        con = sqlite3.connect(old)
+        con.execute("DROP TABLE sources")
+        con.commit()
+        con.close()
+        self.assertEqual(warning(old), "")
+        away = self.tmp / "away"
+        away.mkdir()
+        shutil.copy(db, away / "mcp-index.sqlite3")
+        c = server.Corpus(away / "mcp-index.sqlite3")
+        c._root = away
+        self.assertEqual(c.staleness_warning(), "")
+        c._db.close()
+
+        # and it reaches an answer, wherever the partial-index warning would
+        manifest.write_text(json.dumps(changed, indent=2), encoding="utf-8")
+        server.CORPUS = server.Corpus(db)
+        self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
+        self.assertIn("Stale index", server.tool_list_documents({}))
+        self.assertIn("Stale index", server.tool_search_docs({"query": "widget"}))
 
 
 if __name__ == "__main__":
