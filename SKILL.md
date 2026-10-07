@@ -506,8 +506,8 @@ every earlier test:
 - The heading walk kept a preface as the parent of chapter 1.
 - 3,070 chunks of one reference still carried Tessent's page footer.
 
-It cannot test idempotency. That needs a converter run twice, which
-`tests/test_pipeline.py` does.
+It cannot test idempotency. That needs a converter run twice, which the
+test suite in `tests/` does.
 
 Without page numbers it is much weaker:
 
@@ -611,8 +611,9 @@ read than buried.
 when debugging a corpus that already exists, or before changing chunking or
 furniture logic.
 
-`tests/test_pipeline.py` generates fixture PDFs with a known bookmark TOC and
-runs the pipeline over them: `python tests/test_pipeline.py`. It covers the
+The suite in `tests/` generates fixture PDFs with a known bookmark TOC and
+runs the pipeline over them: `python -m unittest discover -s tests -v`, or
+`python tests/run_each.py` to run every test alone. It covers the
 things that have actually broken here -- idempotency, never downgrading
 metadata a better-informed pass wrote, declining to attribute entities from too
 little evidence, entity regions ending at chapters, figures tied to a section

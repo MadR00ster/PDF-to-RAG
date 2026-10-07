@@ -92,9 +92,8 @@ can. None blocks a task.
 
 ```bash
 pip install -r scripts/requirements.txt          # pymupdf4llm 1.28.2, PyMuPDF 1.28.2
-python tests/test_pipeline.py                    # until T01 lands
-python -m unittest discover -s tests -v          # from T01 on
-python tests/run_each.py                         # from T01 on: every test alone
+python -m unittest discover -s tests -v          # the suite
+python tests/run_each.py                         # every test alone, each in its own process
 ```
 
 Baseline at `0e4dd59` (Python 3.13.16, Linux): **36 tests, OK, 2 skipped**
@@ -175,7 +174,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | # | task | IMPROVEMENT | depends on | size |
 |---|---|---|---|---|
 | **Phase 1: foundations** |||||
-| T01 | Split the tests; make each runnable alone | 4.2 | — | L |
+| T01 | Split the tests; make each runnable alone (**done**) | 4.2 | — | L |
 | T02 | CI on Linux and Windows (**done**) | 4.1 | — | S |
 | T03 | Read pymupdf4llm's page number from the right key | 1.4 | T01 | S |
 | T04 | Docs and code that disagree; dead code | 1.7 | T01 | S |
@@ -222,7 +221,10 @@ Most tasks have the same parts: **Why**, **Files**, **Steps**, **Tests** and
 
 ### T01: Split the tests; make each runnable alone [4.2]
 
-**Status:** not started
+**Status:** done. The steps below are the record of what was built. In the
+end, `tests/_support.py` holds the fixtures and `WS`, and each test file
+imports what it uses by name. test_02 now also asserts that its first enrich
+run changed something. The full suite takes about 77 s, against 64 s before.
 
 **Why.** Verified: `python -m unittest tests.test_pipeline.PipelineTest.test_10_mcp_server_passes_its_smoke_test`
 fails alone, because test_08 builds the index it serves, and test_03 errors
@@ -360,11 +362,13 @@ the `scripts/check_corpus.py` docstring. Run
    `python -m unittest discover -s tests -v`.
 
 **Done when**
-- [ ] `python -m unittest discover -s tests -v` runs 37 tests, OK, with skips
+- [x] `python -m unittest discover -s tests -v` runs 37 tests, OK, with skips
       only for Tesseract and Docling.
-- [ ] `python tests/run_each.py` prints "every test passes alone".
-- [ ] `discover` takes no more than about twice the 70 s baseline.
-- [ ] `grep -rn test_pipeline --exclude-dir=.git .` finds nothing.
+- [x] `python tests/run_each.py` reports every test passing alone
+      ("37 of 37 tests pass alone").
+- [x] `discover` takes no more than about twice the 70 s baseline.
+- [x] `grep -rn test_pipeline --exclude-dir=.git .` finds nothing outside
+      TODO.md and IMPROVEMENT.md, which describe the history.
 
 ---
 

@@ -59,7 +59,7 @@ labelling that gives 99% of chunks an owner can be 17.5% wrong, and only a
 signal the labeller did not use can tell.
 
 What it cannot see: idempotency, which needs the converter run twice
-(tests/test_pipeline.py does that), and which of two same-titled TOC entries
+(the suite in tests/ does that), and which of two same-titled TOC entries
 with overlapping pages a breadcrumb meant.
 
 Usage:
