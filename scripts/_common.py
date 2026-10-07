@@ -15,6 +15,12 @@ results. Merge them only after re-measuring both.
 from __future__ import annotations
 
 import re
+import sys
+
+# The separator of a chunk's breadcrumb: a single right-pointing angle quote.
+# check_corpus.py keeps its own copy, as it imports nothing from the scripts;
+# a test holds the two together.
+BREADCRUMB_SEP = " \u203a "
 
 IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*(\s+-[a-z0-9_]+)*$", re.I)
 # An error/warning message code ("ADES-002", "CMD-082"): a reference entry too.
@@ -103,3 +109,46 @@ def detect_shape(toc, pages: int) -> tuple[str, str, int | None]:
     if per_page < 0.15:
         return "mixed", f"L{lvl}: {n}/{total} titles look like entries, {per_page:.2f}/page", lvl
     return "reference", f"L{lvl}: {n}/{total} titles look like entries, {per_page:.2f}/page", lvl
+
+
+def utf8_console() -> None:
+    """Make stdout and stderr UTF-8, replacing what cannot be encoded. These
+    documents are full of characters like the trademark sign and the right
+    angle quote that a Windows console's legacy code page (cp1252, cp950, ...)
+    cannot encode, and a report that prints one died halfway through."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+def slugify(text: str, maxlen: int | None = None, default: str = "", lower_first: bool = True) -> str:
+    """Lowercase ASCII letters and digits, runs of anything else becoming one
+    hyphen, none at either end. The callers differ in what they do to the text
+    first, in how long a slug may be, and in what an empty one becomes, and
+    keep those.
+
+    `lower_first=False` substitutes before lowercasing, as the collection key
+    always has: a character whose lowercase is ASCII (the Kelvin sign) is then
+    a separator, where lowercasing first makes it a letter."""
+    if lower_first:
+        s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    else:
+        s = re.sub(r"[^0-9A-Za-z]+", "-", text).strip("-").lower()
+    if maxlen is not None:
+        s = s[:maxlen].strip("-")
+    return s or default
+
+
+def strip_emphasis(line: str) -> str:
+    """A line without its heading marks and the bold, italic or code marks
+    around the whole of it."""
+    s = line.strip()
+    s = re.sub(r"^#{1,6}\s*", "", s).strip()
+    for _ in range(3):
+        s2 = re.sub(r"^(\*\*|__|\*|_|`)(.*?)\1$", r"\2", s.strip())
+        if s2 == s:
+            break
+        s = s2
+    return s.strip()

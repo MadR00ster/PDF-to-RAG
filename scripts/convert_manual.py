@@ -73,6 +73,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
 import enrich_chunks as ec  # noqa: E402
 from _common import MIN_COMMANDS, detect_shape, looks_like_entry, pick_command_level  # noqa: E402
+from _common import slugify as common_slugify  # noqa: E402
 
 MAX_CHUNK = 9000
 
@@ -94,10 +95,7 @@ def heading_re(level: int) -> re.Pattern:
 
 
 def slugify(text: str, maxlen: int = 60) -> str:
-    text = re.sub(r"[*_`]", "", text)
-    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    s = s[:maxlen].strip("-")
-    return s or "section"
+    return common_slugify(re.sub(r"[*_`]", "", text), maxlen, "section")
 
 
 def dedupe_slug(slug: str, seen: dict) -> str:

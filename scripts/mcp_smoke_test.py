@@ -26,11 +26,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SERVER = HERE / "mcp_server.py"
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+sys.path.insert(0, str(HERE))
+from _common import utf8_console  # noqa: E402
+
+utf8_console()
 
 failures: list[str] = []
 

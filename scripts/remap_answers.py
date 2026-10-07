@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
+from _common import utf8_console  # noqa: E402
 from build_search_db import find_collections  # noqa: E402
 
 SHINGLE = 5
@@ -98,11 +99,7 @@ def remap(old: set, sections: dict[str, set]) -> tuple[str, list[str], list[tupl
 
 
 def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    utf8_console()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", required=True, type=Path, help="the corpus folder")
     ap.add_argument("--questions", required=True, type=Path, help="questions.jsonl, as eval_search.py reads it")

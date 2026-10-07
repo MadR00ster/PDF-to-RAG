@@ -37,13 +37,9 @@ except ImportError:  # older wheels
         sys.exit("Missing dependency. Run: pip install -r scripts/requirements.txt")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import detect_shape, looks_like_entry, pick_command_level  # noqa: E402,F401
+from _common import detect_shape, looks_like_entry, pick_command_level, utf8_console  # noqa: E402,F401
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+utf8_console()
 
 DOCLING_SECONDS_PER_PAGE = 1.2   # measured, CPU, no OCR
 

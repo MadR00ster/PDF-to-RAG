@@ -38,12 +38,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
+from _common import utf8_console  # noqa: E402
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+utf8_console()
 
 try:
     import pymupdf

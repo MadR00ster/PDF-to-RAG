@@ -60,6 +60,9 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import slugify as common_slugify, utf8_console  # noqa: E402
+
 SOURCE_DIR = "source"
 INBOX_DIR = "new_docs"
 PINS_FILE = "current_versions.json"
@@ -97,7 +100,7 @@ VERSION_SUFFIX_RE = re.compile(r"-(?:[a-z]-)?20\d\d-\d{1,2}(?:-sp\d+(?:-\d+)?)?$
 
 
 def slugify(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return common_slugify(text)
 
 
 # ------------------------------------------------------------------ layout
@@ -147,10 +150,13 @@ def inbox_pdfs(collection: Path) -> list[Path]:
 
 
 def find_collections(root: Path) -> list[Path]:
-    """`root` itself when it holds docs/, otherwise each subfolder that does."""
-    if (root / "docs").is_dir():
+    """A collection is a folder whose docs/ holds at least one document. `root`
+    itself is the one collection when its own docs/ does, otherwise each
+    subfolder that does is one. The one rule every tool uses: a docs/ folder
+    with nothing in it is not a collection, so it never hides the ones below."""
+    if document_dirs(root / "docs"):
         return [root]
-    return sorted(p for p in root.iterdir() if p.is_dir() and (p / "docs").is_dir())
+    return sorted(p for p in root.iterdir() if p.is_dir() and document_dirs(p / "docs"))
 
 
 def skips_name(name: str) -> bool:
@@ -862,11 +868,7 @@ def cmd_status(args) -> int:
 
 
 def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    utf8_console()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
 

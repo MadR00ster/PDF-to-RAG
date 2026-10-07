@@ -28,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_search_db as bsd  # noqa: E402
+from _common import utf8_console  # noqa: E402
 
 
 def chunk_lines(root: Path, current_only: bool):
@@ -83,11 +84,7 @@ def chunk_lines(root: Path, current_only: bool):
 
 
 def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    utf8_console()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default=".", type=Path, help="corpus root (default: current directory)")
     ap.add_argument("--out", required=True, type=Path, help="the .jsonl file to write")

@@ -44,8 +44,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
+from _common import BREADCRUMB_SEP, strip_emphasis, utf8_console  # noqa: E402
 
-BREADCRUMB_SEP = " › "  # single right-pointing angle quote
 
 FENCE_RE = re.compile(r"^\s*```")
 # pymupdf4llm renders a PDF heading as a markdown heading or as a line that
@@ -67,17 +67,6 @@ ADJACENCY = 3
 # Compiler" alone, the product name prose uses -- is content. This is the
 # share of the title such a line has to cover.
 TITLE_SHARE = 0.6
-
-
-def strip_emphasis(line: str) -> str:
-    s = line.strip()
-    s = re.sub(r"^#{1,6}\s*", "", s).strip()
-    for _ in range(3):
-        s2 = re.sub(r"^(\*\*|__|\*|_|`)(.*?)\1$", r"\2", s.strip())
-        if s2 == s:
-            break
-        s = s2
-    return s.strip()
 
 
 def iter_lines_outside_code(text: str):
@@ -429,11 +418,7 @@ def main() -> None:
     # These documents are full of characters like "™" and "›" that a Windows
     # console's legacy default code page (cp1252, cp950, ...) cannot encode --
     # printing a furniture sample containing one killed --dry-run mid-report.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    utf8_console()
 
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter

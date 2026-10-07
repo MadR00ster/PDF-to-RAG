@@ -58,6 +58,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
+from _common import slugify as common_slugify, utf8_console  # noqa: E402
 
 DEFAULT_DB_NAME = "mcp-index.sqlite3"
 SERVER_NAME = "mcp_server.py"
@@ -220,8 +221,7 @@ FRONT_MATTER_RE = re.compile(
 
 
 def slugify(name: str) -> str:
-    s = re.sub(r"[^0-9A-Za-z]+", "-", name).strip("-").lower()
-    return s or "corpus"
+    return common_slugify(name, default="corpus", lower_first=False)
 
 
 def is_noise(heading: str, body: str) -> bool:
@@ -288,15 +288,8 @@ def find_collections(root: Path) -> list[tuple[str, str, Path]]:
     documents into subfolders gets one collection per subfolder. Nothing is
     hardcoded, so a new subfolder is picked up with no change here.
     """
-    found: list[tuple[str, str, Path]] = []
-    if editions.document_dirs(root / "docs"):
-        found.append((slugify(root.name), ".", root / "docs"))
-        return found
-    for sub in sorted(p for p in root.iterdir() if p.is_dir()):
-        docs = sub / "docs"
-        if editions.document_dirs(docs):
-            found.append((slugify(sub.name), sub.name, docs))
-    return found
+    return [(slugify(c.name), ".", c / "docs") if c == root else (slugify(c.name), c.name, c / "docs")
+            for c in editions.find_collections(root)]
 
 
 def load_documents(root: Path) -> tuple[list, list[str]]:
@@ -727,11 +720,7 @@ def emit_vscode_config(root: Path, db_path: Path) -> Path:
 
 
 def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    utf8_console()
 
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter

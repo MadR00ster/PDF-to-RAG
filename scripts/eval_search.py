@@ -49,6 +49,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mcp_server  # noqa: E402
+from _common import utf8_console  # noqa: E402
 
 KS = (1, 3, 5, 10)
 LIMIT = 10  # search_docs' default page of results
@@ -180,11 +181,7 @@ def compare(path_a: Path, path_b: Path) -> None:
 
 
 def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    utf8_console()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", help="index built by build_search_db.py")
     ap.add_argument("--questions", type=Path, help="questions.jsonl")

@@ -47,21 +47,18 @@ import re
 import sys
 from pathlib import Path
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
+from _common import BREADCRUMB_SEP, slugify as common_slugify, strip_emphasis, utf8_console  # noqa: E402
+
+utf8_console()
 
 try:
     import pymupdf
 except ImportError:
     sys.exit("Missing dependency. Run: pip install -r scripts/requirements.txt")
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import editions  # noqa: E402
 
-BREADCRUMB_SEP = " › "
 DEFAULT_MAX_CHARS = 9000        # matches the chunk target used elsewhere here
 WS = re.compile(r"\s+")
 NL = chr(10)   # written this way so patch tooling cannot mangle an escape
@@ -86,21 +83,14 @@ def require_docling():
 
 
 def normalize(s: str) -> str:
-    s = re.sub(r"^#{1,6}\s*", "", (s or "").strip())
-    for _ in range(3):
-        t = re.sub(r"^(\*\*|__|\*|_|`)(.*?)\1$", r"\2", s.strip())
-        if t == s:
-            break
-        s = t
-    s = WS.sub(" ", s).strip()
+    s = WS.sub(" ", strip_emphasis(s or "")).strip()
     s = re.sub(r"^(chapter|appendix|section)\s+\w{1,4}\s*[:.]?\s*", "", s, flags=re.I)
     s = re.sub(r"^\d+(\.\d+)*\s*", "", s)
     return s.lower().strip()
 
 
 def slugify(text: str, maxlen: int = 60) -> str:
-    s = re.sub(r"[^0-9A-Za-z]+", "-", normalize(text)).strip("-").lower()
-    return (s[:maxlen].rstrip("-") or "section")
+    return common_slugify(normalize(text), maxlen, "section")
 
 
 def dedupe(slug: str, seen: dict) -> str:

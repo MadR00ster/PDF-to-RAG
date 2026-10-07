@@ -37,23 +37,15 @@ Usage:
 """
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE))
-
-
-def _load(name: str):
-    spec = importlib.util.spec_from_file_location(name, _HERE / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-cm = _load("convert_manual")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import convert_manual as cm  # noqa: E402
+import enrich_chunks as ec  # noqa: E402,F401
 from _common import MIN_COMMANDS, IDENTIFIER_RE, MESSAGE_CODE_RE, pick_command_level  # noqa: E402,F401
+
+editions = cm.editions
 
 
 def main() -> None:

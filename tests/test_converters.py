@@ -671,5 +671,119 @@ class ConverterTest(unittest.TestCase):
         self.assertEqual(len(chosen), 20)
 
 
+    def test_50_merged_helpers_agree_with_the_copies_they_replaced(self):
+        """T24 removed duplicated code. Each merge is only safe if the old copy
+        and the new one give the same answer on everything they were fed, so the
+        old copies are kept here, as they were, and held to the new ones."""
+        common = load_script("_common")
+        manual, docling, build = load_script("convert_manual"), load_script("convert_docling"), load_script("build_search_db")
+        editions, enrich, checker = load_script("editions"), load_script("enrich_chunks"), load_script("check_corpus")
+        inputs = ["", "   ", "Hello World", "**Bold** Heading", "__Under_score__", "`code`", "# Title", "### # x",
+                  "1.2.3 Numbered", "1. Intro", "Chapter 4: Foo", "Appendix A  Bar", "Section 12. Baz", "Ünïcode Straße",
+                  "\u0130stanbul", "Kelvin \u212a", "a" * 100, "x" * 59 + " y", "---", "set_scan_configuration -chain_count",
+                  "  spaced   out  ", "**", "****", "* *", "## **Bold heading**", "_a_ b _c_", "\uff21\uff22\uff23", "tab\there", "\n"]
+
+        def old_manual(text, maxlen=60):
+            text = re.sub(r"[*_`]", "", text)
+            s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+            s = s[:maxlen].strip("-")
+            return s or "section"
+
+        def old_normalize(s):
+            s = re.sub(r"^#{1,6}\s*", "", (s or "").strip())
+            for _ in range(3):
+                t = re.sub(r"^(\*\*|__|\*|_|`)(.*?)\1$", r"\2", s.strip())
+                if t == s:
+                    break
+                s = t
+            s = re.compile(r"\s+").sub(" ", s).strip()
+            s = re.sub(r"^(chapter|appendix|section)\s+\w{1,4}\s*[:.]?\s*", "", s, flags=re.I)
+            s = re.sub(r"^\d+(\.\d+)*\s*", "", s)
+            return s.lower().strip()
+
+        def old_docling(text, maxlen=60):
+            s = re.sub(r"[^0-9A-Za-z]+", "-", old_normalize(text)).strip("-").lower()
+            return s[:maxlen].rstrip("-") or "section"
+
+        def old_editions(text):
+            return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+        def old_collection(name):
+            return re.sub(r"[^0-9A-Za-z]+", "-", name).strip("-").lower() or "corpus"
+
+        for text in inputs + [None]:
+            with self.subTest(text=text):
+                self.assertEqual(docling.normalize(text), old_normalize(text))
+                if text is not None:
+                    self.assertEqual(manual.slugify(text), old_manual(text))
+                    self.assertEqual(manual.slugify(text, 10), old_manual(text, 10))
+                    self.assertEqual(docling.slugify(text), old_docling(text))
+                    self.assertEqual(docling.slugify(text, 10), old_docling(text, 10))
+                    self.assertEqual(editions.slugify(text), old_editions(text))
+                    self.assertEqual(build.slugify(text), old_collection(text))
+        # the one place the shared core, as the other callers use it, is not the old collection key
+        self.assertNotEqual(common.slugify("Kelvin \u212a", default="corpus"), old_collection("Kelvin \u212a"))
+
+        # the separator every tool writes and reads
+        for module in (enrich, docling, checker):
+            self.assertEqual(module.BREADCRUMB_SEP, common.BREADCRUMB_SEP)
+
+        # the console block: what it did to each stream, and to one that cannot be reconfigured
+        class Stream:
+            def __init__(self, fail=None):
+                self.calls, self.fail = [], fail
+
+            def reconfigure(self, **kwargs):
+                self.calls.append(kwargs)
+                if self.fail:
+                    raise self.fail
+        real = sys.stdout, sys.stderr
+        try:
+            sys.stdout, sys.stderr = Stream(), Stream(ValueError("detached"))
+            common.utf8_console()
+            self.assertEqual(sys.stdout.calls, [{"encoding": "utf-8", "errors": "replace"}])
+            self.assertEqual(sys.stderr.calls, [{"encoding": "utf-8", "errors": "replace"}])
+            sys.stdout, sys.stderr = object(), Stream()
+            common.utf8_console()
+        finally:
+            sys.stdout, sys.stderr = real
+
+    def test_50b_one_rule_finds_collections(self):
+        """build_search_db.py and editions.py each had a rule for what a
+        collection is. The one that is left gives the index builder the answer
+        it always gave."""
+        build, editions = load_script("build_search_db"), load_script("editions")
+
+        def old_build(root):
+            found = []
+            if editions.document_dirs(root / "docs"):
+                found.append((build.slugify(root.name), ".", root / "docs"))
+                return found
+            for sub in sorted(p for p in root.iterdir() if p.is_dir()):
+                if editions.document_dirs(sub / "docs"):
+                    found.append((build.slugify(sub.name), sub.name, sub / "docs"))
+            return found
+
+        def doc(folder):
+            folder.mkdir(parents=True)
+            (folder / "manifest.json").write_text("{}", encoding="utf-8")
+
+        layouts = {"one collection at the root": [("docs", "a")],
+                   "two subfolders": [("A/docs", "a"), ("B Vendor/docs", "b")],
+                   "root and a subfolder": [("docs", "a"), ("A/docs", "a")],
+                   "only a backup in docs": [("docs", "x.old")],
+                   "empty docs beside a collection": [("A/docs", "a")],
+                   "a hidden folder": [(".rebuild-backup/docs", "a"), ("A/docs", "a")]}
+        for name, docs in layouts.items():
+            with self.subTest(layout=name):
+                root = self.tmp / f"layout-{name.replace(' ', '-')}"
+                for where, slug in docs:
+                    doc(root / where / slug)
+                if name == "empty docs beside a collection":
+                    (root / "docs").mkdir()
+                self.assertEqual(build.find_collections(root), old_build(root))
+                self.assertEqual([c for c in editions.find_collections(root)], [p.parent for _k, _d, p in old_build(root)])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

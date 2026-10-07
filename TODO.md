@@ -200,7 +200,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T21 | Export chunks as JSONL (**done**) | 3.3 | T07 | S |
 | T22 | Warn when the index is stale (**done**) | 3.4 | T07 | M |
 | T23 | One `collection.json` (**not now: skip**) | 3.6 | — | — |
-| T24 | Remove accidental duplication | 4.3 | T06, T07 | M |
+| T24 | Remove accidental duplication (**done**) | 4.3 | T06, T07 | M |
 | T25 | Consistent command lines | 4.4 | T07 | M |
 | T26 | Server robustness and tool metadata | 4.5 | T01 | S |
 
@@ -1997,7 +1997,7 @@ round-trip (index.json and the search index unchanged after migrating).
 
 ### T24: Remove accidental duplication [4.3]
 
-**Status:** not started
+**Status:** done. Equivalence tests: test_50 (slugify, normalize, separator, console block) and test_50b (collections). `build_search_db.slugify` keeps lowercasing last through `lower_first=False`; the shared core as the others use it differs from it on the Kelvin sign. Fixture conversions are identical before and after, apart from `converted_at`.
 
 **Rule for this task: behaviour must not change.** Every merge comes with an
 equivalence test: the old and the new function agree on a list of inputs.
@@ -2048,9 +2048,9 @@ copies, each held by a cross-check test.
    other script uses, keeping the `cm`, `ec` and `editions` names.
 
 **Done when**
-- [ ] Converting the fixtures before and after gives identical `docs/`
+- [x] Converting the fixtures before and after gives identical `docs/`
       trees.
-- [ ] Every merge has its equivalence test.
+- [x] Every merge has its equivalence test.
 
 ---
 
