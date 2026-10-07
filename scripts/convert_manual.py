@@ -4,7 +4,7 @@ Convert a vendor PDF manual into this repo's RAG doc format:
 
   docs/<slug>/manifest.json
   docs/<slug>/full.md
-  docs/<slug>/sections/NNN-heading-slug.md
+  docs/<slug>/sections/NNNN-heading-slug.md
 
 Usage:
   python scripts/convert_manual.py "Tessent Manual/new_docs/newmanual.pdf" --title "Tessent Foo User's Manual"
@@ -351,7 +351,7 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
     section_entries = []
     for i, span in enumerate(spans, start=1):
         file_slug = dedupe_slug(slugify(span.heading), seen_slugs)
-        filename = f"{i:03d}-{file_slug}.md"
+        filename = f"{i:04d}-{file_slug}.md"
         body = md_text[span.start:span.end].strip() + "\n"
         (sections_dir / filename).write_text(body, encoding="utf-8")
         c_start, c_end = trim_span(md_text, span.start, span.end)

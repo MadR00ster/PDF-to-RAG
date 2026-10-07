@@ -2,7 +2,7 @@
 """Convert a prose PDF with Docling, anchoring breadcrumbs to the bookmark TOC.
 
 Same output layout as convert_manual.py -- docs/<slug>/{manifest.json, full.md,
-sections/NNN-heading-slug.md} -- so build_index.py and build_search_db.py work
+sections/NNNN-heading-slug.md} -- so build_index.py and build_search_db.py work
 on it unchanged. What differs is the metadata each chunk carries:
 
   * page_start / page_end on every chunk, from Docling's provenance. Without

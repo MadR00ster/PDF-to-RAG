@@ -193,7 +193,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T15 | One pymupdf4llm converter (**done**) | 2.1 "next step" | T14 | L |
 | **Phase 5: later** |||||
 | T16 | Reference breadcrumbs from the TOC chain (**done**) | 2.3 | T06 | M |
-| T17 | Section identity across reconversions | 2.4 | T12 | M |
+| T17 | Section identity across reconversions (**done**) | 2.4 | T12 | M |
 | T18 | Retrieval experiments behind flags | 2.5 | T11, T12 | M |
 | T19 | Say which copy of a field is canonical; stop writing `chars` | 3.1 | T07 | M |
 | T20 | Manifest schema and provenance | 3.2 | T06 | M |
@@ -1653,7 +1653,7 @@ after (T12). Record in §4.
 
 ### T17: Section identity across reconversions [2.4]
 
-**Status:** not started
+**Status:** done, all three parts. Tests: test_45 (part A), test_46 (part C); part B is in test_01.
 
 **Why.** Section files are named by position, so a reconversion renames every
 file. After the reference rebuild, the eval answers and figure links were
@@ -1721,9 +1721,9 @@ stale answer.
 - Part C: a quote answer resolves on `WS.index()`.
 
 **Done when**
-- [ ] `remap_answers.py` is in the scripts table and in "Measuring
+- [x] `remap_answers.py` is in the scripts table and in "Measuring
       retrieval".
-- [ ] Section numbers are four digits everywhere.
+- [x] Section numbers are four digits everywhere.
 
 ---
 

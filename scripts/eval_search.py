@@ -20,7 +20,13 @@ questions.jsonl holds one object per line:
    "note": "optional: why that section answers it"}
 
 `answers` lists every section that answers the question, and a hit on any of
-them counts. Where two collections each have a document of that slug, add
+them counts. An answer may instead name a phrase, which survives a
+reconversion that renames the files:
+  {"doc_id": "dftug", "version": "2023.12", "quote": "a short exact phrase"}
+It stands for the sections of that edition whose text contains the phrase,
+whitespace aside (the current edition when `version` is left out). A phrase in
+none, or in more than three, is reported like a stale answer. After a
+reconversion that left answers by file behind, remap_answers.py finds them. Where two collections each have a document of that slug, add
 `"collection"` (the collection's key, as list_documents shows it) to say which. When a miss turns out to be another section that answers just as
 well, add it there: a test that marks right answers wrong under-reports, and
 the misses are where to look.
@@ -46,6 +52,7 @@ import mcp_server  # noqa: E402
 
 KS = (1, 3, 5, 10)
 LIMIT = 10  # search_docs' default page of results
+MAX_QUOTE_SECTIONS = 3
 
 
 def load_questions(path: Path) -> list[dict]:
@@ -65,6 +72,35 @@ def is_answer(row, answers: list[dict]) -> bool:
     return any(row["slug"] == a["slug"] and row["file"].endswith("/" + a["file"].lstrip("/"))
                and a.get("collection") in (None, row["collection"])
                for a in answers)
+
+
+def resolve_quotes(questions: list[dict]) -> list[str]:
+    """Replace each answer given as a quote with the sections that hold it, and
+    return those that hold it nowhere, or in too many sections to be one answer."""
+    stale = []
+    for q in questions:
+        resolved = []
+        for a in q["answers"]:
+            if "quote" not in a:
+                resolved.append(a)
+                continue
+            quote = " ".join(str(a["quote"]).split())
+            try:
+                doc = mcp_server.resolve_document(a.get("doc_id"), a.get("version"), a.get("collection"))
+            except ValueError as exc:
+                stale.append(f"{q['id']}: {exc}")
+                continue
+            rows = mcp_server.CORPUS.db.execute(
+                "SELECT file, body FROM chunks WHERE slug = ? AND collection = ? ORDER BY ord",
+                (doc["slug"], doc["collection"])).fetchall()
+            hits = [r["file"] for r in rows if quote in " ".join(r["body"].split())]
+            if not 1 <= len(hits) <= MAX_QUOTE_SECTIONS:
+                stale.append(f"{q['id']}: {quote[:50]!r} is in {len(hits)} sections of {doc['slug']}")
+                continue
+            resolved.extend({"slug": doc["slug"], "collection": doc["collection"],
+                             "file": "sections/" + h.rsplit("/", 1)[-1]} for h in hits)
+        q["answers"] = resolved
+    return stale
 
 
 def missing_answers(questions: list[dict]) -> list[str]:
@@ -169,7 +205,7 @@ def main() -> int:
         print(f"No index at {mcp_server.CORPUS.db_path}", file=sys.stderr)
         return 1
     questions = load_questions(args.questions)
-    stale = missing_answers(questions)
+    stale = resolve_quotes(questions) + missing_answers(questions)
     if stale:
         print(f"!! {len(stale)} answer section(s) are not in this index -- fix these first:")
         for s in stale[:20]:

@@ -271,5 +271,90 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(saved["git_commit"] is None or isinstance(saved["git_commit"], str))
 
 
+    def test_45_remap_answers_follows_the_text_across_a_reconversion(self):
+        """Answers name section files, which a reconversion renames. Simulate
+        one so the right result is known: a renamed section, a split one, and
+        one whose text was replaced."""
+        corpus = WS.fresh(WS.corpus(), "remap")
+        docs, backup = corpus / "docs" / "prose", corpus / ".rebuild-backup" / "prose"
+        manifest_path = docs / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        def text(tag: str, n: int, start: int = 0) -> str:
+            return " ".join(f"{tag}{i}word" for i in range(start, start + n)) + "\n"
+
+        old = {}
+        for i, tag in ((0, "alpha"), (1, "bravo"), (2, "charlie")):
+            old[i] = manifest["sections"][i]["file"]
+            (docs / old[i]).write_text(text(tag, 60), encoding="utf-8")
+        shutil.copytree(docs, backup)
+
+        def rename(i: int, new_name: str, body: str) -> str:
+            (docs / old[i]).unlink()
+            (docs / new_name).write_text(body, encoding="utf-8")
+            return new_name
+        renamed = rename(0, "sections/0100-renamed.md", text("alpha", 60))
+        manifest["sections"][0]["file"] = renamed
+        # the second section's text now sits in two files that overlap where it was cut
+        first, second = rename(1, "sections/0101-part-one.md", text("bravo", 35)), "sections/0102-part-two.md"
+        (docs / second).write_text(text("bravo", 33, 27), encoding="utf-8")
+        manifest["sections"][1]["file"] = first
+        manifest["sections"].insert(2, {**manifest["sections"][1], "file": second, "heading": "Part two"})
+        manifest["sections"][3]["file"] = rename(2, "sections/0103-replaced.md", text("zulu", 60))
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        questions = self.tmp / "remap-questions.jsonl"
+        lines = [json.dumps({"id": f"q{i}", "kind": "concept", "question": f"question {i}", "note": "kept",
+                             "answers": [{"slug": "prose", "file": old[i]}]}) for i in range(3)]
+        lines.insert(1, "// a comment line")
+        questions.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        before = questions.read_bytes()
+
+        out = self.tmp / "remap-questions.remapped.jsonl"
+        r = run("remap_answers.py", "--root", str(corpus), "--questions", str(questions))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(questions.read_bytes(), before, "the input was changed")
+        self.assertIn("1 remapped 1:1, 1 split 1:n, 1 unresolved", r.stdout)
+        self.assertIn(old[2], r.stdout)
+        got = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines() if l and not l.startswith("//")]
+        self.assertIn("// a comment line", out.read_text(encoding="utf-8").splitlines())
+        self.assertEqual([x["id"] for x in got], ["q0", "q1", "q2"])
+        self.assertEqual(got[0]["answers"], [{"slug": "prose", "file": renamed}])
+        self.assertEqual({a["file"] for a in got[1]["answers"]}, {first, second})
+        self.assertEqual(got[1]["note"], f"kept; remapped from {old[1]} to 2 sections")
+        self.assertEqual(got[2]["answers"], [{"slug": "prose", "file": old[2]}], "an unresolved answer was rewritten")
+        for x in got:
+            self.assertEqual({k: x[k] for k in ("kind", "question")}, {"kind": "concept", "question": f"question {x['id'][1:]}"})
+
+    def test_46_an_answer_given_as_a_quote_survives_a_rebuild(self):
+        """`quote` answers name the text, not the file, so they need no remap.
+        A phrase that is nowhere, or in too many sections to be one answer, is
+        stale, like an answer whose file is gone."""
+        questions = self.tmp / "quote-questions.jsonl"
+
+        def write(*qs):
+            questions.write_text("\n".join(json.dumps(q) for q in qs) + "\n", encoding="utf-8")
+
+        def ask(doc_id, quote, qid, kind="concept"):
+            return {"id": qid, "kind": kind, "question": "what does set_widget_option_05 do",
+                    "answers": [{"doc_id": doc_id, "quote": quote}]}
+
+        write(ask("ref", "set_widget_option_05 -value", "q1", "identifier"),
+              # across a blank line: only the Installation section has this
+              ask("prose", "Installation This section explains the widget", "q2"))
+        r = run("eval_search.py", "--db", str(WS.index()), "--questions", str(questions))
+        self.assertIn(r.returncode, (0, 3), r.stdout + r.stderr)
+        self.assertNotIn("not in this index", r.stdout)
+        self.assertRegex(r.stdout, r"all\s+2\s")
+
+        write(ask("prose", "Torque the bolts evenly to avoid warping the bracket.", "q3"),    # in all six
+              ask("prose", "words found nowhere in the document", "q4"),
+              ask("no-such-manual", "set_widget_option_05", "q5"))
+        r = run("eval_search.py", "--db", str(WS.index()), "--questions", str(questions))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for qid in ("q3", "q4", "q5"):
+            self.assertIn(qid, r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

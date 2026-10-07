@@ -46,6 +46,7 @@ class ConverterTest(unittest.TestCase):
             self.assertTrue(f.is_file(), f"manifest names a missing file: {s['file']}")
             self.assertEqual(s["chars"], len(f.read_text(encoding="utf-8")),
                              "manifest 'chars' disagrees with the file on disk")
+        self.assertTrue(m["sections"][0]["file"].startswith("sections/0001-"), m["sections"][0]["file"])
         pages = [(s["page_start"], s["page_end"]) for s in m["sections"]]
         for first, last in pages:
             self.assertTrue(isinstance(first, int) and isinstance(last, int) and 1 <= first <= last <= m["page_count"],

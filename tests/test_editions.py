@@ -211,9 +211,9 @@ class EditionsTest(unittest.TestCase):
         self.assertIn("gadget-2026-1", r.stdout)
         self.assertNotIn("gadget-2025-1", r.stdout, "a section of an edition search never reads was sampled")
         s = self.serve()
-        # Both editions have sections/002-unpacking.md. Without the edition's
+        # Both editions have sections/0002-unpacking.md. Without the edition's
         # folder in the path, it is the current one that is meant.
-        self.assertIn("gadget-2026-1", s.tool_get_section({"file": "sections/002-unpacking.md"}),
+        self.assertIn("gadget-2026-1", s.tool_get_section({"file": "sections/0002-unpacking.md"}),
                       "a path two editions share returned the older one")
         hits = s.search("gadget seals")
         self.assertTrue(hits, "nothing found in the current edition")

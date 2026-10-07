@@ -194,8 +194,8 @@ On the same 76 questions, the gain is in the first result rather than the page:
 The rebuild renames every section in both manuals, which breaks any test
 question pointing into them and every figure link in `tshell-ref`. The answers
 were remapped by matching each old chunk's text, kept in `.rebuild-backup`,
-against the new sections; the figures were re-extracted. Budget for both after
-any rebuild.
+against the new sections (`scripts/remap_answers.py` does that now); the
+figures were re-extracted. Budget for both after any rebuild.
 
 ## Caveats
 

@@ -39,7 +39,7 @@ recall for anything destructive.
     <slug>/                        one edition of one manual
       manifest.json                title, doc_id, version, page_count, PDF TOC, section list
       full.md                      whole document, un-chunked fallback
-      sections/NNN-slug.md         retrieval chunks, ~2-9 KB
+      sections/NNNN-slug.md       retrieval chunks, ~2-9 KB
       figures.json                 figures: page, box, caption, owning section
       figures/pNNNNN-K.png         one crop per figure
 ```
@@ -599,7 +599,8 @@ which pymupdf4llm 1.28 requires.
 | `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only; `get_page_image` also needs PyMuPDF. |
 | `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
 | `sample_sections.py` | Stratified sample of sections to write test questions from; `--figures` for sections with figures. |
-| `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. |
+| `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. `--compare` shows what moved between two saved runs. |
+| `remap_answers.py` | Carries a question file's answers across a reconversion by matching the old sections' text to the new ones. |
 
 They are parameterized by corpus directory and slug, and assume the target
 layout — see "When the input does not look like this" for what happens when it
@@ -751,6 +752,15 @@ descriptions — is a guess until it moves a number. Build the number first.
    after.json` prints the totals side by side and every question whose rank
    moved. Each run records the build time of its index and the commit of the
    code.
+6. **After a reconversion, carry the answers across.** Section files are named
+   by position, so converting a document again renames them and every answer
+   by file reads as a miss. `scripts/remap_answers.py --root <corpus>
+   --questions <file>` compares each lost section's text, kept in
+   `.rebuild-backup/<slug>/`, with the sections now there, and writes a remapped
+   copy (never over the input), reporting what it could not place. An answer
+   can instead be written as `{"doc_id": …, "quote": "a short exact phrase"}`,
+   which `eval_search.py` resolves to the sections holding the phrase and which
+   needs no remap at all.
 
 Questions written by someone who has just read the answer share its words, so
 they flatter lexical search. `paraphrase` measures that bias; `real` questions

@@ -26,7 +26,7 @@ own.
       <slug>/                      one edition of one manual
         manifest.json              title, version, page count, PDF table of contents
         full.md                    the whole document
-        sections/NNN-slug.md       retrieval chunks, about 2-9 KB each
+        sections/NNNN-slug.md      retrieval chunks, about 2-9 KB each
         figures.json, figures/     every figure, cropped and tied to its section
 ```
 

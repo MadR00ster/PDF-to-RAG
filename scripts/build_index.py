@@ -163,7 +163,7 @@ def write_readme(vendor_dir: Path, docs_dir: Path, manuals: list[dict], supersed
         "    manifest.json     <- title, page count, PDF TOC, section list",
         "    full.md           <- entire manual as one markdown file",
         "    sections/",
-        "      001-*.md ...    <- split on headings, one chunk per file",
+        "      0001-*.md ...   <- split on headings, one chunk per file",
         "```",
     ]
     if superseded:
