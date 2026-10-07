@@ -357,7 +357,7 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
         c_start, c_end = trim_span(md_text, span.start, span.end)
         p_start, p_end = page_range(page_starts, numbers, c_start, max(c_end, c_start + 1))
         section_entries.append(
-            {"file": f"sections/{filename}", "heading": span.heading, "level": span.level, "chars": len(body),
+            {"file": f"sections/{filename}", "heading": span.heading, "level": span.level,
              "page_start": p_start, "page_end": p_end}
         )
 
@@ -538,7 +538,6 @@ def convert_reference(plan: editions.Plan, title: str, command_level: int | None
                 "file": f"sections/{fname}",
                 "heading": heading,
                 "level": level,
-                "chars": len(text),
                 "page_start": p_start,
                 "page_end": p_end,
                 "command": command,

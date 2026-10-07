@@ -492,7 +492,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
                 sec.get("level"),
                 page_start,
                 page_end,
-                sec.get("chars") or len(body),
+                len(body),
                 1 if is_noise(heading, body) else 0,
             ))
             chars_here += len(body)

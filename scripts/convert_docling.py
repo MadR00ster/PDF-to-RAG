@@ -347,7 +347,6 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
             "file": f"sections/{filename}",
             "heading": c["heading"] or "(untitled)",
             "level": 1,
-            "chars": len(body),
             "page_start": pages[0] if pages else None,
             "page_end": pages[-1] if pages else None,
             "breadcrumb": crumb,

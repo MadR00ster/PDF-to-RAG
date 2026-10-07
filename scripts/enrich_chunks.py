@@ -398,7 +398,9 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
             changed += 1
             if not dry_run:
                 (mdir / s["file"]).write_text(new, encoding="utf-8")
-            s["chars"] = len(new)
+            # A length a manifest still carries from before chunks stopped
+            # recording one is now wrong, and nothing reads it: the file is the copy.
+            s.pop("chars", None)
         if not keep_existing:
             s["breadcrumb"] = crumbs[idx]
 

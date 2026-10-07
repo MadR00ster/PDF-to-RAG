@@ -517,6 +517,18 @@ one cannot pass itself.
 A document is its folder: the folder's name is its slug in every tool. The
 manifest's `slug` is a copy, and the checker warns when the two differ.
 
+Where a value is stored twice, one copy wins:
+
+- **breadcrumb:** the manifest. The chunk's first line renders it for a reader
+  of the chunk alone, and the converters and `enrich_chunks.py` write both.
+- **slug:** the folder name.
+- **which edition is current:** decided from the manifests and
+  `current_versions.json` when an index is built. `index.json` and the search
+  index are both derived from them, and the checker warns when either is stale.
+- **a section's length:** not stored. Compute it from the file. A manifest from
+  before this still holding `chars` loses it when `enrich_chunks.py` rewrites
+  the section, and `chars-mismatch` reports it until then.
+
 Editions are part of it. A manual with two editions needs a version on each
 that orders them, no two the same, and any pin has to name one of them; each
 of those fails the check because each stops the index build. Two documents

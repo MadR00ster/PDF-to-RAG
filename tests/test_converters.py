@@ -44,8 +44,7 @@ class ConverterTest(unittest.TestCase):
         for s in m["sections"]:
             f = self.corpus / "docs" / "prose" / s["file"]
             self.assertTrue(f.is_file(), f"manifest names a missing file: {s['file']}")
-            self.assertEqual(s["chars"], len(f.read_text(encoding="utf-8")),
-                             "manifest 'chars' disagrees with the file on disk")
+            self.assertNotIn("chars", s, "a section's length is not stored: the file is the copy")
         self.assertTrue(m["sections"][0]["file"].startswith("sections/0001-"), m["sections"][0]["file"])
         pages = [(s["page_start"], s["page_end"]) for s in m["sections"]]
         for first, last in pages:

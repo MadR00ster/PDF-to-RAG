@@ -159,7 +159,7 @@ CHECKS = {
     "section-unreadable": (FAIL, "a section file that cannot be read as UTF-8 text"),
     "section-duplicate-file": (WARN, "two sections name the same file, so its text is indexed twice"),
     "section-orphan-file": (WARN, "a file in sections/ the manifest does not list; no tool will read it"),
-    "chars-mismatch": (WARN, "the manifest's chars disagrees with the file: one was edited without the other"),
+    "chars-mismatch": (WARN, "a manifest that still records a section's chars disagrees with the file. Converters no longer write it, and enrich_chunks.py removes it; the file is the copy"),
     "empty-chunk": (WARN, "a chunk with no text besides its breadcrumb"),
     "oversized-chunk": (WARN, f"a chunk over {OVERSIZED:,} chars: chunking never split it"),
     "full-md-missing": (FAIL, "no full.md, the un-chunked fallback for when a chunk boundary lands badly"),

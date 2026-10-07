@@ -306,7 +306,8 @@ class EditionsTest(unittest.TestCase):
         m = self.manifest("widget-ref-v2")
         self.assertEqual((m["doc_id"], m["version"], m["title"]), ("widget-ref", "2.0", "Widget Reference"),
                          "--replace lost the edition a document was converted as")
-        long_chars = sum(sec["chars"] for sec in m["sections"] if sec.get("command") == LONG_ENTRY)
+        long_chars = sum(len((self.coll / "docs" / "widget-ref-v2" / sec["file"]).read_text(encoding="utf-8"))
+                         for sec in m["sections"] if sec.get("command") == LONG_ENTRY)
         self.assertGreater(long_chars, 40_000, "the fixture's long entry is not past the lookup cut")
 
         r = self.build()

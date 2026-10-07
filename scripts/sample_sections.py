@@ -95,7 +95,13 @@ def pools(root: Path, min_chars: int, used: set, figures_only: bool) -> dict:
                         figures.setdefault(f["section"], []).append(f)
             pool = []
             for s in manifest.get("sections", []):
-                if (manifest["slug"], s["file"]) in used or (s.get("chars") or 0) < min_chars:
+                if (manifest["slug"], s["file"]) in used:
+                    continue
+                try:
+                    size = len((mp.parent / s["file"]).read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    continue
+                if size < min_chars:
                     continue
                 if BOILERPLATE_RE.search(clean_heading(s.get("heading") or "")):
                     continue

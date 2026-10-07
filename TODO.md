@@ -195,7 +195,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T16 | Reference breadcrumbs from the TOC chain (**done**) | 2.3 | T06 | M |
 | T17 | Section identity across reconversions (**done**) | 2.4 | T12 | M |
 | T18 | Retrieval experiments behind flags (**done**) | 2.5 | T11, T12 | M |
-| T19 | Say which copy of a field is canonical; stop writing `chars` | 3.1 | T07 | M |
+| T19 | Say which copy of a field is canonical; stop writing `chars` (**done**) | 3.1 | T07 | M |
 | T20 | Manifest schema and provenance | 3.2 | T06 | M |
 | T21 | Export chunks as JSONL | 3.3 | T07 | S |
 | T22 | Warn when the index is stale | 3.4 | T07 | M |
@@ -1768,7 +1768,7 @@ Record in §4.
 
 ### T19: Say which copy of a field is canonical; stop writing `chars` [3.1]
 
-**Status:** not started
+**Status:** done. test_22's `long_chars` is `test_editions`'s, now computed from the files; test_01 asserts `chars` is absent.
 
 **Why.** Four fields are stored twice, and each pair needed its own checker
 rule to catch the copies drifting apart:
@@ -1807,9 +1807,9 @@ rule to catch the copies drifting apart:
    - The handmade document keeps `chars`, so the checker rule stays tested.
 
 **Done when**
-- [ ] `grep -n '"chars"' scripts/convert_*.py scripts/rebuild_reference.py`
+- [x] `grep -n '"chars"' scripts/convert_*.py scripts/rebuild_reference.py`
       finds nothing.
-- [ ] The contract says which copy wins.
+- [x] The contract says which copy wins.
 
 ---
 
