@@ -104,7 +104,7 @@ def build_pages(pdf_path: Path, title: str) -> tuple[str, list[int], list[int], 
     """
     page_texts, numbers = cm.page_markdown(pdf_path)
 
-    furniture = ec.detect_furniture(page_texts, max(10, len(page_texts) // 20), title)
+    furniture = ec.detect_furniture(page_texts, title)
 
     parts, starts, cursor, removed = [], [], 0, 0
     for text in page_texts:

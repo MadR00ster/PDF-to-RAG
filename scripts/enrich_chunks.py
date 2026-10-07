@@ -115,7 +115,7 @@ def eligible_furniture_candidate(raw: str, core: str) -> bool:
     return True
 
 
-def detect_furniture(section_texts: list[str], min_count: int, title: str) -> set[str]:
+def detect_furniture(section_texts: list[str], title: str) -> set[str]:
     """Frequency-detect the manual's running header/footer text, restricted
     to shape-eligible lines (see eligible_furniture_candidate).
 
@@ -136,7 +136,7 @@ def detect_furniture(section_texts: list[str], min_count: int, title: str) -> se
         counts.update(seen_here)
 
     # Precision over recall, deliberately. An earlier version also treated
-    # "any line repeated >= min_count times" as furniture, which deleted
+    # "any line repeated often enough" as furniture, which deleted
     # genuine prose that reference manuals simply reuse a lot -- "Note the
     # following:" (127x), "where valid values are as follows:" (175x). A
     # missed furniture line costs a few wasted tokens; a deleted content
@@ -356,8 +356,7 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
     sections = manifest["sections"]
     texts = [(mdir / s["file"]).read_text(encoding="utf-8") for s in sections]
 
-    min_count = max(10, int(0.05 * len(sections)))
-    furniture = detect_furniture(texts, min_count, manifest["title"])
+    furniture = detect_furniture(texts, manifest["title"])
 
     # Without a bookmark TOC nothing can confirm an ancestor, so every chunk
     # gets the title alone: it still says which document it came from.
@@ -367,8 +366,6 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
 
     changed = 0
     lines_dropped = 0
-    chars_before = sum(len(t) for t in texts)
-    samples: list[str] = []
 
     for idx, (s, text) in enumerate(zip(sections, texts)):
         new, dropped = strip_furniture(text, furniture)
@@ -384,10 +381,7 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
             s["chars"] = len(new)
         if not keep_existing:
             s["breadcrumb"] = crumbs[idx]
-        if len(samples) < 3 and dropped:
-            samples.append(s["file"])
 
-    chars_after = chars_before - 0
     if not dry_run:
         manifest_path.write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"

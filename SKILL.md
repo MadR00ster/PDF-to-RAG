@@ -104,10 +104,12 @@ What breaks, and what it damages:
   `source/`. In a help folder that means inside the vendor's install tree.
   Pass `--out-root`.
 - **`enrich_chunks.py` rewrites section files and `manifest.json` in place, with
-  no backup.** Its furniture pass deletes any line repeated across 5% of
-  sections (at least 10), which is right for PDF page headers and can delete real content in
-  text another tool produced. Run `--dry-run` first on anything this skill did
-  not convert, and back the folder up.
+  no backup.** Its furniture pass deletes `Feedback` lines, lines matching the
+  document's own title that recur in at least 3 sections, and the bare page
+  numbers and `Chapter N:` headers within 3 lines of either. That is right for
+  PDF page headers and footers; on text another tool produced it can delete a
+  short line that happens to start the title. Run `--dry-run` first on anything
+  this skill did not convert, and back the folder up.
 - **`build_index.py` replaces `docs/index.json` and `docs/README.md` outright**,
   and stops with an error on a manifest missing `title`, `source_pdf`,
   `page_count` or `sections`.

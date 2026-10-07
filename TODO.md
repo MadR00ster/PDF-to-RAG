@@ -176,7 +176,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T01 | Split the tests; make each runnable alone (**done**) | 4.2 | — | L |
 | T02 | CI on Linux and Windows (**done**) | 4.1 | — | S |
 | T03 | Read pymupdf4llm's page number from the right key (**done**) | 1.4 | T01 | S |
-| T04 | Docs and code that disagree; dead code | 1.7 | T01 | S |
+| T04 | Docs and code that disagree; dead code (**done**) | 1.7 | T01 | S |
 | **Phase 2: the corpus** |||||
 | T05 | Docling chunks: use their own heading | 1.3 | T01 | S |
 | T06 | Make a declined attribution loud; `--command-level` | 1.5 | T01 | M |
@@ -515,7 +515,7 @@ every page after it, and nothing reports it.
 
 ### T04: Docs and code that disagree; dead code [1.7]
 
-**Status:** not started
+**Status:** done
 
 **Files.** `SKILL.md`, `scripts/enrich_chunks.py`,
 `scripts/rebuild_reference.py`, `scripts/convert_manual.py`,
@@ -576,10 +576,11 @@ every page after it, and nothing reports it.
 - Update any test that calls `detect_furniture` with three arguments.
 
 **Done when**
-- [ ] `grep -n "5% of" SKILL.md` finds nothing.
-- [ ] `grep -n "min_count\|chars_before\|samples" scripts/enrich_chunks.py`
+- [x] `grep -n "5% of" SKILL.md` finds nothing (the furniture sentence is gone; the
+      grep still matches two unrelated lines, "95% of" and "82.5% of").
+- [x] `grep -n "min_count\|chars_before\|samples" scripts/enrich_chunks.py`
       finds nothing.
-- [ ] Converting the fixtures before and after gives identical `docs/` trees.
+- [x] Converting the fixtures before and after gives identical `docs/` trees.
       `index.json` and `README.md` differ only in the label wording.
 
 ---

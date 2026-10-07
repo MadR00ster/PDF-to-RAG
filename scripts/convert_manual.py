@@ -25,8 +25,7 @@ After converting, refresh the vendor folder's docs/index.json + docs/README.md:
 
 Requires: pymupdf4llm (pulls in pymupdf). See scripts/requirements.txt.
 
-Chunking rules (see each vendor folder's CLAUDE.md for the prose spec this
-implements):
+Chunking rules (SKILL.md's "Chunking" section is the spec this implements):
 
   1. Split on real H1/H2 chapter headings, plus standalone **bold** lines in
      --dictionary mode.

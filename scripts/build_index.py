@@ -66,22 +66,48 @@ def mark_current(vendor_dir: Path, manuals: list[dict]) -> list[str]:
     return problems
 
 
-def load_superseded(vendor_dir: Path) -> list[dict]:
+def load_superseded(vendor_dir: Path, slugs: set[str]) -> list[dict]:
+    """The hand-kept list of PDFs set aside for a newer edition.
+
+    A file that cannot be read, or an entry without `file` and
+    `superseded_by`, stops the run before anything is written: the same
+    entries check_corpus.py's superseded-invalid reports. An entry naming a
+    slug that is not here is only a warning, since the list outlives
+    conversions.
+    """
     p = vendor_dir / "superseded.json"
-    return json.loads(p.read_text(encoding="utf-8-sig")) if p.exists() else []
+    if not p.exists():
+        return []
+    try:
+        entries = json.loads(p.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as exc:
+        sys.exit(f"Cannot read {p}: {exc}")
+    if not isinstance(entries, list):
+        sys.exit(f'!! {p.name} must be a list of {{"file": ..., "superseded_by": ...}} entries')
+    bad = [e for e in entries
+           if not (isinstance(e, dict) and isinstance(e.get("file"), str) and e["file"]
+                   and isinstance(e.get("superseded_by"), str) and e["superseded_by"])]
+    for e in bad:
+        print(f'!! {p.name}: entry {e!r} needs a non-empty "file" and "superseded_by"')
+    if bad:
+        sys.exit(1)
+    for e in entries:
+        if e["superseded_by"] not in slugs:
+            print(f"!! {p.name}: {e['file']} is superseded by {e['superseded_by']!r}, "
+                  "which is not in docs/")
+    return entries
 
 
 def load_vendor_label(vendor_dir: Path) -> str:
     """Prose name for this vendor, used in docs/README.md's intro line.
     Optional vendor.json {"label": "..."} overrides the default, which is
-    just the folder name minus a trailing " Manual" (e.g. "Tessent" ->
-    "Siemens Tessent")."""
+    the folder name."""
     p = vendor_dir / "vendor.json"
     if p.exists():
         label = json.loads(p.read_text(encoding="utf-8-sig")).get("label")
         if label:
             return label
-    return vendor_dir.name.replace(" Manual", "")
+    return vendor_dir.name
 
 
 def write_index_json(docs_dir: Path, manuals: list[dict], superseded: list[dict]) -> None:
@@ -101,7 +127,7 @@ def write_readme(vendor_dir: Path, docs_dir: Path, manuals: list[dict], supersed
     lines = [
         f"# {vendor_dir.name} Docs (Markdown, RAG-ready)",
         "",
-        f"Converted from the {vendor_label} EDA tool PDFs in `../{editions.SOURCE_DIR}/`. Each manual "
+        f"Converted from the {vendor_label} PDFs in `../{editions.SOURCE_DIR}/`. Each manual "
         "has its own folder with a full markdown dump plus per-section files for "
         "finer-grained retrieval.",
         "",
@@ -184,7 +210,7 @@ def main() -> None:
         sys.exit(f"No docs/ folder under {vendor_dir}")
 
     manuals = load_manuals(docs_dir)
-    superseded = load_superseded(vendor_dir)
+    superseded = load_superseded(vendor_dir, {m["slug"] for m in manuals})
     problems = mark_current(vendor_dir, manuals)
     if problems:
         # Before anything is written. With a pin that matches nothing, the

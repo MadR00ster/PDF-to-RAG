@@ -264,5 +264,37 @@ class CheckerTest(unittest.TestCase):
                 self.assertEqual(build_rc, 0, f"the index build rejects a pin the checker accepts ({name})")
 
 
+    def test_28_build_index_refuses_a_malformed_superseded_entry(self):
+        """A superseded.json entry without its fields crashed with a KeyError;
+        it now stops before anything is written, and a name that is not here
+        is a warning only."""
+        corpus = WS.fresh(WS.hand_corpus(), "superseded")
+        catalog = corpus / "docs" / "index.json"
+        slug = json.loads(catalog.read_text(encoding="utf-8"))["manuals"][0]["slug"]
+        sup = corpus / "superseded.json"
+
+        for bad in ([{"file": "x.pdf"}], [{"file": "", "superseded_by": slug}], ["x.pdf"], {"file": "x.pdf"}):
+            with self.subTest(bad=bad):
+                sup.write_text(json.dumps(bad), encoding="utf-8")
+                catalog.unlink(missing_ok=True)
+                r = run("build_index.py", str(corpus))
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertNotIn("Traceback", r.stdout + r.stderr)
+                self.assertIn("superseded.json", r.stdout + r.stderr)
+                self.assertFalse(catalog.exists(), "an index was written from a malformed list")
+
+        sup.write_text("[{", encoding="utf-8")
+        r = run("build_index.py", str(corpus))
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+        self.assertIn("superseded.json", r.stdout + r.stderr)
+
+        sup.write_text(json.dumps([{"file": "x.pdf", "superseded_by": "nope"}]), encoding="utf-8")
+        r = run("build_index.py", str(corpus))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"!!.*nope")
+        self.assertTrue(catalog.exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
