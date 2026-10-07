@@ -175,7 +175,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | **Phase 1: foundations** |||||
 | T01 | Split the tests; make each runnable alone (**done**) | 4.2 | — | L |
 | T02 | CI on Linux and Windows (**done**) | 4.1 | — | S |
-| T03 | Read pymupdf4llm's page number from the right key | 1.4 | T01 | S |
+| T03 | Read pymupdf4llm's page number from the right key (**done**) | 1.4 | T01 | S |
 | T04 | Docs and code that disagree; dead code | 1.7 | T01 | S |
 | **Phase 2: the corpus** |||||
 | T05 | Docling chunks: use their own heading | 1.3 | T01 | S |
@@ -446,7 +446,7 @@ notes came from Windows, and nothing states the minimum Python version.
 
 ### T03: Read pymupdf4llm's page number from the right key [1.4]
 
-**Status:** not started
+**Status:** done
 
 **Why.** Verified: pymupdf4llm 1.28.2 puts the page number in
 `metadata["page_number"]`. `rebuild_reference.py` reads `metadata["page"]`,
@@ -506,9 +506,9 @@ every page after it, and nothing reports it.
 - `fake` returns `page_number` 0, 1 and 2: `SystemExit`.
 
 **Done when**
-- [ ] The new test fails on `0e4dd59`'s `build_pages` and passes now. To see
+- [x] The new test fails on `0e4dd59`'s `build_pages` and passes now. To see
       the old code fail, apply the test alone first.
-- [ ] Converting `ref` with and without the change gives identical `docs/`
+- [x] Converting `ref` with and without the change gives identical `docs/`
       trees (`diff -r`).
 
 ---

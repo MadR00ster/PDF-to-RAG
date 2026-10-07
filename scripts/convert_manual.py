@@ -231,6 +231,31 @@ def split_oversized(heading: str, level: int, body: str, dictionary: bool) -> li
     return pack_adjacent(children)
 
 
+def page_markdown(pdf_path: Path) -> tuple[list[str], list[int]]:
+    """Each page's markdown and its 1-based page number.
+
+    pymupdf4llm 1.28 names the number `page_number`; earlier releases
+    called it `page`. Where neither is there, a page's place in the list
+    is its number -- true only while every page comes back in order, so
+    that is checked: one page dropped would misnumber every page after it,
+    and a citation to the wrong page is worse than none.
+    """
+    raw = pymupdf4llm.to_markdown(str(pdf_path), page_chunks=True)
+    with pymupdf.open(str(pdf_path)) as doc:
+        expected = doc.page_count
+    texts, numbers = [], []
+    for i, page in enumerate(raw):
+        meta = page.get("metadata") or {}
+        n = meta.get("page_number", meta.get("page"))
+        texts.append(page.get("text") or "")
+        numbers.append(i + 1 if n is None else n)
+    if numbers != list(range(1, expected + 1)):
+        sys.exit(f"pymupdf4llm returned pages {numbers[:5]}... ({len(numbers)} of them) for the "
+                 f"{expected}-page {pdf_path.name}. Page numbers taken from that would be wrong, "
+                 "so nothing was written.")
+    return texts, numbers
+
+
 def chunk_markdown(md_text: str, dictionary: bool) -> list[tuple[str, int, str]]:
     top_blocks = split_at(md_text, top_matches(md_text, dictionary))
     chunks = []

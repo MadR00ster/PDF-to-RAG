@@ -45,7 +45,6 @@ from pathlib import Path
 
 try:
     import pymupdf
-    import pymupdf4llm
 except ImportError:
     sys.exit("Missing dependency. Run: pip install -r scripts/requirements.txt")
 
@@ -103,11 +102,7 @@ def build_pages(pdf_path: Path, title: str) -> tuple[str, list[int], list[int], 
     stripping after concatenation would invalidate the page offsets this
     whole script depends on.
     """
-    raw = pymupdf4llm.to_markdown(str(pdf_path), page_chunks=True)
-    page_texts = [(p.get("text") or "") for p in raw]
-    numbers = [
-        (p.get("metadata") or {}).get("page") or (i + 1) for i, p in enumerate(raw)
-    ]
+    page_texts, numbers = cm.page_markdown(pdf_path)
 
     furniture = ec.detect_furniture(page_texts, max(10, len(page_texts) // 20), title)
 

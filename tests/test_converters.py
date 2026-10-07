@@ -6,10 +6,11 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import SCRIPTS, WS, run, inverted_fixture, gadget_fixture  # noqa: E402
+from _support import SCRIPTS, WS, run, inverted_fixture, gadget_fixture, write_pdf, load_script  # noqa: E402
 import pymupdf  # noqa: E402
 
 
@@ -373,6 +374,30 @@ class ConverterTest(unittest.TestCase):
         self.assertRegex(r.stdout, r"walk\s+walkref",
                          "enrich did not take the walk branch, so this proves nothing")
         self.assertEqual(crumbs(), before, "enrich rewrote breadcrumbs a converter wrote")
+
+
+    def test_27_page_numbers_come_from_pymupdf4llms_own_key(self):
+        """pymupdf4llm 1.28 says `page_number`; rebuild_reference read `page`,
+        so every number was its list position, wrong from the first dropped page."""
+        cm = load_script("rebuild_reference").cm
+        pdf = self.tmp / "three.pdf"
+        write_pdf(pdf, [[(f"Page {n}", 11)] for n in (1, 2, 3)], [])
+
+        def pages(*numbers, key="page_number"):
+            return lambda *a, **k: [{"text": f"p{n}", "metadata": {key: n} if key else {}} for n in numbers]
+
+        def numbers_for(fake):
+            with mock.patch.object(cm.pymupdf4llm, "to_markdown", fake):
+                return cm.page_markdown(pdf)[1]
+
+        self.assertEqual(numbers_for(pages(1, 2, 3)), [1, 2, 3])
+        self.assertEqual(numbers_for(pages(1, 2, 3, key="page")), [1, 2, 3])
+        self.assertEqual(numbers_for(pages(1, 2, 3, key=None)), [1, 2, 3])
+        for bad in ((1, 3), (0, 1, 2)):
+            with self.assertRaises(SystemExit, msg=f"pages {bad} were accepted"):
+                numbers_for(pages(*bad))
+        # the real library, end to end: the key it actually writes is read
+        self.assertEqual(cm.page_markdown(pdf)[1], [1, 2, 3])
 
 
 if __name__ == "__main__":
