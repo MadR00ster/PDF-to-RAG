@@ -1,7 +1,14 @@
 # Improvements
 
 A review of the implementation, the methodology and the data layout, written
-2026-10-07 against commit `0e4dd59`. Nothing here is built yet.
+2026-10-07 against commit `0e4dd59`. Nothing here is built yet, apart from the
+CI in 4.1.
+
+**Amended 2026-10-07.** Planning the work against the code found places where
+this review was wrong or incomplete, and settled the items it left open.
+Those passages are marked **Amended** or **Decided** below, and this file and
+`TODO.md` now agree. `TODO.md` is the plan to carry it out: one task per item,
+with the code to change, the tests and the order.
 
 Scope: what the repo does today, which is converting PDFs into a corpus and
 serving that corpus to an editor over stdio. The shared answering server in
@@ -53,8 +60,12 @@ practice the chunk drops out of the top results.
 ```
 
 **Fix:** match the whole heading:
-`^(contents|table of contents|index|feedback|list of (figures|tables))$`. Keep
-`about this` as a prefix, since it only ever starts "About This Manual/Guide".
+`^(contents|table of contents|index|feedback|list of (figures|tables))( \((cont\.|intro)\))*$`.
+**Amended:** the suffix is needed because the chunker names the later pieces
+of a split block `"<heading> (cont.)"` and an intro piece `"<heading> (intro)"`.
+Without it, `Index (cont.)`, which the prefix rule catches today, would stop
+being demoted. Keep `about this` as a prefix, since it only ever starts "About
+This Manual/Guide".
 Keep the dot-leader test as it is. Rebuild the index, because `noise` is
 stored at build time, then add the four headings above to a test.
 
@@ -88,6 +99,12 @@ function:
   adjacent query words.
 - Drop the prefix branch.
 - Match headings on whole words, using content words only.
+- **Amended:** keep the existing case where the whole query is the entity.
+  Tcl-style commands (`set`, `foreach`) are not identifier-shaped, so without
+  it the bare query `set` would lose its −6.0. A plain word inside a question
+  counts as naming an entity only when it is in backticks or is a message
+  code (`ADES-002`): "how do I set the clock" is English, even where a
+  command is called `set`.
 
 **Measure it.** Identifier questions reach 100% hit@5 but only 85% hit@1
 (`references/retrieval-measurement.md`). This fix targets exactly that gap.
@@ -130,8 +147,9 @@ number of pages returned differs from `doc.page_count`, stop.
 
 ### 1.5 The router and the reference converter disagree on what an entry is — From reading
 
-`pick_extractor.py:264-273` counts a lowercase single word (`after`, `append`,
-`foreach`) as an entry. `rebuild_reference.py:72-94` needs an `_`, a ` -`, or
+`pick_extractor.py:56-65` (`looks_like_entry`; **Amended:** the line numbers
+given here before were wrong) counts a lowercase single word (`after`,
+`append`, `foreach`) as an entry. `rebuild_reference.py:72-94` needs an `_`, a ` -`, or
 a message code. So `pick_extractor` can send a Tcl-style command reference to
 `rebuild_reference.py`, which then finds no command level. It prints
 `command level LNone: 0 commands` and exits 0.
@@ -142,11 +160,26 @@ reaches 90% attribution was reported at 0%.
 
 **Fix:**
 
-- Use one entry test and one level picker in both scripts.
 - When nothing is attributed, keep declining, but print a `!!` line that
   says why.
-- Record the decline in the manifest, for example `"attribution": "declined"`.
+- Record the decline in the manifest, as
+  `"attribution": {"status": "declined", "command_level": null, "chosen_by": "toc"}`.
 - Add a `--command-level N` option to override the picker.
+- Have `pick_extractor.py` report the level `rebuild_reference.py` would
+  pick, and warn when it would pick none or a different one. Move
+  `pick_command_level` into a standard-library module both can import
+  (`scripts/_common.py`).
+- `check_corpus.py` warns on a declined attribution.
+
+**Decided:** don't merge the two entry tests into one, which this review
+first proposed. They answer different questions. `pick_extractor.py`
+asks whether a document is a reference, and was measured on 38 manuals.
+`rebuild_reference.py` asks which TOC level to attribute from, and its
+docstring says tightening its looser `" -"` clause "would move which level
+is picked for manuals that already convert correctly". Merging either into
+the other moves measured results with nothing to measure them against. The
+real problem was that the disagreement was silent, and the warnings above fix
+that at the point where the shape is decided.
 
 ### 1.6 Staging and backup folders leak into the index — From reading
 
@@ -173,6 +206,14 @@ reaches 90% attribution was reported at 0%.
   manifest field, and `slug-mismatch` exists only because the two can differ.
   Use the folder name, and keep the manifest field as a copy the checker
   compares against it.
+- **Amended:** two checker rules change with this. Once
+  `build_search_db.py` skips `.old`/`.new`/dot/underscore folders,
+  `hidden-document` no longer describes something that breaks the build, so
+  it becomes a warning. `duplicate-slug` must stop counting those folders.
+  test_18 plants both, so it changes too. Name the staging folder
+  `.rebuild-backup/.staging/<slug>`, not `staging/<slug>`: a slug cannot
+  start with a dot, so it can never collide with a backup kept at
+  `.rebuild-backup/<slug>`.
 
 ### 1.7 Documentation and code that no longer match — Verified
 
@@ -209,7 +250,7 @@ confirm it changes nothing that should have been kept.
 
 ## 2. Methodology
 
-### 2.1 Give the light prose path page numbers — Verified on fixtures
+### 2.1 Give the light prose path page numbers — Verified on fixtures and in pymupdf4llm's source
 
 This is the largest gain on the list. `convert_manual.py:248` calls
 `to_markdown()` without `page_chunks=True`, so prose chunks carry no page
@@ -219,6 +260,13 @@ Docling (a multi-gigabyte install, about 8.6 hours for 25,000 pages).
 
 On both test fixtures, joining the per-page output of `page_chunks=True` gave
 **byte-identical** markdown to the whole-document call, in the same time.
+**Amended:** this holds by construction, not only on the fixtures. In
+pymupdf4llm 1.28.2, `helpers/document_layout.py`'s `to_markdown` builds each
+page's string the same way in both modes. The whole-document call
+concatenates those strings (`document_output += md_string`), `page_chunks=True`
+returns each one as the page's `text`, and `page_chunks` is never passed to
+the parser. The layout path is the one used: pymupdf_layout is a hard
+dependency of pymupdf4llm 1.28.2.
 `rebuild_reference.py` already does the page-span bookkeeping (`build_pages`
 and the offset-to-page mapping). Doing the same in `convert_manual.py` would:
 
@@ -234,7 +282,12 @@ paragraph-above rule where chunks have pages, and its page rule ties nothing
 on a page two sections share. On prose chunked by heading, the paragraph rule
 measured 96–99% right, so uncaptioned figures in prose would lose their links.
 Keep the paragraph rule as the fallback after the page rule for prose, and
-measure the result against the caption rule.
+measure the result against the caption rule. **Amended:** tell a rebuilt
+reference apart by the `"command"` key on its sections, not its value.
+`rebuild_reference.py` writes it on every section, with `null` where nothing
+is attributed. Docling output has pages and no such key, so it gains the
+fallback too. Also, `test_16` asserts that the prose path has no pages, so it
+reverses with this change.
 
 **Next step:** merge the two pymupdf4llm converters. They already share the
 chunker and the furniture code; the only real difference is splitting the
@@ -243,19 +296,31 @@ entities when it finds a command level (or takes `--shape prose|reference`)
 would remove the "don't run `enrich_chunks.py` over a reference document"
 trap, and the inconsistent `--slug` handling (4.4).
 
-**Before relying on it:** check on real manuals that the two outputs still
-match. The fixtures are small. Diff `full.md` from both modes, then run the
-checker's content check.
+**Decided:** the merge is not gated on a real-corpus diff. The check this
+review asked for ("check on real manuals that the two outputs still match")
+is answered by the source reading above. Nor does 2.1 depend on the two
+outputs matching: the page-chunked text becomes `full.md`, as it already does
+for references. Pin the property with a fixture test, so a future
+pymupdf4llm release that breaks it is caught. Still compare
+`check_corpus.py --strict` and the figure-link counts on a few reconverted
+real manuals. That is a measurement to record, not a condition for starting.
 
 ### 2.2 Carry exact offsets through the chunker — From reading
 
 `rebuild_reference.py:125-138` (`locate`) finds where each chunk sits by
 searching for its first 200 characters. If that fails, it searches from the
-start of the region, and if that fails too, it uses the cursor. But
-`chunk_markdown` cuts its chunks as slices of the text, so it could return
-each chunk's `(start, end)` offsets directly. Page mapping would then be exact
-by construction. No failure has been seen; this removes a heuristic from the
-path that page numbers depend on.
+start of the region, and if that fails too, it uses the cursor.
+**Amended:** this review said `chunk_markdown` cuts its chunks as slices of
+the text. It mostly does, but not always. When a heading split's children
+include pieces from paragraph packing, `pack_adjacent` joins them with `""`,
+which drops the blank line between two paragraphs. One synthetic case
+produced `"…word Short tail of B."` in a chunk, though that text is not in
+`full.md`. So the chunker has to work in `(start, end)` spans, with a merged
+group spanning first start to last end, for offsets to be exact. That also
+restores the lost blank line. Page mapping is then exact by construction.
+No failure has been seen on a real corpus; this removes a heuristic from the
+path that page numbers depend on. **Decided:** do this before 2.1, which
+builds on it.
 
 ### 2.3 Use the TOC chain the reference converter already knows — From reading
 
@@ -388,6 +453,14 @@ own shape and their own loader, and `superseded.json` is not validated
 need one loader and one checker rule. Low priority: it means migrating
 existing corpora.
 
+**Decided: not now.** The bug in this item, `superseded.json` going
+unvalidated, is fixed by 1.7 (`build_index.py` validates it as the checker
+does). What remains is consolidation, and it pays only if the old files stop
+being read. Otherwise there are four formats to load instead of three. Not
+reading them means migrating every existing corpus, which costs more than
+the drift it prevents, with only three small files to keep in step. Revisit
+if a fourth per-collection setting appears.
+
 ---
 
 ## 4. Engineering
@@ -399,6 +472,15 @@ minute. Run it on Linux and Windows: half the platform notes in SKILL.md come
 from Windows. Also state the minimum Python version. The code needs at least
 3.9 (`str.removeprefix`, `Path.is_relative_to`), and nothing says so; CI on
 the oldest version claimed is what would confirm it.
+
+**Amended:** the floor is 3.10, not 3.9. pymupdf4llm 1.28.2 and PyMuPDF
+1.28.2 declare `Requires-Python >=3.10`, and `requirements.txt` asks for
+pymupdf4llm 1.28 or later. **Done:** `.github/workflows/tests.yml` runs the
+suite on Linux and Windows with Python 3.10 and 3.13, and README.md and
+SKILL.md state the floor. Its first run found a Windows-only bug, now fixed.
+`emit_vscode_config` compared paths as text, so an editor entry naming the
+index through an 8.3 short name, a symlink or a junction got a duplicate
+server. It now compares resolved paths, and test_22c covers it.
 
 ### 4.2 Make tests runnable on their own — Verified
 
@@ -456,7 +538,10 @@ cross-check test like the version rule's.
   without escaping (`mcp_server.py:612`), and `_` is a wildcard in `LIKE`.
   Nearly every section filename contains `_`, so other files can match too.
   The exact match is sorted first, so this is mostly harmless; escape it
-  anyway.
+  anyway. **Amended:** it is not harmless when there is no exact match. A
+  request for `sections/0001-set_x.md` returns `sections/0001-setax.md`
+  when only that file exists. Also anchor the pattern at a `/`, so
+  `02-x.md` cannot match `002-x.md`.
 
 ---
 
@@ -471,8 +556,12 @@ or a deleted line into the corpus come before anything about structure.
 | first, hours each | 4.1, 4.2, 1.4, 1.7 | CI and tests that run alone, so every later change is checked; a latent page-numbering failure closed; docs that match the code |
 | then: the corpus | 1.3 (confirm on a real PDF, then rerun the benchmark), 1.5, 1.6, 1.8, 3.5 | wrong labels, silent declines, leftover files and lost lines are what the rule exists to prevent |
 | then: search | 1.1, 1.2, 2.6 | verified ranking faults, and a way to see each question's rank move before and after |
-| then: coverage | 2.1, then the merged converter | page numbers on every prose chunk without Docling; one pymupdf4llm path to keep in step |
-| later | 2.2–2.5, 3.1–3.4, 3.6, 4.3–4.5 | structure that pays off as corpora and contributors grow |
+| then: coverage | 2.2, 2.1, then the merged converter | exact offsets first, then page numbers on every prose chunk without Docling; one pymupdf4llm path to keep in step |
+| later | 2.3–2.5, 3.1–3.4, 4.3–4.5 | structure that pays off as corpora and contributors grow |
+| not now | 3.6 | decided above: it pays only by migrating every corpus |
+
+**Amended:** 2.2 moves ahead of 2.1, and 3.6 is set aside. `TODO.md` §2 has
+the full task order. 4.1 is done.
 
 1.1 and 1.2 change no corpus file, only the index and the server. That is why
 they can wait behind the corpus fixes even though they are the quickest wins.

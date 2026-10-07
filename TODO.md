@@ -1,9 +1,9 @@
 # TODO: implementing IMPROVEMENT.md
 
 This is the execution plan for every item in `IMPROVEMENT.md`, written
-2026-10-07 against `main` at `0e4dd59`. IMPROVEMENT.md lives on branch
-`claude/relaxed-ritchie-1nm34z` (commit `1501072`); read it with
-`git show origin/claude/relaxed-ritchie-1nm34z:IMPROVEMENT.md`.
+2026-10-07 against `main` at `0e4dd59`. IMPROVEMENT.md is in this branch,
+amended so that it and this file agree: where planning found it wrong or left
+a question open, it now says **Amended** or **Decided**.
 
 IMPROVEMENT.md says what is wrong and why. This file says what to change, in
 what order, how to test it, and when each task is done. You should not need
@@ -31,6 +31,24 @@ by running the code, by reading a dependency's source, or with the test suite.
   none), and carry on with the rest of the task.
 - If you find a problem a task doesn't cover, add it to §5 "Found along the
   way" instead of fixing it.
+- CI runs on every push (T02 is done). After each push, read the run with
+  the GitHub tools. A red cell is yours to fix before the next task.
+
+### Decisions already made: nothing here waits on the user
+
+Every gate this plan had is settled. Don't stop to ask about any of them.
+
+| item | decision | where |
+|---|---|---|
+| CI push permission | Tested: a workflow file pushes fine. T02 is done | T02 |
+| Merge the two entry tests (1.5) | Don't. Report the disagreement instead | T06 |
+| Joined pages vs whole-document markdown (2.1) | Identical by construction in pymupdf4llm 1.28.2; pinned by a fixture test | T14 |
+| One pymupdf4llm converter | Not gated; do it after T14 | T15 |
+| Defaults for the search experiments | Ship each as a flag, off. Choosing a default is not part of this work | T18 |
+| `collection.json` (3.6) | Not now. Skip T23 | T23 |
+
+What §4 lists are measurements on the user's corpus. Record them where you
+can. None blocks a task.
 
 ### Ground rules
 
@@ -80,7 +98,9 @@ python tests/run_each.py                         # from T01 on: every test alone
 ```
 
 Baseline at `0e4dd59` (Python 3.13.16, Linux): **36 tests, OK, 2 skipped**
-(no Tesseract language data, no Docling), about 70 s.
+(no Tesseract language data, no Docling), about 70 s. This branch adds
+test_22c with the Windows fix in T02, so it starts at **37 tests, OK, 2
+skipped**.
 
 Optional tools: Tesseract (test_14), Docling (test_09c and the check in T05).
 Neither is needed for the suite to pass.
@@ -89,7 +109,8 @@ Neither is needed for the suite to pass.
 
 ## 1. Corrections to IMPROVEMENT.md
 
-Found while writing this plan. The tasks below already account for them.
+Found while writing this plan, and now made in IMPROVEMENT.md itself. They
+are listed here so each task's reasoning is in one place.
 
 1. **[4.1] The minimum Python is 3.10, not 3.9.** pymupdf4llm 1.28.2 and
    PyMuPDF 1.28.2 both declare `Requires-Python >=3.10`, and
@@ -112,8 +133,9 @@ Found while writing this plan. The tasks below already account for them.
    reference converter's rule keeps a looser `" -"` clause on purpose: its
    docstring says tightening it "would move which level is picked for manuals
    that already convert correctly". pick_extractor's rule was measured on 38
-   manuals. Changing either one moves measured results. T06 makes the decline
-   loud now, and leaves the unification until it can be measured (T06 part B).
+   manuals. Changing either one moves measured results. **Decided:** keep
+   both. T06 makes the decline loud, and has pick_extractor report the level
+   the converter would pick.
 6. **[1.6] Skipping hidden folders changes two checker rules.** Once
    `build_search_db.py` skips `.old`/`.new`/dot/underscore folders, the
    checker's `hidden-document` no longer describes something that breaks the
@@ -121,13 +143,23 @@ Found while writing this plan. The tasks below already account for them.
    test_18 plants both defects and has to change with them (T07).
 7. **[2.1] test_16 asserts the prose path has no pages**
    (`assertIn("no-pages", raised)`). T14 reverses that assertion.
-8. **[2.2] Chunk bodies are not always exact slices of the text today.**
+8. **[2.1] Joined pages equal the whole-document markdown, by construction.**
+   In pymupdf4llm 1.28.2, `helpers/document_layout.py`'s `to_markdown`
+   builds each page's string the same way in both modes. The
+   whole-document call concatenates them (`document_output += md_string`),
+   and `page_chunks` is never passed to the parser. IMPROVEMENT.md asked for
+   this to be checked on real manuals before relying on it; the source
+   settles it, and T14 pins it with a test.
+9. **[4.5] `get_section`'s unescaped `LIKE` is not harmless.** Verified: with
+   no exact match, a request for `sections/0001-set_x.md` returns
+   `…/sections/0001-setax.md`.
+10. **[2.2] Chunk bodies are not always exact slices of the text today.**
    Verified: when a heading split's children include pieces from paragraph
    packing, `pack_adjacent` joins them with `""`. That drops the blank line
    between two paragraphs, so `"…word Short tail of B."` appears in a chunk
    but not in `full.md`. Exact offsets need the chunker to work in spans
    (T13). That also restores the blank line in those rare chunks.
-9. **[2.1] Telling reference output apart without provenance.**
+11. **[2.1] Telling reference output apart without provenance.**
    `rebuild_reference.py` writes a `"command"` key on *every* section, with
    `null` where nothing is attributed. Before T20 records provenance, the
    presence of that key, not its value, is what identifies a rebuilt
@@ -144,7 +176,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 |---|---|---|---|---|
 | **Phase 1: foundations** |||||
 | T01 | Split the tests; make each runnable alone | 4.2 | — | L |
-| T02 | CI on Linux and Windows | 4.1 | T01 | S |
+| T02 | CI on Linux and Windows (**done**) | 4.1 | — | S |
 | T03 | Read pymupdf4llm's page number from the right key | 1.4 | T01 | S |
 | T04 | Docs and code that disagree; dead code | 1.7 | T01 | S |
 | **Phase 2: the corpus** |||||
@@ -160,7 +192,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | **Phase 4: coverage** |||||
 | T13 | Chunk in spans, so offsets are exact | 2.2 | T01 | M |
 | T14 | Page numbers on the light prose path | 2.1 | T03, T13 | L |
-| T15 | One pymupdf4llm converter (gated) | 2.1 "next step" | T14 | L |
+| T15 | One pymupdf4llm converter | 2.1 "next step" | T14 | L |
 | **Phase 5: later** |||||
 | T16 | Reference breadcrumbs from the TOC chain | 2.3 | T06 | M |
 | T17 | Section identity across reconversions | 2.4 | T12 | M |
@@ -169,13 +201,14 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T20 | Manifest schema and provenance | 3.2 | T06 | M |
 | T21 | Export chunks as JSONL | 3.3 | T07 | S |
 | T22 | Warn when the index is stale | 3.4 | T07 | M |
-| T23 | One `collection.json` (optional) | 3.6 | T04 | M |
+| T23 | One `collection.json` (**not now: skip**) | 3.6 | — | — |
 | T24 | Remove accidental duplication | 4.3 | T06, T07 | M |
 | T25 | Consistent command lines | 4.4 | T07 | M |
 | T26 | Server robustness and tool metadata | 4.5 | T01 | S |
 
 T26 is independent and small, so it can be done any time after T01. The
-`--slug` part of T25 can come earlier too.
+`--slug` part of T25 can come earlier too. T02 is already done, and T23 is
+not part of this work.
 
 ---
 
@@ -254,7 +287,7 @@ the `scripts/check_corpus.py` docstring. Run
    | `test_server.py` | `ServerTest` | 08, 10 |
    | `test_figures.py` | `FigureTest` | 13, 14, 15 |
    | `test_checker.py` | `CheckerTest` | 16, 17, 18, 19, 23 |
-   | `test_editions.py` | `EditionsTest` | 20, 20b, 21, 22, 22b, 24, 25, 25b, 25c, 25d, 25e, 26 |
+   | `test_editions.py` | `EditionsTest` | 20, 20b, 21, 22, 22b, 22c, 24, 25, 25b, 25c, 25d, 25e, 26 |
 
    Input changes, and only these:
    - **test_01, 05, 06, 11** test a conversion. Each one converts into its own
@@ -282,8 +315,9 @@ the `scripts/check_corpus.py` docstring. Run
      copies the corpus for every plant.
    - **test_21, 22 and 22b** each use `WS.fresh(WS.gadgets()[0], ...)` as
      their root. test_22 adds its widget-ref editions to that copy.
-   - **Every other editions test** already builds its own folders under
-     `self.tmp`. Keep a per-class `TemporaryDirectory` for those.
+   - **Every other editions test**, test_22c included, already builds its
+     own folders under `self.tmp`. Keep a per-class `TemporaryDirectory` for
+     those.
 4. Each test file starts by putting its own folder on `sys.path`, so all
    three ways of running it work: `discover`, `python tests/test_x.py`, and
    `python -m unittest test_x...` run from `tests/`.
@@ -326,7 +360,7 @@ the `scripts/check_corpus.py` docstring. Run
    `python -m unittest discover -s tests -v`.
 
 **Done when**
-- [ ] `python -m unittest discover -s tests -v` runs 36 tests, OK, with skips
+- [ ] `python -m unittest discover -s tests -v` runs 37 tests, OK, with skips
       only for Tesseract and Docling.
 - [ ] `python tests/run_each.py` prints "every test passes alone".
 - [ ] `discover` takes no more than about twice the 70 s baseline.
@@ -336,7 +370,26 @@ the `scripts/check_corpus.py` docstring. Run
 
 ### T02: CI on Linux and Windows [4.1]
 
-**Status:** not started
+**Status:** done in commits `d7305cf` and `b5c3172`. The push that added the
+workflow was accepted, so the token can push workflow files. This section is
+kept as the record of what was done.
+
+The first run passed on Linux with 3.10 and 3.13, which confirms the 3.10
+floor. Both Windows cells failed one test, test_22b, which found a real bug:
+
+- `build_search_db.emit_vscode_config` compared an existing entry's `--db`
+  path with the index's as text, after `abspath`, while the build resolves
+  its root.
+- On the runner, the temp folder came back in its 8.3 short form
+  (`C:\Users\RUNNER~1\...`), so the build didn't recognise this corpus's
+  own entry and added a second server for the same index.
+- A user who registered the corpus through a symlink, a junction or a mapped
+  drive would hit the same thing.
+
+`b5c3172` compares resolved paths (`os.path.realpath`) and adds test_22c,
+which reproduces the bug through a symlink, so every CI cell covers it. The
+CI command, `python -m unittest discover -s tests -v`, runs
+`tests/test_pipeline.py` today and must keep working through T01's split.
 
 **Why.** Verified: there is no `.github/` folder. Half of SKILL.md's platform
 notes came from Windows, and nothing states the minimum Python version.
@@ -382,9 +435,9 @@ notes came from Windows, and nothing states the minimum Python version.
    Don't remove the file to get the push through.
 
 **Done when**
-- [ ] The workflow has run on all four matrix cells, or a refused push is
+- [x] The workflow has run on all four matrix cells, or a refused push is
       reported to the user.
-- [ ] README and SKILL.md state Python 3.10+.
+- [x] README and SKILL.md state Python 3.10+.
 
 ---
 
@@ -687,17 +740,12 @@ The benchmark once reported 0% for a manual that reaches 90%.
 - In `test_checker.py`, add to test_18's plants
   `("attribution declined", lambda d, m: m.update(attribution={"status": "declined", "command_level": None, "chosen_by": "toc"}), "attribution-declined", False)`.
 
-**Part B (needs the user's corpus; don't start without it).** IMPROVEMENT.md
-asks for one entry test and one level picker in both scripts. Changing either
-rule moves measured results (§1, item 5). So:
-
-1. For every PDF in the user's corpus, record pick_extractor's shape and
-   level, and `pick_command_level`'s level, under the current rules and under
-   the proposed shared rule.
-2. If no document changes classification or level, switch both scripts to the
-   shared rule in `_common.py` and delete the other.
-3. If any document changes, keep both rules, document why in `_common.py`,
-   and list the documents in §4.
+**Part B: decided, nothing to build.** IMPROVEMENT.md first asked for one
+entry test in both scripts; it now records the decision not to (§1, item
+5). The two tests answer different questions, whether a document is a
+reference and which level to attribute from, and each was measured as it
+is. Write that in `_common.py`'s docstring, next to `pick_command_level`, in
+two or three sentences, so nobody merges them later without measuring.
 
 **Done when**
 - [ ] `_common.py` exists, imports only the standard library, and holds
@@ -706,7 +754,7 @@ rule moves measured results (§1, item 5). So:
       manifest and tested.
 - [ ] Converting `ref` before and after differs only by the new
       `attribution` field.
-- [ ] Part B is done, or its §4 row says why not.
+- [ ] `_common.py`'s docstring says why the two entry tests stay separate.
 
 ---
 
@@ -1261,7 +1309,7 @@ A. Run `eval_search.py --compare a.json b.json`. Assert the moved line, the
 
 **Why.** `rebuild_reference.locate` finds each chunk again by searching for
 its first 200 characters, and falls back to the cursor. The chunker cut the
-chunk out of the text, so it could just say where it cut. §1 item 8 shows
+chunk out of the text, so it could just say where it cut. §1 item 10 shows
 that bodies today are not always slices, so the chunker has to work in spans
 for that to hold. Page numbers depend on this path.
 
@@ -1324,7 +1372,7 @@ synthetic ones:
 
 **Before/after check.** Convert every fixture PDF with the old and the new
 code, and `diff -r` the `docs/` trees. Expect no difference. A difference is
-acceptable only if it is the separator case from §1 item 8, and it must be
+acceptable only if it is the separator case from §1 item 10, and it must be
 explained in the commit message. `edition_reference_fixture`'s long entry is
 the one fixture block over `MAX_CHUNK`, so look at it first.
 
@@ -1384,7 +1432,7 @@ Verified on both fixtures: joining the pages from
      5.8%. Keep it as the fallback after the page rule, except for
      `rebuild_reference.py` output.
    - Identify that output by the `"command"` key on its sections (§1,
-     item 9), or by T20's provenance once that exists:
+     item 11), or by T20's provenance once that exists:
 
      ```python
      # One chunk per entry strands the paragraph above a figure in the
@@ -1435,32 +1483,33 @@ Verified on both fixtures: joining the pages from
   - With sections carrying `"command": None`, it links to nothing.
 - test_13 must still link both figures by `caption`.
 
-**Real-corpus checks (owed; IMPROVEMENT.md's "before relying on it").**
-1. For several real prose manuals, compare `pymupdf4llm.to_markdown(pdf)`
-   with the joined `page_chunks=True` pages, before furniture stripping. They
-   must be identical. Report any that are not.
-2. Reconvert two or three prose manuals. Run `check_corpus.py --strict` and
-   the content check, and compare `extract_figures.py`'s summary (links by
-   caption, page and context, and how often each fallback agrees with the
-   caption) with the old conversion.
+**Joined pages equal the whole document: settled, and pinned.** §1 item 8
+shows that pymupdf4llm 1.28.2 builds them identically. Add
+`test_41b_joined_pages_are_the_whole_document`: for the prose and ref
+fixtures, `"".join(page_markdown(pdf)[0])` equals
+`pymupdf4llm.to_markdown(str(pdf))`. A future pymupdf4llm release that
+breaks this then fails CI, instead of quietly changing prose chunks.
 
-Record both in §4.
+**Real-corpus check (owed, not blocking).** Reconvert two or three prose
+manuals. Run `check_corpus.py --strict` and the content check, and compare
+`extract_figures.py`'s summary (links by caption, page and context, and how
+often each fallback agrees with the caption) with the old conversion. Record
+it in §4.
 
 **Done when**
 - [ ] Prose sections carry pages. test_16 and the new tests pass.
 - [ ] Figures in prose fall back to the paragraph rule; figures in a rebuilt
       reference don't.
-- [ ] Docs updated. Both real-corpus checks are done, or their §4 rows say
-      why not.
+- [ ] Docs updated. The real-corpus check is done, or its §4 row says why
+      not.
 
 ---
 
-### T15: One pymupdf4llm converter (gated) [2.1, "next step"]
+### T15: One pymupdf4llm converter [2.1, "next step"]
 
-**Status:** not started. **Start only after T14 is merged and its first
-real-corpus check is recorded in §4.** If that check found real manuals
-whose joined pages differ from the whole-document markdown, stop and ask the
-user.
+**Status:** not started. Start after T14. It used to wait on a real-corpus
+check that the joined pages equal the whole-document markdown. The source
+settles that (§1, item 8), so there is nothing left to wait for.
 
 **Why.** After T14 the two pymupdf4llm converters share:
 - page extraction
@@ -1644,8 +1693,9 @@ stale answer.
 
 ### T18: Retrieval experiments behind flags [2.5]
 
-**Status:** not started. Each change ships **off by default**. Make one the
-default only after the user's eval says so; that decision is the user's.
+**Status:** not started. Each change ships as a flag, **off by default**.
+Build and test the flags; don't turn any on. Whether one becomes the default
+is decided later, from the user's eval (§4), and is not part of this work.
 
 **Files.** `scripts/build_search_db.py`, `scripts/mcp_server.py`,
 `references/retrieval-measurement.md`, tests.
@@ -1768,8 +1818,10 @@ rule to catch the copies drifting apart:
    manifest. If the manifest has `converter.owns_breadcrumbs`, use it.
    Otherwise fall back to today's section-field rule (`command` or
    `confidence` present), so manifests written before this keep working.
-4. **`requirements.txt`:** don't add an upper bound without asking the user.
-   Recording the version is the fix IMPROVEMENT.md proposes.
+4. **`requirements.txt`:** leave it as it is, with no upper bound. An upper
+   bound would also block fixes. Recording the version is the fix
+   IMPROVEMENT.md proposes, and T14's test catches the one behaviour change
+   that would matter.
 5. **Tests.**
    - Put a ~40-line validator for that subset of keywords in
      `tests/_support.py`.
@@ -1872,12 +1924,15 @@ of `WS.corpus()`, then use a new `Corpus` instance for each step:
 
 ---
 
-### T23: One `collection.json` (optional; low priority) [3.6]
+### T23: One `collection.json` (not now) [3.6]
 
-**Status:** not started. **Ask the user before starting:** it means
-migrating existing corpora.
+**Status: not now. Skip this task.** IMPROVEMENT.md §3.6 records the
+decision. The bug in the item, `superseded.json` going unvalidated, is fixed
+by T04. Consolidation pays only if the old files stop being read, and that
+means migrating every existing corpus to save three small files. The design
+below is kept for when a fourth per-collection setting makes it worth it.
 
-**Design.**
+**Design (for later).**
 - `<collection>/collection.json` is
   `{"label": "...", "pins": {"<doc_id>": "<version>"}, "superseded": [{"file": ..., "superseded_by": ...}]}`,
   with every key optional.
@@ -2079,12 +2134,10 @@ you could not run. Never write a number you did not measure.
 |---|---|---|---|---|
 | T05 | Do Docling's later chunks list the title first? | the snippet in T05, on a real manual | | |
 | T05 | Docling anchored share, after the fix | rerun `references/extractor-benchmark.md`'s method | | |
-| T06 B | Would one shared entry rule change any classification or command level? | both rules over every PDF in the corpus | | |
 | T08 | Lines no longer deleted as furniture | `enrich_chunks.py --dry-run --list-furniture`, old vs new, diffed | | |
 | T10 | Search change from whole-heading front matter | `eval_search.py --json`, then `--compare` | | |
 | T11 | Identifier hit@1 and every rank moved | `eval_search.py --json`, then `--compare` | | |
-| T14 | Joined pages == whole-document markdown on real prose manuals | the T14 check 1 | | |
-| T14 | Strict check and figure links after reconverting prose | the T14 check 2 | | |
+| T14 | Strict check and figure links after reconverting prose | the T14 real-corpus check | | |
 | T16 | Search change from chain breadcrumbs | `--compare` after reconverting the references | | |
 | T18 | Each experiment flag against the default | `--compare` | | |
 
