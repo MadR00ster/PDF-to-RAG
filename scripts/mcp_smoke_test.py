@@ -26,11 +26,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SERVER = HERE / "mcp_server.py"
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+sys.path.insert(0, str(HERE))
+from _common import utf8_console  # noqa: E402
+
+utf8_console()
 
 failures: list[str] = []
 
@@ -56,6 +55,15 @@ class Client:
             raise RuntimeError(f"server closed the connection\n{self.proc.stderr.read()}")
         return json.loads(line)
 
+    def send_raw(self, line: str) -> dict:
+        """One line exactly as given, valid JSON-RPC or not, and the reply to it."""
+        self.proc.stdin.write(line + "\n")
+        self.proc.stdin.flush()
+        reply = self.proc.stdout.readline()
+        if not reply:
+            raise RuntimeError(f"server closed the connection\n{self.proc.stderr.read()}")
+        return json.loads(reply)
+
     def notify(self, method: str) -> None:
         self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method}) + "\n")
         self.proc.stdin.flush()
@@ -78,7 +86,8 @@ def probes(db: Path) -> dict:
     """Pull real terms out of the index so the checks suit this corpus."""
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    out = {"entity": None, "collection": None, "figure": None, "editions": False, "latest": None}
+    out = {"entity": None, "collection": None, "figure": None, "editions": False, "latest": None,
+           "latest_collection": None}
     if "doc_id" in {r["name"] for r in con.execute("PRAGMA table_info(documents)")}:
         out["editions"] = True
         # The newest edition of a manual that has several, by its own slug. A
@@ -86,17 +95,21 @@ def probes(db: Path) -> dict:
         # earliest -- nothing to compare it with, in a healthy corpus -- and
         # two collections may share one.
         row = con.execute(
-            "SELECT slug FROM documents WHERE is_latest = 1 AND (collection, doc_id) IN"
+            "SELECT slug, collection FROM documents WHERE is_latest = 1 AND (collection, doc_id) IN"
             " (SELECT collection, doc_id FROM documents GROUP BY collection, doc_id HAVING COUNT(*) > 1)"
             " LIMIT 1").fetchone()
-        out["latest"] = row["slug"] if row else None
+        if row:
+            out["latest"], out["latest_collection"] = row["slug"], row["collection"]
     # Probe terms come from current editions, because that is what a search
     # without a document reads: a heading that exists only in an edition a
     # pin has set aside would fail a corpus with nothing wrong with it.
-    current = " AND slug IN (SELECT slug FROM documents WHERE is_current = 1)" if out["editions"] else ""
-    row = con.execute("SELECT slug, title FROM documents WHERE 1 = 1" + current
+    # A document is named with its collection: two may each have one slug.
+    current = (" AND (collection, slug) IN (SELECT collection, slug FROM documents WHERE is_current = 1)"
+               if out["editions"] else "")
+    row = con.execute("SELECT slug, collection, title FROM documents WHERE 1 = 1" + current
                       + " ORDER BY section_count DESC LIMIT 1").fetchone()
-    out["document"], out["title_word"] = row["slug"], (row["title"].split() or ["the"])[0]
+    out["document"], out["doc_collection"] = row["slug"], row["collection"]
+    out["title_word"] = (row["title"].split() or ["the"])[0]
     row = con.execute("SELECT name FROM entities WHERE 1 = 1" + current + " LIMIT 1").fetchone()
     if row:
         out["entity"] = row["name"]
@@ -164,10 +177,26 @@ def main() -> int:
         client.notify("notifications/initialized")
         check("ping", client.call("ping").get("result") == {})
 
-        names = {t["name"] for t in (client.call("tools/list").get("result") or {}).get("tools", [])}
+        listed = (client.call("tools/list").get("result") or {}).get("tools", [])
+        names = {t["name"] for t in listed}
         check("tools/list", {"search_docs", "get_section", "lookup_entity", "list_documents", "get_toc",
                              "compare_versions", "get_figure", "get_page_image"} <= names,
               f"got {sorted(names)}")
+        check("every tool is declared read-only",
+              bool(listed) and all((t.get("annotations") or {}).get("readOnlyHint") is True and t.get("title")
+                                   for t in listed))
+
+        # A message that is not a JSON-RPC object must be answered, and must not
+        # take the server down: the next request still has to work.
+        for raw in ("[1,2]", '"ping"', "42"):
+            bad = client.send_raw(raw)
+            check(f"{raw} is refused, not fatal",
+                  bad.get("id") is None and (bad.get("error") or {}).get("code") == -32600, json.dumps(bad)[:160])
+            check(f"ping after {raw}", client.call("ping").get("result") == {})
+        check("params that are not an object are refused",
+              client.send_raw('{"jsonrpc": "2.0", "id": 99, "method": "tools/list", "params": [1]}')
+              .get("error", {}).get("code") == -32602)
+        check("ping after bad params", client.call("ping").get("result") == {})
 
         print("\nTools:")
         tool("list_documents", {}, "document(s) in the corpus")
@@ -175,8 +204,9 @@ def main() -> int:
             tool("list_documents", {"collection": p["collection"]}, "document(s)")
         tool("search_docs", {"query": p["title_word"], "limit": 3}, "result(s) for")
         tool("search_docs", {"query": f'"{p["phrase"]}"', "limit": 2}, "result(s) for")
-        tool("search_docs", {"query": p["title_word"], "document": p["document"], "limit": 2}, "result(s) for")
-        tool("get_toc", {"document": p["document"], "max_level": 1}, "pages")
+        doc = {"document": p["document"], "collection": p["doc_collection"]}
+        tool("search_docs", {"query": p["title_word"], **doc, "limit": 2}, "result(s) for")
+        tool("get_toc", {**doc, "max_level": 1}, "pages")
         tool("get_section", {"section_id": 1}, "file:")
         tool("get_section", {"section_id": 1, "context": 1}, "file:")
         if p["entity"]:
@@ -188,7 +218,7 @@ def main() -> int:
             image_tool("get_figure", {"figure_id": p["figure"]})
         else:
             print("  n/a   get_figure (this index has no figures)")
-        image_tool("get_page_image", {"document": p["document"], "page": 1})
+        image_tool("get_page_image", {**doc, "page": 1})
 
         print("\nEditions:")
         if not p["editions"]:
@@ -197,24 +227,25 @@ def main() -> int:
             # A version is per manual, and one that is not here is refused
             # with the list of those that are -- never answered from another.
             tool("search_docs", {"query": p["title_word"], "version": "1.0"}, "needs `document`", expect_error=True)
-            tool("search_docs", {"query": p["title_word"], "document": p["document"], "version": "0.0.0.1"},
+            tool("search_docs", {"query": p["title_word"], **doc, "version": "0.0.0.1"},
                  "nothing was substituted", expect_error=True)
             if p["latest"]:
                 tool("list_documents", {}, "not current")
                 # Its own slug in the answer: a comparison that ran. Not the
                 # wording of a finished one -- a prose manual with no bookmark
                 # outline has no headings to compare, and nothing wrong with it.
-                tool("compare_versions", {"document": p["latest"]}, f"({p['latest']})")
-                tool("get_toc", {"document": p["latest"], "max_level": 1}, "pages")
+                latest = {"document": p["latest"], "collection": p["latest_collection"]}
+                tool("compare_versions", latest, f"({p['latest']})")
+                tool("get_toc", {**latest, "max_level": 1}, "pages")
             else:
-                tool("compare_versions", {"document": p["document"]}, "only one edition", expect_error=True)
+                tool("compare_versions", doc, "only one edition", expect_error=True)
 
         print("\nError handling:")
         tool("search_docs", {"query": "((("}, "no searchable words", expect_error=True)
         tool("get_toc", {"document": "does-not-exist"}, "unknown document slug", expect_error=True)
         tool("get_section", {}, "section_id", expect_error=True)
         tool("get_figure", {"figure_id": 999999999}, "figure", expect_error=True)
-        tool("get_page_image", {"document": p["document"], "page": 0}, "page", expect_error=True)
+        tool("get_page_image", {**doc, "page": 0}, "page", expect_error=True)
         tool("search_docs", {"query": "x", "collection": "nope-not-real"}, "unknown collection", expect_error=True)
         tool("search_docs", {"query": "zzzqqxyw", "limit": 3}, "no matches")
         # One impossible word must not sink an otherwise good question -- nor

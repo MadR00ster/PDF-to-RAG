@@ -20,12 +20,15 @@ A figure is attached to a section by, in order of trust:
   caption  Its own caption ("Figure 62. Tri-State Bus Contention") appears as a
            line of that section. The List of Figures never matches: its rows
            carry dot leaders and page numbers.
-  page     Where the sections carry page numbers (rebuild_reference.py,
-           convert_docling.py): the figure's page belongs to exactly one
-           section. A page shared by two sections ties nothing.
-  context  Where they carry none: the paragraph just above the figure is found
-           in a section shortly after the previous figure's, or else in exactly
-           one section of the whole document. Never used where pages exist.
+  page     Where the sections carry page numbers (every converter here): the
+           figure's page belongs to exactly one section. A page shared by two
+           sections ties nothing.
+  context  The paragraph just above the figure is found in a section shortly
+           after the previous figure's, or else in exactly one section of the
+           whole document. Where the page rule ties nothing, and wherever the
+           sections carry no pages. Never used on a reference rebuilt one chunk
+           per entry (rebuild_reference.py), where it is right 5.8% of the
+           time.
   (none)   None of those. The crop is still written and served by page, just
            not attached to a section -- a guessed section would present the
            diagram as illustrating text it does not illustrate.
@@ -61,12 +64,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
+from _common import utf8_console  # noqa: E402
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+utf8_console()
 
 try:
     import pymupdf
@@ -408,6 +408,22 @@ def render(page, rect, path: Path, dpi: int, max_px: int) -> tuple[int, int]:
     return pix.width, pix.height
 
 
+def link_uncaptioned(linker: Linker, figure: dict, paragraph_rule: bool) -> tuple[int | None, str | None]:
+    """(section, how) for a figure whose caption is no use: its page first,
+    then the paragraph above it. One chunk per entry strands that paragraph in
+    the previous chunk -- 5.8% right on a rebuilt command reference, against
+    96-99% on documents chunked by heading -- so `paragraph_rule` is off for
+    those, and the page is all they have."""
+    section = how = None
+    if linker.has_pages:
+        section = linker.by_page(figure["page"])
+        how = "page" if section is not None else None
+    if section is None and figure["context"] and (paragraph_rule or not linker.has_pages):
+        section = linker.by_context(figure["context"])
+        how = "context" if section is not None else None
+    return section, how
+
+
 def extract(doc_dir: Path, pdf_path: Path, dry_run: bool, dpi: int, max_px: int) -> dict:
     manifest = json.loads((doc_dir / "manifest.json").read_text(encoding="utf-8-sig"))
     sections = manifest.get("sections", [])
@@ -451,6 +467,9 @@ def extract(doc_dir: Path, pdf_path: Path, dry_run: bool, dpi: int, max_px: int)
     if not dry_run:
         out_dir.mkdir(exist_ok=True)
     linker = Linker(texts, [(s.get("page_start"), s.get("page_end")) for s in sections])
+    # rebuild_reference.py writes a "command" on every section, null where none
+    # is attributed; its presence says which converter made this.
+    paragraph_rule = not any("command" in s for s in sections)
     entries, per_page, unlinked, disagree = [], Counter(), [], []
     for f in figures:
         section = how = None
@@ -469,19 +488,8 @@ def extract(doc_dir: Path, pdf_path: Path, dry_run: bool, dpi: int, max_px: int)
                     if guess != section and method == "context" and len(disagree) < 3:
                         disagree.append(f"p.{f['page']} {f['caption'][:40]}: caption -> "
                                         f"{sections[section]['file']}, context -> {sections[guess]['file']}")
-        # Pages where the converter tracked them, the paragraph above where it
-        # did not. Never both: the context method scored 96-99% against the
-        # caption on documents chunked by heading, and 5.8% on a command
-        # reference rebuilt into one chunk per entry, where a bold caption
-        # starts its own chunk and leaves the paragraph above it in the
-        # previous one. Whichever signal a document supports, it has one.
         if section is None:
-            if linker.has_pages:
-                section = linker.by_page(f["page"])
-                how = "page" if section is not None else None
-            elif f["context"]:
-                section = linker.by_context(f["context"])
-                how = "context" if section is not None else None
+            section, how = link_uncaptioned(linker, f, paragraph_rule)
         if section is not None:
             linker.cursor = section
         elif f["caption"] and len(unlinked) < 3:
@@ -567,7 +575,7 @@ def report(r: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("collection", type=Path, help="folder holding source/ and docs/")
+    ap.add_argument("collection", type=Path, help="folder holding source/ and docs/, or a corpus root of several")
     ap.add_argument("--only", action="append", default=[], help="restrict to this slug (repeatable)")
     ap.add_argument("--skip", action="append", default=[], help="exclude this slug (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="detect and link, write nothing")
@@ -578,31 +586,30 @@ def main() -> int:
     ap.add_argument("--max-px", type=int, default=MAX_PX, help=f"cap on a crop's long edge (default {MAX_PX})")
     args = ap.parse_args()
 
-    coll = args.collection.resolve()
-    docs = coll / "docs"
-    if not docs.is_dir():
-        sys.exit(f"No docs/ under {coll}")
+    root = args.collection.resolve()
+    collections = editions.collections_under(root)
+    if not collections:
+        sys.exit(f"No docs/ under {root}")
 
     jobs = []
-    for mp in sorted(docs.glob("*/manifest.json")):
-        slug = mp.parent.name
-        if slug.endswith((".old", ".new")) or slug.startswith((".", "_")):
-            continue
-        if slug in args.skip or (args.only and slug not in args.only):
-            continue
-        source = json.loads(mp.read_text(encoding="utf-8-sig")).get("source_pdf") or ""
-        pdf = editions.find_source_pdf(coll, source)
-        if pdf is None:
-            print(f"  !! {slug}: source PDF {source!r} is in neither {editions.SOURCE_DIR}/ nor "
-                  f"{coll.name}/ -- skipped")
-            continue
-        jobs.append((str(mp.parent), str(pdf), args.dry_run, args.dpi, args.max_px))
+    for coll in collections:
+        for doc_dir in editions.document_dirs(coll / "docs"):
+            mp, slug = doc_dir / "manifest.json", doc_dir.name
+            if slug in args.skip or (args.only and slug not in args.only):
+                continue
+            source = json.loads(mp.read_text(encoding="utf-8-sig")).get("source_pdf") or ""
+            pdf = editions.find_source_pdf(coll, source)
+            if pdf is None:
+                print(f"  !! {slug}: source PDF {source!r} is in neither {editions.SOURCE_DIR}/ nor "
+                      f"{coll.name}/ -- skipped")
+                continue
+            jobs.append((str(mp.parent), str(pdf), args.dry_run, args.dpi, args.max_px))
 
     workers = max(1, min(args.jobs, len(jobs)))
     threads = args.threads or ((os.cpu_count() or 2) // workers if workers > 1 else 0)
     jobs = [j + (threads,) for j in jobs]
 
-    print(f"{coll.name} ({'DRY RUN -- nothing written' if args.dry_run else 'writing'}), "
+    print(f"{root.name} ({'DRY RUN -- nothing written' if args.dry_run else 'writing'}), "
           f"{len(jobs)} document(s)" + (f", {workers} at a time, {threads} threads each" if workers > 1 else ""),
           flush=True)
     totals = Counter()

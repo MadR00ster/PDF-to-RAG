@@ -39,37 +39,42 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
+from _common import utf8_console  # noqa: E402
 from build_search_db import clean_heading, find_collections, is_noise  # noqa: E402
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+utf8_console()
 
 BOILERPLATE_RE = re.compile(
     r"copyright|trademark|legal|licen[cs]e|third.party|end.user|disclaimer|"
     r"revision history|contacting|customer support|about this", re.I)
 
 
-def answered(path: Path | None) -> set[tuple[str, str]]:
-    """(slug, file) of every section some question already points at."""
+def answered(path: Path | None) -> set[tuple[str | None, str, str]]:
+    """(collection, slug, file) of every section some question already points
+    at; the collection is None where the answer does not name one, and then
+    stands for every collection. An answer given as a quote names no file and
+    excludes nothing."""
     used = set()
     if path and path.is_file():
         for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line and not line.startswith("//"):
-                used.update((a["slug"], a["file"]) for a in json.loads(line).get("answers", []))
+                used.update((a.get("collection"), a["slug"], a["file"])
+                            for a in json.loads(line).get("answers", []) if "slug" in a and "file" in a)
     return used
 
 
 def pools(root: Path, min_chars: int, used: set, figures_only: bool) -> dict:
-    """slug -> (doc_dir, [(section, its figures)]) of sections worth asking about."""
+    """(collection, slug) -> (doc_dir, [(section, its figures)]) of sections
+    worth asking about. Keyed by both: two collections may each have a
+    document of one slug."""
     out = {}
-    for _key, _display, docs in find_collections(root):
-        manifests = {mp: json.loads(mp.read_text(encoding="utf-8-sig"))
-                     for mp in sorted(docs.glob("*/manifest.json"))
-                     if not (mp.parent.name.endswith((".old", ".new")) or mp.parent.name.startswith((".", "_")))}
+    for key, _display, docs in find_collections(root):
+        # A document is its folder, as it is to the index build.
+        manifests = {d / "manifest.json": json.loads((d / "manifest.json").read_text(encoding="utf-8-sig"))
+                     for d in editions.document_dirs(docs)}
+        for mp, m in manifests.items():
+            m["slug"] = mp.parent.name
         entries = [{"slug": m["slug"], "doc_id": m.get("doc_id") or m["slug"], "version": m.get("version"),
                     "version_and_later": m.get("version_and_later") is True} for m in manifests.values()]
         try:
@@ -91,15 +96,22 @@ def pools(root: Path, min_chars: int, used: set, figures_only: bool) -> dict:
                         figures.setdefault(f["section"], []).append(f)
             pool = []
             for s in manifest.get("sections", []):
-                if (manifest["slug"], s["file"]) in used or (s.get("chars") or 0) < min_chars:
+                if {(key, manifest["slug"], s["file"]), (None, manifest["slug"], s["file"])} & used:
                     continue
                 if BOILERPLATE_RE.search(clean_heading(s.get("heading") or "")):
+                    continue
+                # Read only once the heading has let it through.
+                try:
+                    size = len((mp.parent / s["file"]).read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    continue
+                if size < min_chars:
                     continue
                 if figures_only and s["file"] not in figures:
                     continue
                 pool.append((s, figures.get(s["file"], [])))
             if pool:
-                out[manifest["slug"]] = (mp.parent, pool)
+                out[(key, manifest["slug"])] = (mp.parent, pool)
     return out
 
 
@@ -120,13 +132,19 @@ def main() -> int:
         print("Nothing to sample -- check --root, and for --figures that extract_figures.py has run.",
               file=sys.stderr)
         return 1
-    weight = {slug: math.sqrt(len(pool)) for slug, (_, pool) in docs.items()}
+    weight = {doc: math.sqrt(len(pool)) for doc, (_, pool) in docs.items()}
     total = sum(weight.values())
+    # The collection is named only where the slug alone is ambiguous: in the
+    # whole corpus, not only among the documents that had sections to sample.
+    every = [d.name for _key, _display, coll in find_collections(Path(args.root).resolve())
+             for d in editions.document_dirs(coll)]
+    shared = {slug for slug in every if every.count(slug) > 1}
 
     n = 0
-    for slug in sorted(docs):
-        doc_dir, pool = docs[slug]
-        quota = max(1, round(args.n * weight[slug] / total))
+    for doc in sorted(docs):
+        key, slug = doc
+        doc_dir, pool = docs[doc]
+        quota = max(1, round(args.n * weight[doc] / total))
         rng.shuffle(pool)
         taken = 0
         for section, figures in pool:
@@ -138,7 +156,7 @@ def main() -> int:
                 continue  # contents pages and figure lists answer nothing
             taken += 1
             n += 1
-            print(f"=== [{n}] {slug} · {section['file']}")
+            print(f"=== [{n}] {slug} · {section['file']}" + (f" · collection {key}" if slug in shared else ""))
             print(f"heading: {heading}")
             for f in figures:
                 print(f"figure: {f.get('caption') or '(no caption)'} -> {(doc_dir / f['file']).as_posix()}")

@@ -15,6 +15,11 @@ unless current_versions.json pins another (see editions.py).
 Usage:
   python scripts/build_index.py "Synopsys Manual"
   python scripts/build_index.py "Tessent Manual"
+  python scripts/build_index.py "D:/Manuals"        every collection under a corpus root
+
+Given a corpus root, each collection that has no problems is written and each
+that has is reported with nothing written for it; the exit status is 1 if any
+did.
 """
 from __future__ import annotations
 
@@ -28,13 +33,11 @@ import editions  # noqa: E402
 
 def load_manuals(docs_dir: Path) -> list[dict]:
     manuals = []
-    for manifest_path in sorted(docs_dir.glob("*/manifest.json")):
-        slug = manifest_path.parent.name
-        # Ignore scratch/backup dirs so a rebuild left-over is never listed
-        # as a real manual.
-        if slug.endswith((".old", ".new")) or slug.startswith((".", "_")):
-            continue
-        m = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    # Backups and interrupted builds (.old, .new, dot, underscore) are not
+    # manuals; editions.is_document_dir is the rule every script shares.
+    for doc_dir in editions.document_dirs(docs_dir):
+        slug = doc_dir.name
+        m = json.loads((doc_dir / "manifest.json").read_text(encoding="utf-8-sig"))
         manuals.append(
             {
                 "slug": slug,
@@ -68,22 +71,48 @@ def mark_current(vendor_dir: Path, manuals: list[dict]) -> list[str]:
     return problems
 
 
-def load_superseded(vendor_dir: Path) -> list[dict]:
+def load_superseded(vendor_dir: Path, slugs: set[str]) -> list[dict]:
+    """The hand-kept list of PDFs set aside for a newer edition.
+
+    A file that cannot be read, or an entry without `file` and
+    `superseded_by`, stops the run before anything is written: the same
+    entries check_corpus.py's superseded-invalid reports. An entry naming a
+    slug that is not here is only a warning, since the list outlives
+    conversions.
+    """
     p = vendor_dir / "superseded.json"
-    return json.loads(p.read_text(encoding="utf-8-sig")) if p.exists() else []
+    if not p.exists():
+        return []
+    try:
+        entries = json.loads(p.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as exc:
+        sys.exit(f"Cannot read {p}: {exc}")
+    if not isinstance(entries, list):
+        sys.exit(f'!! {p.name} must be a list of {{"file": ..., "superseded_by": ...}} entries')
+    bad = [e for e in entries
+           if not (isinstance(e, dict) and isinstance(e.get("file"), str) and e["file"]
+                   and isinstance(e.get("superseded_by"), str) and e["superseded_by"])]
+    for e in bad:
+        print(f'!! {p.name}: entry {e!r} needs a non-empty "file" and "superseded_by"')
+    if bad:
+        sys.exit(1)
+    for e in entries:
+        if e["superseded_by"] not in slugs:
+            print(f"!! {p.name}: {e['file']} is superseded by {e['superseded_by']!r}, "
+                  "which is not in docs/")
+    return entries
 
 
 def load_vendor_label(vendor_dir: Path) -> str:
     """Prose name for this vendor, used in docs/README.md's intro line.
     Optional vendor.json {"label": "..."} overrides the default, which is
-    just the folder name minus a trailing " Manual" (e.g. "Tessent" ->
-    "Siemens Tessent")."""
+    the folder name."""
     p = vendor_dir / "vendor.json"
     if p.exists():
         label = json.loads(p.read_text(encoding="utf-8-sig")).get("label")
         if label:
             return label
-    return vendor_dir.name.replace(" Manual", "")
+    return vendor_dir.name
 
 
 def write_index_json(docs_dir: Path, manuals: list[dict], superseded: list[dict]) -> None:
@@ -103,7 +132,7 @@ def write_readme(vendor_dir: Path, docs_dir: Path, manuals: list[dict], supersed
     lines = [
         f"# {vendor_dir.name} Docs (Markdown, RAG-ready)",
         "",
-        f"Converted from the {vendor_label} EDA tool PDFs in `../{editions.SOURCE_DIR}/`. Each manual "
+        f"Converted from the {vendor_label} PDFs in `../{editions.SOURCE_DIR}/`. Each manual "
         "has its own folder with a full markdown dump plus per-section files for "
         "finer-grained retrieval.",
         "",
@@ -139,7 +168,7 @@ def write_readme(vendor_dir: Path, docs_dir: Path, manuals: list[dict], supersed
         "    manifest.json     <- title, page count, PDF TOC, section list",
         "    full.md           <- entire manual as one markdown file",
         "    sections/",
-        "      001-*.md ...    <- split on headings, one chunk per file",
+        "      0001-*.md ...   <- split on headings, one chunk per file",
         "```",
     ]
     if superseded:
@@ -177,16 +206,24 @@ def report_orphans(vendor_dir: Path, manuals: list[dict], superseded: list[dict]
     )
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit("Usage: python build_index.py <vendor-folder>")
-    vendor_dir = Path(sys.argv[1]).resolve()
+def build_collection(vendor_dir: Path) -> bool:
+    """Write one collection's index.json and README.md. False, with nothing
+    written, if its editions cannot be ordered or its superseded.json cannot be
+    used."""
     docs_dir = vendor_dir / "docs"
-    if not docs_dir.exists():
-        sys.exit(f"No docs/ folder under {vendor_dir}")
-
-    manuals = load_manuals(docs_dir)
-    superseded = load_superseded(vendor_dir)
+    try:
+        manuals = load_manuals(docs_dir)
+    except (OSError, ValueError, KeyError) as exc:
+        # ValueError covers a manifest that is not JSON; KeyError one missing
+        # a field the index needs.
+        print(f"!! A manifest under {docs_dir} could not be read: {exc!r}")
+        return False
+    try:
+        superseded = load_superseded(vendor_dir, {m["slug"] for m in manuals})
+    except SystemExit as stop:
+        if isinstance(stop.code, str):
+            print(stop.code)
+        return False
     problems = mark_current(vendor_dir, manuals)
     if problems:
         # Before anything is written. With a pin that matches nothing, the
@@ -197,11 +234,29 @@ def main() -> None:
               "stops on these too:")
         for p in problems:
             print(f"  !! {p}")
-        sys.exit(1)
+        return False
 
     write_index_json(docs_dir, manuals, superseded)
     write_readme(vendor_dir, docs_dir, manuals, superseded)
     report_orphans(vendor_dir, manuals, superseded)
+    return True
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        sys.exit("Usage: python build_index.py <vendor-folder or corpus root>")
+    path = Path(sys.argv[1]).resolve()
+    collections = editions.collections_under(path)
+    if not collections:
+        sys.exit(f"No docs/ folder under {path}")
+    failed = []
+    for vendor_dir in collections:
+        if len(collections) > 1:
+            print(f"\n{vendor_dir.name}")
+        if not build_collection(vendor_dir):
+            failed.append(vendor_dir.name)
+    if failed:
+        sys.exit(1 if len(collections) == 1 else f"\nNothing was written for: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

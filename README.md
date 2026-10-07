@@ -26,7 +26,7 @@ own.
       <slug>/                      one edition of one manual
         manifest.json              title, version, page count, PDF table of contents
         full.md                    the whole document
-        sections/NNN-slug.md       retrieval chunks, about 2-9 KB each
+        sections/NNNN-slug.md      retrieval chunks, about 2-9 KB each
         figures.json, figures/     every figure, cropped and tied to its section
 ```
 
@@ -63,6 +63,8 @@ that writes the answer itself is planned, not built: see
 
 ## Quick start
 
+Needs Python 3.10 or later: pymupdf4llm 1.28 requires it.
+
 ```bash
 pip install -r scripts/requirements.txt
 ```
@@ -79,7 +81,7 @@ part or error code) and names the converter to use:
 
 ```bash
 python scripts/convert_manual.py my-corpus/vendor/new_docs/guide.pdf --title "Widget User Guide"
-python scripts/rebuild_reference.py my-corpus/vendor/new_docs/commands.pdf --slug widget-cmds --title "Widget Command Reference"
+python scripts/convert_manual.py my-corpus/vendor/new_docs/commands.pdf --title "Widget Command Reference"
 ```
 
 Each converter writes `my-corpus/vendor/docs/<slug>/` and then moves the PDF to
@@ -113,8 +115,9 @@ another client, register the command `python my-corpus/mcp_server.py` as a
 stdio server; it reads the index beside it. The index is a snapshot: rebuild it
 after any conversion, which also refreshes the server copy.
 
-Prose manuals convert better with `convert_docling.py`, which puts a page
-number on every chunk. It needs Docling, a multi-gigabyte install that is
+`convert_manual.py` puts a page range on every chunk of a prose manual.
+`convert_docling.py` adds breadcrumbs anchored to the PDF's table of contents,
+each with a confidence. It needs Docling, a multi-gigabyte install that is
 deliberately left out of `requirements.txt`: `pip install docling`.
 
 To add a newer release of a manual later, drop its PDF in `new_docs/` and
@@ -144,15 +147,16 @@ useless fragments.
 | script | use |
 |---|---|
 | `pick_extractor.py` | inspect a PDF and recommend a converter |
-| `convert_manual.py` | prose PDF to chunks (pymupdf4llm) |
-| `convert_docling.py` | prose PDF to chunks with page numbers (Docling) |
-| `rebuild_reference.py` | reference PDF to chunks with pages and entry names |
+| `convert_manual.py` | PDF to chunks with page numbers, prose or reference by its outline (pymupdf4llm) |
+| `convert_docling.py` | prose PDF to chunks with page numbers and TOC-anchored breadcrumbs (Docling) |
+| `rebuild_reference.py` | reference PDF to chunks with pages and entry names (what `convert_manual.py` runs for a reference) |
 | `enrich_chunks.py` | strip page headers and footers, add breadcrumbs |
 | `extract_figures.py`, `ocr_figures.py` | crop figures; read the words in raster ones |
 | `build_index.py` | regenerate a collection's catalog |
 | `editions.py` | list editions and pins; add versions to an older corpus; move its PDFs into `source/` |
 | `check_corpus.py` | check any converted document against the output contract |
 | `build_search_db.py` | corpus to one SQLite FTS5 index |
+| `export_chunks.py` | every chunk as one JSON line, for a vector store or another pipeline |
 | `mcp_server.py`, `mcp_smoke_test.py` | serve the index; test the server end to end |
 | `sample_sections.py`, `eval_search.py` | build a question set; score search against it |
 
@@ -189,11 +193,15 @@ catalog of ways a corpus goes wrong is in
 ## Tests
 
 ```bash
-python tests/test_pipeline.py
+python -m unittest discover -s tests -v    # the whole suite
+python tests/run_each.py                   # every test alone, in its own process
 ```
 
-Plain `unittest`. The fixture PDFs are generated with a known table of
-contents, so nothing is checked in. Run it before changing a converter.
+Plain `unittest`, one file per area: converters, server, figures, checker,
+editions. The fixture PDFs are generated with a known table of contents, so
+nothing is checked in. Run it before changing a converter.
+GitHub Actions runs it on Linux and Windows, with Python 3.10 and 3.13,
+on every push.
 
 ## Licence
 

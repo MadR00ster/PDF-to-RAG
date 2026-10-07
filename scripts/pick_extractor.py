@@ -24,7 +24,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -37,68 +36,12 @@ except ImportError:  # older wheels
     except ImportError:
         sys.exit("Missing dependency. Run: pip install -r scripts/requirements.txt")
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import detect_shape, looks_like_entry, pick_command_level, utf8_console  # noqa: E402,F401
 
-# A title that looks like a command / API entry rather than a prose heading.
-# Same shape of test rebuild_reference.py uses to find its command level.
-IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]*$")
+utf8_console()
 
 DOCLING_SECONDS_PER_PAGE = 1.2   # measured, CPU, no OCR
-
-
-MESSAGE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}-\d{2,5}$")
-
-
-def looks_like_entry(title: str) -> bool:
-    t = (title or "").strip()
-    if MESSAGE_CODE_RE.match(t):
-        return True
-    if not t or " " in t and not t.split()[0].endswith(("_",)):
-        # Allow "tessent -shell" style two-token entries, reject prose.
-        parts = t.split()
-        if not (len(parts) == 2 and parts[1].startswith("-")):
-            return "_" in t and IDENTIFIER_RE.match(t.split()[0] or "") is not None
-    return bool(IDENTIFIER_RE.match(t)) and ("_" in t or t.islower())
-
-
-# A dictionary is substantially *made of* entries, so they recur every few
-# pages. Without this, a prose manual with one appendix listing 22 option names
-# at L6 was classified as a reference -- 22 entries across 1,648 pages.
-MIN_ENTRIES_PER_PAGE = 0.10
-
-
-def detect_shape(toc, pages: int) -> tuple[str, str]:
-    """Reference/dictionary if some TOC level is mostly identifier-like titles.
-
-    Keyed on a level rather than the whole TOC because a dictionary keeps its
-    entries at one depth (tshell-ref at L3, syn2 at L1) under prose chapter
-    headings that would otherwise dilute the signal. Density then separates a
-    real dictionary from a prose manual that happens to list some identifiers.
-    """
-    by_level: dict[int, list[str]] = {}
-    for lvl, title, _page in toc:
-        by_level.setdefault(lvl, []).append(title or "")
-    best = None
-    for lvl, titles in sorted(by_level.items()):
-        n = sum(1 for t in titles if looks_like_entry(t))
-        if n >= 20 and n >= 0.3 * len(titles):
-            if best is None or n > best[1]:
-                best = (lvl, n, len(titles))
-    if not best:
-        return "prose", "no level is dominated by identifier-like titles"
-
-    lvl, n, total = best
-    per_page = n / max(pages, 1)
-    if per_page < MIN_ENTRIES_PER_PAGE:
-        return "prose", (f"L{lvl} has {n} identifier-like titles but only "
-                         f"{per_page:.3f}/page -- a list inside a prose manual")
-    if per_page < 0.15:
-        return "mixed", (f"L{lvl}: {n}/{total} titles look like entries, {per_page:.2f}/page")
-    return "reference", f"L{lvl}: {n}/{total} titles look like entries, {per_page:.2f}/page"
 
 
 def anchoring_band(density: float) -> tuple[str, str]:
@@ -162,7 +105,7 @@ def report(path: Path, verbose: bool) -> None:
         doc.close()
         return
 
-    shape, why = detect_shape(toc, pages)
+    shape, why, level = detect_shape(toc, pages)
     density = len(toc) / max(pages, 1)
     starts = Counter(p for _, _, p in toc)
     multi = sum(1 for _p, c in starts.items() if c >= 2)
@@ -170,11 +113,25 @@ def report(path: Path, verbose: bool) -> None:
 
     print(f"  shape: {shape:10s} ({why})")
 
+    if shape in ("reference", "mixed"):
+        # rebuild_reference.py picks its own level, by a different test; where
+        # it would take none, or another one, it converts without a word.
+        picked = pick_command_level(toc)
+        if picked is None:
+            print("  !! rebuild_reference.py would attribute nothing here: it takes no TOC "
+                  f"level for commands. Pass --command-level {level}.")
+        elif picked != level:
+            print(f"  !! rebuild_reference.py would take L{picked} for commands, where this "
+                  f"check found entries at L{level}. Check which is right; pass "
+                  "--command-level if needed.")
+
     if shape == "mixed":
         print("  => Mixed: a prose manual with a substantial entry section.")
         print("     Inspect before converting. If the entries sit in their own")
         print("     chapters, convert those with rebuild_reference.py and the rest")
         print("     as prose, rather than forcing one path over the whole document.")
+        print("     Or convert_manual.py --shape reference --prose-outside-entries, which")
+        print("     attributes only the titles that look like commands (measure before relying on it).")
         doc.close()
         return
 

@@ -204,6 +204,17 @@ was listed as a real document — 13 manuals instead of 12.
 Keep backups outside `docs/`, and defensively skip `.old` / `.new` / dot-prefixed
 directories in any index builder.
 
+That skip was in `build_index.py` only. The search index, `enrich_chunks.py`
+and the OCR pass still read every `docs/*/manifest.json`, and
+`rebuild_reference.py` built each conversion in `docs/<slug>.new/`, which it
+never cleared. So an interrupted run's leftover section files shipped with
+the next run, and a `.new` copy was a second document with the same slug,
+which stopped the index build. Now every converter builds in
+`.rebuild-backup/.staging/<slug>/`, cleared first and moved into `docs/`
+whole. Every script that walks `docs/` uses one rule,
+`editions.is_document_dir`, and the checker's copy of it is tested against
+that one.
+
 ## 11. Verification artifacts
 
 A verification pass reported **5,347 deleted content lines**. Investigation
@@ -223,8 +234,10 @@ Recorded so a future pass doesn't rediscover them as surprises.
   for exact identifier lookup and weakest where a question avoids the manual's
   own words. Measure that gap with a test set (SKILL.md, "Measuring
   retrieval") before adding embeddings for it.
-- **Page coverage is partial** — 46% of chunks, i.e. only the documents rebuilt
-  with page tracking. A full-corpus rebuild would fix it at the cost of hours.
+- **Prose converted before `convert_manual.py` tracked pages has none.** Every
+  converter writes `page_start`/`page_end` now, but a document converted
+  earlier keeps what it had (46% of chunks across one corpus, the documents
+  rebuilt with page tracking) until it is reconverted.
 - **Figure text is unusable soup** — `<!-- Start of picture text -->SoC<br>CPU<br>…`.
   Diagram labels with no structure, diluting embeddings. Left in place because
   deleting the markers would make it indistinguishable from prose. The figures

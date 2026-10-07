@@ -2,12 +2,12 @@
 """Convert a prose PDF with Docling, anchoring breadcrumbs to the bookmark TOC.
 
 Same output layout as convert_manual.py -- docs/<slug>/{manifest.json, full.md,
-sections/NNN-heading-slug.md} -- so build_index.py and build_search_db.py work
+sections/NNNN-heading-slug.md} -- so build_index.py and build_search_db.py work
 on it unchanged. What differs is the metadata each chunk carries:
 
-  * page_start / page_end on every chunk, from Docling's provenance. The
-    pymupdf4llm prose path carries none, and without pages a breadcrumb cannot
-    be audited positionally at all.
+  * page_start / page_end on every chunk, from Docling's provenance. Without
+    pages a breadcrumb cannot be audited positionally at all; convert_manual.py
+    tracks them too now, from pymupdf4llm's pages.
   * breadcrumb built from the PDF's bookmark TOC rather than from detected
     headings, so an artifact like "Note:" or a shell transcript line can never
     become an ancestor. Docling offers those as headings; measurements are in
@@ -47,21 +47,18 @@ import re
 import sys
 from pathlib import Path
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
+from _common import BREADCRUMB_SEP, slugify as common_slugify, strip_emphasis, utf8_console  # noqa: E402
+
+utf8_console()
 
 try:
     import pymupdf
 except ImportError:
     sys.exit("Missing dependency. Run: pip install -r scripts/requirements.txt")
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import editions  # noqa: E402
 
-BREADCRUMB_SEP = " › "
 DEFAULT_MAX_CHARS = 9000        # matches the chunk target used elsewhere here
 WS = re.compile(r"\s+")
 NL = chr(10)   # written this way so patch tooling cannot mangle an escape
@@ -86,21 +83,14 @@ def require_docling():
 
 
 def normalize(s: str) -> str:
-    s = re.sub(r"^#{1,6}\s*", "", (s or "").strip())
-    for _ in range(3):
-        t = re.sub(r"^(\*\*|__|\*|_|`)(.*?)\1$", r"\2", s.strip())
-        if t == s:
-            break
-        s = t
-    s = WS.sub(" ", s).strip()
+    s = WS.sub(" ", strip_emphasis(s or "")).strip()
     s = re.sub(r"^(chapter|appendix|section)\s+\w{1,4}\s*[:.]?\s*", "", s, flags=re.I)
     s = re.sub(r"^\d+(\.\d+)*\s*", "", s)
     return s.lower().strip()
 
 
 def slugify(text: str, maxlen: int = 60) -> str:
-    s = re.sub(r"[^0-9A-Za-z]+", "-", normalize(text)).strip("-").lower()
-    return (s[:maxlen].rstrip("-") or "section")
+    return common_slugify(normalize(text), maxlen, "section")
 
 
 def dedupe(slug: str, seen: dict) -> str:
@@ -188,10 +178,14 @@ def resolve_ancestors(c, toc, toc_pos, by_title, spans, doc):
     and taking the nearest match regardless labelled a page-180 chunk with a
     section on page 190, and a page-83 overview with chapter 5 on page 150,
     both as `anchored`: the confidence consumers trust most.
+
+    Docling lists a chunk's headings outermost first, so the chunk's own
+    heading is the last one; the first is the document's title once Docling
+    has labelled the cover.
     """
     pages = sorted(c["pages"])
     first = pages[0] if pages else None
-    norm = normalize((c["headings"] or [""])[0])
+    norm = normalize((c["headings"] or [""])[-1])
 
     if norm and norm in by_title and first is not None:
         last = pages[-1]
@@ -255,7 +249,7 @@ def merge_sections(resolved, max_chars):
     """
     merged, buf = [], None
     for r in resolved:
-        head = (r["headings"] or [""])[0]
+        head = (r["headings"] or [""])[-1]
         lineage = common_lineage(buf["ancestors"], r["ancestors"]) if buf else None
         if (lineage is not None
                 and len(buf["text"]) + len(r["text"]) + 80 <= max_chars):
@@ -320,8 +314,9 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
           f"(target {max_chars:,} chars)")
 
     out_dir = out_root / slug
-    sections_dir = out_dir / "sections"
-    sections_dir.mkdir(parents=True, exist_ok=True)
+    staging = editions.staging_dir(out_root, slug)
+    sections_dir = staging / "sections"
+    sections_dir.mkdir()
 
     seen: dict = {}
     entries, anchored, fell_back = [], 0, 0
@@ -342,7 +337,6 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
             "file": f"sections/{filename}",
             "heading": c["heading"] or "(untitled)",
             "level": 1,
-            "chars": len(body),
             "page_start": pages[0] if pages else None,
             "page_end": pages[-1] if pages else None,
             "breadcrumb": crumb,
@@ -350,7 +344,7 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
         })
 
     full_md = "\n\n".join(full_parts)
-    (out_dir / "full.md").write_text(full_md, encoding="utf-8")
+    (staging / "full.md").write_text(full_md, encoding="utf-8")
 
     manifest = editions.with_edition_fields({
         "source_pdf": plan.source_name,
@@ -361,10 +355,13 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
         "toc": [{"level": lvl, "title": t.strip(), "page": pg} for lvl, t, pg in toc],
         "sections": entries,
         "full_md_chars": len(full_md),
+        "schema_version": editions.MANIFEST_SCHEMA_VERSION,
+        "converter": editions.converter_record("convert_docling.py", "docling", "docling", True),
     }, plan.doc_id, plan.version, plan.later)
     # ensure_ascii=True: a non-UTF-8 default locale would otherwise mangle this
     # for any tool that opens it without an explicit encoding= argument.
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    editions.publish(staging, out_dir)
 
     n = len(entries) or 1
     with_pages = sum(1 for e in entries if e["page_start"] is not None)

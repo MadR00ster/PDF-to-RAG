@@ -216,8 +216,10 @@ shared, one place to look when it breaks.
 - [ ] `mcp_smoke_test.py --url` to drive the same checks over HTTP.
 - [ ] Emit client configs: VS Code (`servers`, `"type": "http"`) and Cursor
       (`mcpServers`, `url`), each with the auth header.
-- [ ] Fix `build_search_db.py`: `documents.slug` is the primary key, so two
+- [x] Fix `build_search_db.py`: `documents.slug` is the primary key, so two
       collections sharing a slug crash the build. A multi-vendor corpus hits it.
+      Done: documents are keyed by collection and slug, and every server
+      lookup names both.
 - [ ] Verify both clients accept the server's responses (handshake, tool list,
       image content from `get_figure`).
 

@@ -39,13 +39,15 @@ recall for anything destructive.
     <slug>/                        one edition of one manual
       manifest.json                title, doc_id, version, page_count, PDF TOC, section list
       full.md                      whole document, un-chunked fallback
-      sections/NNN-slug.md         retrieval chunks, ~2-9 KB
+      sections/NNNN-slug.md       retrieval chunks, ~2-9 KB
       figures.json                 figures: page, box, caption, owning section
       figures/pNNNNN-K.png         one crop per figure
 ```
 
 A corpus holding several collections (one per vendor, say) repeats this under
-each collection folder. A converter moves a PDF from `new_docs/` to `source/`
+each collection folder. Two collections may each have a document of the same
+slug: the index keys documents by collection and slug, and a tool call naming
+such a document passes `collection` as well. A converter moves a PDF from `new_docs/` to `source/`
 as its last step, so what is left in `new_docs/` is what has not been
 converted. A collection that still has its PDFs beside `docs/` works unchanged;
 `scripts/editions.py migrate` moves them.
@@ -102,10 +104,15 @@ What breaks, and what it damages:
   `source/`. In a help folder that means inside the vendor's install tree.
   Pass `--out-root`.
 - **`enrich_chunks.py` rewrites section files and `manifest.json` in place, with
-  no backup.** Its furniture pass deletes any line repeated across 5% of
-  sections (at least 10), which is right for PDF page headers and can delete real content in
-  text another tool produced. Run `--dry-run` first on anything this skill did
-  not convert, and back the folder up.
+  no backup.** Its furniture pass deletes `Feedback` lines, lines matching the
+  document's own title that recur in at least 3 sections, and the bare page
+  numbers and `Chapter N:` headers within 3 lines of either. A line that only
+  begins the title is kept: it has to start with the title, or cover at least
+  60% of it. That is right for PDF page headers and footers; on text another
+  tool produced it can still delete a short line that happens to be most of
+  the title. Run `--dry-run --list-furniture` first on anything this skill did
+  not convert, to see every distinct line it would delete, and back the folder
+  up.
 - **`build_index.py` replaces `docs/index.json` and `docs/README.md` outright**,
   and stops with an error on a manifest missing `title`, `source_pdf`,
   `page_count` or `sections`.
@@ -136,15 +143,20 @@ build and test against.
    manuals with no false positives, and flags genuinely mixed documents as
    `mixed` rather than guessing. Read its output; don't just take the verdict.
 3. **Convert.** Pick an extractor first (next section), then
-   `scripts/convert_manual.py` for prose, `scripts/rebuild_reference.py` for
-   reference documents.
+   `scripts/convert_manual.py`. It decides prose or reference from the
+   outline the way `pick_extractor.py` does (`--shape prose` or `--shape
+   reference` says it outright, and a `mixed` document is refused until it
+   does); `scripts/rebuild_reference.py` is the same reference conversion with
+   the command line it always had.
 4. **Index.** `scripts/build_index.py <corpus>` regenerates `index.json` and
    `README.md` from what's actually on disk, and reports any PDF that is
    neither converted nor marked superseded, and any still waiting in
    `new_docs/`.
 5. **Enrich** prose documents with `scripts/enrich_chunks.py` (strips page
-   furniture, adds breadcrumbs). Reference documents get this during their
-   own conversion, so don't run both over the same document.
+   furniture, adds breadcrumbs). A reference document gets both during its own
+   conversion, so running it again is safe but pointless:
+   `enrich_chunks.py` leaves a breadcrumb a converter wrote alone, and the
+   furniture is already gone.
 6. **Extract figures** with `scripts/extract_figures.py <collection>`, then
    `scripts/ocr_figures.py <collection>` where Tesseract is installed — see
    "Figures". Both only add files, so they run on a corpus converted long ago.
@@ -169,19 +181,36 @@ The decision matters because of the root cause behind most of
 `references/failure-modes.md`: **`pymupdf4llm` infers heading levels from font
 size, so the "hierarchy" is a guess.** Docling parses a real document model and
 attaches a page number to every chunk — measured across seven slices and five
-PDF producers, 100% page coverage against 0%. Pages are what make every other
-piece of metadata auditable.
+PDF producers, 100% page coverage against 0% for the light prose path as it was
+then. `convert_manual.py` now tracks pages too, so what Docling still adds is
+the TOC-anchored breadcrumb with a confidence on every chunk. Pages are what
+make every other piece of metadata auditable.
 
 **Route by document shape. Do not pick one extractor for a whole corpus.**
 Prose and reference documents scored oppositely, by wide margins:
 
 | shape | converter | why |
 |---|---|---|
-| prose | `convert_docling.py` | 100% pages, multi-level TOC-anchored breadcrumbs |
-| reference / dictionary | `rebuild_reference.py` | 99–100% entity attribution; Docling-derived headings managed 16–62% |
+| prose | `convert_docling.py` | multi-level TOC-anchored breadcrumbs with a confidence on every chunk. Under review: `convert_manual.py` carries pages as well now, and the routing waits for a comparison on a real corpus |
+| reference / dictionary | `convert_manual.py --shape reference` (or `rebuild_reference.py`) | 99–100% entity attribution; Docling-derived headings managed 16–62% |
 | mixed | inspect first | convert the entry chapters as reference, the rest as prose |
 | no bookmark TOC | either, warily | nothing can verify a breadcrumb; treat every ancestor as unverified |
 | no text layer | neither | OCR first — the `pdf` skill bundled with Claude covers it |
+
+A reference chunk's breadcrumb is the TOC chain down to its entry (`Title › Chapter
+› command`), and a chapter's own text takes the chapter's chain. For a document
+that is part reference, `--prose-outside-entries` attributes only the titles at
+the command level that look like commands and chunks the rest as prose; it
+changes what is attributed, so measure before relying on it.
+
+`rebuild_reference.py` takes the TOC level whose titles look like commands (an
+underscore, ` -`, or a message code; 20 or more of them). Where none has that
+many, it converts without attributing a chunk, says so on a line beginning
+`!!`, and records `"attribution": {"status": "declined", ...}` in the manifest,
+which `check_corpus.py` reports as `attribution-declined`. A reference whose
+entries are plain words does this; pass `--command-level N` with the level they
+are at. `pick_extractor.py` prints the same warning, and another when its own
+level and the converter's differ.
 
 **A structure-aware extractor does not retire TOC verification.** Docling's
 heading precision measured no better (41% vs 43% TOC-confirmed), and it offers
@@ -358,7 +387,10 @@ reach 93–96% of chunks at 89–95% right: a wrong parent in one chunk of ten.
 ### Page range — so answers can cite
 
 Extract with page tracking (`page_chunks=True` in pymupdf4llm), record each
-page's character span, and map chunk offsets back to pages. Engineers using
+page's character span, and map chunk offsets back to pages. The chunker returns
+where it cut each chunk, so the offsets are read, not searched for. Both
+`convert_manual.py` and `rebuild_reference.py` do this; a prose document
+converted before that has no pages until it is reconverted. Engineers using
 vendor manuals need to verify claims; a chunk that can't cite a page can't be
 checked.
 
@@ -423,16 +455,17 @@ depends on what the converter left behind. Its own caption appearing as a line
 of the section is exact: 331 of 331 captioned figures in one Tessent guide, 454
 of 454 in a Synopsys one. Failing that:
 
-- **Its page, where the chunks carry page numbers** (`rebuild_reference.py`,
-  `convert_docling.py`) and the page belongs to one section. Checked against the
+- **Its page, where the chunks carry page numbers** (every converter here) and
+  the page belongs to one section. Checked against the
   caption: 100% agreement on an unshared page, 76.7% where one entry ends and
   the next begins on it — so a shared page ties nothing.
-- **The paragraph above it, where they carry no pages**: found just after the
-  previous figure's section, or else exactly once in the document. Checked
+- **The paragraph above it**, where the page ties nothing or the chunks carry
+  none: found just after the previous figure's section, or else exactly once in
+  the document. Checked
   against the caption, that is 96–99% right on documents chunked by heading —
   and 5.8% on a command reference rebuilt into one chunk per entry, where a bold
   caption starts its own chunk and strands the paragraph above it in the
-  previous one. So it is never used where pages exist.
+  previous one. So it is never used on a reference rebuilt one chunk per entry.
 
 Otherwise the figure stays unattached and is served by page — a guessed section
 would present a diagram as illustrating text it does not.
@@ -481,6 +514,28 @@ That is how a converter gets replaced: on evidence, not because its output
 looks right. `check_corpus.py` shares no code with the converters, so a bug in
 one cannot pass itself.
 
+A document is its folder: the folder's name is its slug in every tool. The
+manifest's `slug` is a copy, and the checker warns when the two differ.
+
+`scripts/manifest.schema.json` describes the manifest: the fields the builders
+read are required, the rest are optional, and a manifest may carry others.
+Every converter here writes `schema_version` and a `converter` record (the
+script, the extractor and its version, when, and whether it wrote the
+breadcrumbs itself), so a wrong page or label is traced to what produced it and
+`enrich_chunks.py` knows which breadcrumbs to leave alone.
+
+Where a value is stored twice, one copy wins:
+
+- **breadcrumb:** the manifest. The chunk's first line renders it for a reader
+  of the chunk alone, and the converters and `enrich_chunks.py` write both.
+- **slug:** the folder name.
+- **which edition is current:** decided from the manifests and
+  `current_versions.json` when an index is built. `index.json` and the search
+  index are both derived from them, and the checker warns when either is stale.
+- **a section's length:** not stored. Compute it from the file. A manifest from
+  before this still holding `chars` loses it when `enrich_chunks.py` rewrites
+  the section, and `chars-mismatch` reports it until then.
+
 Editions are part of it. A manual with two editions needs a version on each
 that orders them, no two the same, and any pin has to name one of them; each
 of those fails the check because each stops the index build. Two documents
@@ -506,8 +561,8 @@ every earlier test:
 - The heading walk kept a preface as the parent of chapter 1.
 - 3,070 chunks of one reference still carried Tessent's page footer.
 
-It cannot test idempotency. That needs a converter run twice, which
-`tests/test_pipeline.py` does.
+It cannot test idempotency. That needs a converter run twice, which the
+test suite in `tests/` does.
 
 Without page numbers it is much weaker:
 
@@ -544,12 +599,13 @@ hours. Earn confidence before writing.
 
 ## Bundled scripts
 
-Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
+Install: `pip install -r scripts/requirements.txt` (pymupdf4llm). Needs Python 3.10 or later,
+which pymupdf4llm 1.28 requires.
 
 | Script | Use |
 |---|---|
-| `convert_manual.py` | One prose PDF → `docs/<slug>/`. `--dictionary` for bold-delimited entries. |
-| `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. |
+| `convert_manual.py` | One PDF → `docs/<slug>/` with page ranges; prose or reference by `--shape` (default: from the outline). `--dictionary` for bold-delimited entries. |
+| `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution; the same as `convert_manual.py --shape reference`. `--command-level N` names the TOC level of the entries when it cannot be told. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
 | `editions.py` | `status`: manuals, editions, pins, waiting PDFs. `stamp`: add `doc_id`/`version` to older manifests. `migrate`: move root PDFs into `source/`. The converters import it. |
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |
@@ -558,11 +614,13 @@ Install: `pip install -r scripts/requirements.txt` (pymupdf4llm).
 | `check_corpus.py` | Read-only check of any `docs/<slug>/` against the output contract: the fields consumers read, and breadcrumbs, owners and pages checked against the TOC and the PDF text. `--strict`, `--json`, `--only`, `--no-pdf`. |
 | `extract_figures.py` | Crops every figure from the source PDFs into `docs/<slug>/figures/` and ties each to its section. Additive; `--dry-run`, `--jobs N`. |
 | `ocr_figures.py` | Reads the words in figures that have no text of their own (raster images) into `figures.json`, so search can find them. Needs Tesseract's language data. |
-| `build_search_db.py` | Corpus → one stemmed SQLite FTS5 index, figures and every edition included; marks one edition per manual current. `--emit-vscode-config` also wires up VS Code. |
+| `build_search_db.py` | Corpus → one stemmed SQLite FTS5 index, figures and every edition included; marks one edition per manual current. `--emit-vscode-config` also wires up VS Code. `--body-without-breadcrumb` and `--ident-index` are experiments, off by default (retrieval-measurement.md). |
 | `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only; `get_page_image` also needs PyMuPDF. |
 | `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
 | `sample_sections.py` | Stratified sample of sections to write test questions from; `--figures` for sections with figures. |
-| `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. |
+| `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. `--compare` shows what moved between two saved runs. |
+| `export_chunks.py` | Every chunk as one line of JSONL, with its document, edition, breadcrumb, pages and entry, for a vector store or another pipeline. `--current-only`. |
+| `remap_answers.py` | Carries a question file's answers across a reconversion by matching the old sections' text to the new ones. |
 
 They are parameterized by corpus directory and slug, and assume the target
 layout — see "When the input does not look like this" for what happens when it
@@ -587,6 +645,13 @@ python scripts/mcp_smoke_test.py --db "<corpus>/mcp-index.sqlite3"
 The last two are the ones people skip: without them the server keeps answering
 from the corpus as it used to be.
 
+None of these needs `--slug`: the converters name a document after its PDF with
+the release on the end (`widget-ref-2026-1`), which is what makes a second
+edition share the first's `doc_id`. A slug chosen by hand for one often lacked
+that ending, and the two became different manuals that both answered every
+search. Every command above also takes the corpus root in place of `<collection>`
+and runs each collection under it (`--only` and `--skip` apply across them).
+
 Read what the converter prints first: the version it took from the cover, the
 `doc_id`, and whether that makes this a new manual or an edition of one already
 here. A new release of a manual already converted needs nothing more — it
@@ -610,8 +675,9 @@ read than buried.
 when debugging a corpus that already exists, or before changing chunking or
 furniture logic.
 
-`tests/test_pipeline.py` generates fixture PDFs with a known bookmark TOC and
-runs the pipeline over them: `python tests/test_pipeline.py`. It covers the
+The suite in `tests/` generates fixture PDFs with a known bookmark TOC and
+runs the pipeline over them: `python -m unittest discover -s tests -v`, or
+`python tests/run_each.py` to run every test alone. It covers the
 things that have actually broken here -- idempotency, never downgrading
 metadata a better-informed pass wrote, declining to attribute entities from too
 little evidence, entity regions ending at chapters, figures tied to a section
@@ -639,6 +705,11 @@ python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
 The first writes one SQLite FTS5 index plus a `.vscode/mcp.json`; the second
 drives a real handshake and every tool. Collections are discovered from disk,
 so nothing is hardcoded per corpus.
+Every tool is declared read-only (`readOnlyHint`, with a title), so a client that
+honours MCP's tool annotations can skip its confirmation prompt. The smoke test
+also sends the server what is not a JSON-RPC object (a batch, a bare string, a
+number) and checks that it answers with an error and carries on: the server is
+one process, and a message that killed it left every later request unanswered.
 
 **The corpus folder serves itself.** `--emit-vscode-config` copies
 `mcp_server.py` beside the index and writes every path in `.vscode/mcp.json`
@@ -686,6 +757,15 @@ nothing on screen says the shelf was half empty. The build refuses to exit 0
 and names the unreadable files; the server reports per-document coverage and
 warns on every result until the index is whole.
 
+**So must a stale one.** The same failure arrives a rebuild later: the index
+answers confidently from manifests that have since changed. The build records
+each manifest, `figures.json` and `current_versions.json` by size, time and
+SHA-256, and the server compares them with the disk, again every 30 seconds
+while they still match. A changed file, a document folder or `figures.json`
+the index does not know, or a pins file that appeared adds "Stale index" to every search and `list_documents` answer until
+the index is rebuilt. An index built before this, or copied without its corpus,
+says nothing, since there is nothing to compare.
+
 ## Measuring retrieval
 
 Every retrieval choice — chunk size, stemming, a fallback, embeddings, figure
@@ -709,6 +789,19 @@ descriptions — is a guess until it moves a number. Build the number first.
    test did not know about.
 5. Compare configurations on the same questions and read the per-question
    changes, not just the totals — on 57 questions, one question is 1.75 points.
+   Save each run with `--json`, then `eval_search.py --compare before.json
+   after.json` prints the totals side by side and every question whose rank
+   moved. Each run records the build time of its index and the commit of the
+   code.
+6. **After a reconversion, carry the answers across.** Section files are named
+   by position, so converting a document again renames them and every answer
+   by file reads as a miss. `scripts/remap_answers.py --root <corpus>
+   --questions <file>` compares each lost section's text, kept in
+   `.rebuild-backup/<slug>/`, with the sections now there, and writes a remapped
+   copy (never over the input), reporting what it could not place. An answer
+   can instead be written as `{"doc_id": …, "quote": "a short exact phrase"}`,
+   which `eval_search.py` resolves to the sections holding the phrase and which
+   needs no remap at all.
 
 Questions written by someone who has just read the answer share its words, so
 they flatter lexical search. `paraphrase` measures that bias; `real` questions
@@ -726,8 +819,11 @@ Encountered on Windows; harmless to apply anywhere.
   `UTF8Encoding($false)`.
 - In PowerShell, don't assign a `Tee-Object` pipeline to a variable — it
   suppresses live output, so a long conversion looks like a hang.
-- Keep backups **outside** `docs/`. Index builders glob `docs/*/manifest.json`,
-  so a `docs/<slug>.old` gets listed as a real document.
+- Keep backups **outside** `docs/`, in the collection's `.rebuild-backup/`,
+  where the converters keep theirs and build each conversion before moving it
+  into place. Every script skips a folder under `docs/` named `*.old`,
+  `*.new`, `.*` or `_*`, and `check_corpus.py` warns about one. A backup named
+  anything else is read as a document.
 
 ## Where this skill stops
 
@@ -750,6 +846,11 @@ rate from 92% to 88%: identifier-dense manuals are where lexical search is
 strongest and a small model blurs what it matches exactly
 (`references/retrieval-measurement.md`). Real users' questions missing in a way
 a test set does not are the reason to revisit, not the promise of the technique.
+
+To feed that layer, `scripts/export_chunks.py --root <corpus> --out chunks.jsonl` writes
+every chunk as one JSON line (its text exactly as on disk, its document, edition,
+breadcrumb, pages and entry), `--current-only` for the edition search answers
+from. It stops on a section it cannot read rather than export a corpus with holes.
 
 For the layer above, the community `rag-architect` skills cover vector store
 selection, embedding models, hybrid BM25 + vector search, reranking, and
