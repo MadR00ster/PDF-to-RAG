@@ -38,6 +38,9 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
+
 BREADCRUMB_SEP = " › "  # single right-pointing angle quote
 
 FENCE_RE = re.compile(r"^\s*```")
@@ -425,11 +428,11 @@ def main() -> None:
         sys.exit(f"No docs/ under {args.vendor}")
 
     results = []
-    for manifest in sorted(docs.glob("*/manifest.json")):
-        slug = manifest.parent.name
+    for doc_dir in editions.document_dirs(docs):     # backups and interrupted builds are not documents
+        slug = doc_dir.name
         if slug in args.skip or (args.only and slug not in args.only):
             continue
-        results.append(process_manual(manifest.parent, args.dry_run))
+        results.append(process_manual(doc_dir, args.dry_run))
 
     mode = "DRY RUN -- nothing written" if args.dry_run else "applied"
     print(f"{args.vendor.name} ({mode})\n")

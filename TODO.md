@@ -181,7 +181,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | **Phase 2: the corpus** |||||
 | T05 | Docling chunks: use their own heading | 1.3 | T01 | S |
 | T06 | Make a declined attribution loud; `--command-level` | 1.5 | T01 | M |
-| T07 | Stage conversions outside `docs/`; skip hidden folders everywhere | 1.6 | T01 | M |
+| T07 | Stage conversions outside `docs/`; skip hidden folders everywhere (**done**) | 1.6 | T01 | M |
 | T08 | Stop deleting short lines that begin the title | 1.8 | T04 | S |
 | T09 | Key documents by (collection, slug) | 3.5 | T07 | L |
 | **Phase 3: search** |||||
@@ -764,7 +764,16 @@ two or three sentences, so nobody merges them later without measuring.
 
 ### T07: Stage conversions outside `docs/`; skip hidden folders everywhere [1.6]
 
-**Status:** not started
+**Status:** done, as specified below. Additions:
+- `editions.document_dirs(docs)` lists one `docs/` folder's documents, and
+  every walker uses it.
+- `rebuild_reference.py --replace`'s help text now names `.rebuild-backup/`.
+- failure-modes §10 records what changed.
+
+Tests: test_31 and test_33 in `test_server.py`, test_32 in
+`test_converters.py`, test_31b and test_33b in `test_checker.py`. Each fails
+on the old code, except test_33b, which guards a check the old code already
+made. All seven fixture conversions are byte-identical before and after.
 
 **Why.**
 - `rebuild_reference.py` builds in `docs/<slug>.new/sections` with
@@ -912,10 +921,10 @@ two or three sentences, so nobody merges them later without measuring.
   of one root (`Root/A/docs/hand`, `Root/B/docs/hand`). T09 deletes it again.
 
 **Done when**
-- [ ] `grep -rn 'glob("\*/manifest.json")\|endswith((".old", ".new"))' scripts/`
+- [x] `grep -rn 'glob("\*/manifest.json")\|endswith((".old", ".new"))' scripts/`
       finds only `check_corpus.py` and `editions.py`.
-- [ ] No converter writes anywhere under `docs/` before its final rename.
-- [ ] Converting the fixtures before and after gives identical `docs/` trees.
+- [x] No converter writes anywhere under `docs/` before its final rename.
+- [x] Converting the fixtures before and after gives identical `docs/` trees.
 
 ---
 

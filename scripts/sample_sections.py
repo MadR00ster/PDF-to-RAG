@@ -67,9 +67,11 @@ def pools(root: Path, min_chars: int, used: set, figures_only: bool) -> dict:
     """slug -> (doc_dir, [(section, its figures)]) of sections worth asking about."""
     out = {}
     for _key, _display, docs in find_collections(root):
-        manifests = {mp: json.loads(mp.read_text(encoding="utf-8-sig"))
-                     for mp in sorted(docs.glob("*/manifest.json"))
-                     if not (mp.parent.name.endswith((".old", ".new")) or mp.parent.name.startswith((".", "_")))}
+        # A document is its folder, as it is to the index build.
+        manifests = {d / "manifest.json": json.loads((d / "manifest.json").read_text(encoding="utf-8-sig"))
+                     for d in editions.document_dirs(docs)}
+        for mp, m in manifests.items():
+            m["slug"] = mp.parent.name
         entries = [{"slug": m["slug"], "doc_id": m.get("doc_id") or m["slug"], "version": m.get("version"),
                     "version_and_later": m.get("version_and_later") is True} for m in manifests.values()]
         try:

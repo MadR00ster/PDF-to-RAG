@@ -123,8 +123,10 @@ def main() -> int:
 
     coll = args.collection.resolve()
     jobs = []
-    for fig_path in sorted((coll / "docs").glob("*/figures.json")):
-        slug = fig_path.parent.name
+    for doc_dir in editions.document_dirs(coll / "docs"):
+        fig_path, slug = doc_dir / "figures.json", doc_dir.name
+        if not fig_path.is_file():
+            continue
         if slug in args.skip or (args.only and slug not in args.only):
             continue
         manifest = json.loads((fig_path.parent / "manifest.json").read_text(encoding="utf-8-sig"))

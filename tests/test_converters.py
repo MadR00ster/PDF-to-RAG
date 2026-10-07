@@ -88,6 +88,33 @@ class ConverterTest(unittest.TestCase):
                          "a parent the TOC does not give survived")
         self.assertEqual(self.manifest("prose")["sections"][0]["breadcrumb"], "Widget Guide")
 
+    def test_32_an_interrupted_build_leaves_nothing_behind(self):
+        """A conversion is built outside docs/, from an empty folder, and
+        moved in whole.
+
+        rebuild_reference.py built in docs/<slug>.new/ and never cleared it,
+        so section files an interrupted run left there, named for another
+        chunk count, shipped with the next run; and every script that read
+        docs/*/ could meet the half-built folder."""
+        for script, pdf, slug, title in (("rebuild_reference.py", "ref", "ref", "Widget Commands"),
+                                         ("convert_manual.py", "prose", "prose", "Widget Guide")):
+            with self.subTest(script=script):
+                coll = WS.collection(f"staged-{slug}", pdf)
+                places = [coll / ".rebuild-backup" / ".staging" / slug]
+                if script == "rebuild_reference.py":
+                    places.append(coll / "docs" / f"{slug}.new")   # where it used to build
+                for place in places:
+                    (place / "sections").mkdir(parents=True)
+                    (place / "sections" / "9999-orphan.md").write_text("left by an interrupted run\n",
+                                                                       encoding="utf-8")
+                r = run(script, str(coll / WS.PDFS[pdf][0]), "--title", title, "--slug", slug)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertFalse((coll / "docs" / slug / "sections" / "9999-orphan.md").exists(),
+                                 "a file an interrupted run left behind shipped with this one")
+                manifest = json.loads((coll / "docs" / slug / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(sorted(p.name for p in (coll / "docs" / slug / "sections").iterdir()),
+                                 sorted(s["file"].split("/", 1)[1] for s in manifest["sections"]))
+
     def test_04b_enrich_takes_parents_from_the_toc_not_font_sizes(self):
         """The heading walk kept a larger-set preface as the parent of the
         chapter after it: measured against located pages, 14-23% of the

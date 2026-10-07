@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import WS, run, handmade_document, words  # noqa: E402
+from _support import WS, run, handmade_document, words, load_script  # noqa: E402
 
 
 class CheckerTest(unittest.TestCase):
@@ -124,8 +124,8 @@ class CheckerTest(unittest.TestCase):
             ("section file gone", lambda d, m: (d / m["sections"][3]["file"]).unlink(),
              "section-missing-file", True),
             ("page past the end", lambda d, m: m["sections"][5].update(page_end=9), "page-invalid", True),
-            ("backup left in docs/", backup, "hidden-document", True),
-            ("backup left in docs/", backup, "duplicate-slug", True),
+            # A warning, not a failure: no tool reads it any more (test_31).
+            ("backup left in docs/", backup, "hidden-document", False),
             # Caught twice over: the PDF's words, and the TOC spans (which fail it).
             ("pages numbered two too high", shifted, "content-gap", True),
             ("pages numbered two too high", shifted, "ancestor-contradicts-pages", True),
@@ -186,6 +186,26 @@ class CheckerTest(unittest.TestCase):
             "sections": sections}), encoding="utf-8")
         r, raised = self.check(corpus, "--no-pdf")
         self.assertNotIn("ancestor-out-of-order", raised, r.stdout)
+
+    def test_31b_every_copy_of_the_skip_rule_agrees(self):
+        """Which folders under docs/ are not documents is decided in three
+        places that must not import one another: editions.py for the
+        scripts, check_corpus.py, and (from T22) the server."""
+        editions, checker = load_script("editions"), load_script("check_corpus")
+        for name in ("x.old", "x.new", ".x", "_x", "x", "a.b", "x.older", "x.new.bak", "docs"):
+            self.assertEqual(checker.index_skips(name), editions.skips_name(name), name)
+
+    def test_33b_a_folder_name_two_collections_share_fails_the_check(self):
+        """Until documents are keyed by collection as well as name, two
+        collections holding a folder of the same name stop
+        build_search_db.py, so the checker fails them too. The backup the
+        same check used to catch is no longer read (test_31)."""
+        root = self.tmp / "TwoHands"
+        for coll in ("A", "B"):
+            shutil.copytree(WS.hand_corpus(), root / coll)
+        r, raised = self.check(root, "--no-pdf")
+        self.assertIn("duplicate-slug", raised, r.stdout)
+        self.assertEqual(r.returncode, 1, r.stdout)
 
     def test_23_checker_catches_edition_defects(self):
         """Each way a set of editions can be undecidable, planted alone."""

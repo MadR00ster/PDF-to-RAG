@@ -584,10 +584,8 @@ def main() -> int:
         sys.exit(f"No docs/ under {coll}")
 
     jobs = []
-    for mp in sorted(docs.glob("*/manifest.json")):
-        slug = mp.parent.name
-        if slug.endswith((".old", ".new")) or slug.startswith((".", "_")):
-            continue
+    for doc_dir in editions.document_dirs(docs):
+        mp, slug = doc_dir / "manifest.json", doc_dir.name
         if slug in args.skip or (args.only and slug not in args.only):
             continue
         source = json.loads(mp.read_text(encoding="utf-8-sig")).get("source_pdf") or ""

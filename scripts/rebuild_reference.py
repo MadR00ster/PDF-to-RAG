@@ -40,7 +40,6 @@ import bisect
 import importlib.util
 import json
 import re
-import shutil
 import sys
 from pathlib import Path
 
@@ -155,7 +154,7 @@ def main() -> None:
     ap.add_argument(
         "--replace",
         action="store_true",
-        help="overwrite an existing docs/<slug>/ (it is moved aside to <slug>.old first)",
+        help="overwrite an existing docs/<slug>/ (the previous one is kept in .rebuild-backup/<slug>/)",
     )
     args = ap.parse_args()
 
@@ -269,9 +268,9 @@ def main() -> None:
             cursor = max(cursor, off)
             chunks.append((heading, level, body, r_start + off, name))
 
-    sections_dir = out_dir.with_name(out_dir.name + ".new") / "sections"
-    sections_dir.mkdir(parents=True, exist_ok=True)
-    staging = sections_dir.parent
+    staging = editions.staging_dir(out_root, args.slug)
+    sections_dir = staging / "sections"
+    sections_dir.mkdir()
 
     seen, entries = {}, []
     for i, (heading, level, body, off, command) in enumerate(chunks, start=1):
@@ -318,22 +317,15 @@ def main() -> None:
     )
     doc.close()
 
-    if out_dir.exists():
-        # Keep the backup OUTSIDE docs/ -- build_index.py globs docs/*/ for
-        # manifests, so a docs/<slug>.old sitting there gets listed as a real
-        # manual in index.json.
-        backup_root = out_root.parent / ".rebuild-backup"
-        backup_root.mkdir(exist_ok=True)
-        old = backup_root / args.slug
-        if old.exists():
-            shutil.rmtree(old)
-        out_dir.rename(old)
+    # The previous version is kept outside docs/, in .rebuild-backup/, so no
+    # index builder lists it as a manual of its own.
+    old = editions.publish(staging, out_dir)
+    if old:
         print(
             f"[{args.slug}] previous version kept at "
             f"{old.relative_to(out_root.parent)}",
             flush=True,
         )
-    staging.rename(out_dir)
     editions.finish(plan)
 
     attributed = sum(1 for e in entries if e["command"])

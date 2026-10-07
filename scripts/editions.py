@@ -63,6 +63,9 @@ SOURCE_DIR = "source"
 INBOX_DIR = "new_docs"
 PINS_FILE = "current_versions.json"
 BACKUP_DIR = ".rebuild-backup"
+# Where a conversion is built before it moves into docs/, under BACKUP_DIR.
+# A slug never starts with a dot, so this cannot be a document's backup.
+STAGING_DIR = ".staging"
 
 # How far into a PDF the release is looked for: the cover and the copyright
 # page behind it. Further in, a version string is as likely to be about
@@ -149,19 +152,59 @@ def find_collections(root: Path) -> list[Path]:
     return sorted(p for p in root.iterdir() if p.is_dir() and (p / "docs").is_dir())
 
 
+def skips_name(name: str) -> bool:
+    """A folder under docs/ that is not a document: a backup (.old), an
+    interrupted build (.new), or anything hidden or private. Every script that
+    walks docs/ goes through is_document_dir, so none of them indexes,
+    enriches or samples one of these. check_corpus.py and mcp_server.py keep
+    their own copies of the rule; a test holds the three together."""
+    return name.endswith((".old", ".new")) or name.startswith((".", "_"))
+
+
 def is_document_dir(path: Path) -> bool:
-    name = path.name
-    return (path / "manifest.json").is_file() and not (
-        name.endswith((".old", ".new")) or name.startswith((".", "_")))
+    return (path / "manifest.json").is_file() and not skips_name(path.name)
+
+
+def document_dirs(docs: Path) -> list[Path]:
+    """The documents in one docs/ folder, by folder name."""
+    return sorted(d for d in docs.iterdir() if is_document_dir(d)) if docs.is_dir() else []
+
+
+def staging_dir(out_root: Path, slug: str) -> Path:
+    """An empty folder to build docs/<slug>/ in.
+
+    Under .rebuild-backup/, so outside docs/ where every index builder looks,
+    and in the same collection, so moving it into place is a rename on one
+    filesystem. Cleared first: section files an interrupted run left behind,
+    named for a different chunk count, would otherwise ship with this one.
+    """
+    path = out_root.parent / BACKUP_DIR / STAGING_DIR / slug
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
+    return path
+
+
+def publish(staging: Path, out_dir: Path) -> Path | None:
+    """Move a finished build to docs/<slug>/. A document already there is
+    kept at .rebuild-backup/<slug>/, replacing any earlier backup, and that
+    path is returned."""
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    backup = None
+    if out_dir.exists():
+        backup = out_dir.parent.parent / BACKUP_DIR / out_dir.name
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        if backup.exists():
+            shutil.rmtree(backup)
+        out_dir.rename(backup)
+    staging.rename(out_dir)
+    return backup
 
 
 def load_manifests(collection: Path) -> dict[str, dict]:
     """{folder name: manifest} for every document in the collection."""
     out = {}
-    docs = collection / "docs"
-    for d in sorted(docs.iterdir()) if docs.is_dir() else []:
-        if not is_document_dir(d):
-            continue
+    for d in document_dirs(collection / "docs"):
         try:
             out[d.name] = json.loads((d / "manifest.json").read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):

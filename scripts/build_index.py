@@ -28,13 +28,11 @@ import editions  # noqa: E402
 
 def load_manuals(docs_dir: Path) -> list[dict]:
     manuals = []
-    for manifest_path in sorted(docs_dir.glob("*/manifest.json")):
-        slug = manifest_path.parent.name
-        # Ignore scratch/backup dirs so a rebuild left-over is never listed
-        # as a real manual.
-        if slug.endswith((".old", ".new")) or slug.startswith((".", "_")):
-            continue
-        m = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    # Backups and interrupted builds (.old, .new, dot, underscore) are not
+    # manuals; editions.is_document_dir is the rule every script shares.
+    for doc_dir in editions.document_dirs(docs_dir):
+        slug = doc_dir.name
+        m = json.loads((doc_dir / "manifest.json").read_text(encoding="utf-8-sig"))
         manuals.append(
             {
                 "slug": slug,

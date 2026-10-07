@@ -481,6 +481,9 @@ That is how a converter gets replaced: on evidence, not because its output
 looks right. `check_corpus.py` shares no code with the converters, so a bug in
 one cannot pass itself.
 
+A document is its folder: the folder's name is its slug in every tool. The
+manifest's `slug` is a copy, and the checker warns when the two differ.
+
 Editions are part of it. A manual with two editions needs a version on each
 that orders them, no two the same, and any pin has to name one of them; each
 of those fails the check because each stops the index build. Two documents
@@ -728,8 +731,11 @@ Encountered on Windows; harmless to apply anywhere.
   `UTF8Encoding($false)`.
 - In PowerShell, don't assign a `Tee-Object` pipeline to a variable — it
   suppresses live output, so a long conversion looks like a hang.
-- Keep backups **outside** `docs/`. Index builders glob `docs/*/manifest.json`,
-  so a `docs/<slug>.old` gets listed as a real document.
+- Keep backups **outside** `docs/`, in the collection's `.rebuild-backup/`,
+  where the converters keep theirs and build each conversion before moving it
+  into place. Every script skips a folder under `docs/` named `*.old`,
+  `*.new`, `.*` or `_*`, and `check_corpus.py` warns about one. A backup named
+  anything else is read as a document.
 
 ## Where this skill stops
 

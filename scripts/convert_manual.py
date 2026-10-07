@@ -252,8 +252,9 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
     chunks = chunk_markdown(md_text, dictionary)
 
     out_dir = out_root / slug
-    sections_dir = out_dir / "sections"
-    sections_dir.mkdir(parents=True, exist_ok=True)
+    staging = editions.staging_dir(out_root, slug)
+    sections_dir = staging / "sections"
+    sections_dir.mkdir()
 
     seen_slugs: dict = {}
     section_entries = []
@@ -266,7 +267,7 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
             {"file": f"sections/{filename}", "heading": heading, "level": level, "chars": len(body)}
         )
 
-    (out_dir / "full.md").write_text(md_text, encoding="utf-8")
+    (staging / "full.md").write_text(md_text, encoding="utf-8")
 
     manifest = editions.with_edition_fields({
         "source_pdf": plan.source_name,
@@ -281,9 +282,10 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
     # ensure_ascii=True: this machine's Python defaults to a non-UTF-8
     # locale (cp950), so escaping non-ASCII keeps manifest.json readable by
     # any tool that opens it without an explicit encoding= argument.
-    (out_dir / "manifest.json").write_text(
+    (staging / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
+    editions.publish(staging, out_dir)
 
     print(f"Wrote {len(section_entries)} sections to {out_dir}")
     print(f"Pages: {manifest['page_count']}   full.md chars: {len(md_text)}")

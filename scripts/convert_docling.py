@@ -320,8 +320,9 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
           f"(target {max_chars:,} chars)")
 
     out_dir = out_root / slug
-    sections_dir = out_dir / "sections"
-    sections_dir.mkdir(parents=True, exist_ok=True)
+    staging = editions.staging_dir(out_root, slug)
+    sections_dir = staging / "sections"
+    sections_dir.mkdir()
 
     seen: dict = {}
     entries, anchored, fell_back = [], 0, 0
@@ -350,7 +351,7 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
         })
 
     full_md = "\n\n".join(full_parts)
-    (out_dir / "full.md").write_text(full_md, encoding="utf-8")
+    (staging / "full.md").write_text(full_md, encoding="utf-8")
 
     manifest = editions.with_edition_fields({
         "source_pdf": plan.source_name,
@@ -364,7 +365,8 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
     }, plan.doc_id, plan.version, plan.later)
     # ensure_ascii=True: a non-UTF-8 default locale would otherwise mangle this
     # for any tool that opens it without an explicit encoding= argument.
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    editions.publish(staging, out_dir)
 
     n = len(entries) or 1
     with_pages = sum(1 for e in entries if e["page_start"] is not None)

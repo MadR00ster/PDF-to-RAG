@@ -41,9 +41,10 @@ Per document:
                without pages it can only compare with the whole document, so
                it catches text lost wholesale and not a single missing chunk.
 Per collection:
-  slugs two documents share (build_search_db.py stops on one), document
-  folders build_index.py skips but build_search_db.py indexes, a stale
-  index.json, PDFs neither converted nor marked superseded.
+  document folder names two collections share (build_search_db.py stops on
+  one), manifests left in folders every tool skips (.old, .new, dot,
+  underscore), a stale index.json, PDFs neither converted nor marked
+  superseded.
   editions     documents sharing a `doc_id` are releases of one manual. Each
                needs a version the others can be ordered against, no two the
                same, and a pin in current_versions.json has to name a release
@@ -149,7 +150,7 @@ CHECKS = {
     "manifest-unreadable": (FAIL, "manifest.json is not readable JSON, so every tool skips or stops on this document"),
     "manifest-missing-field": (FAIL, "manifest.json lacks a field build_index.py or build_search_db.py reads"),
     "manifest-invalid-field": (FAIL, "a required manifest field is null, empty or the wrong type; build_search_db.py rejects it or reads it wrongly"),
-    "slug-mismatch": (WARN, "the manifest's slug is not its folder's name; build_index.py lists the folder, build_search_db.py the slug"),
+    "slug-mismatch": (WARN, "the manifest's slug is not its folder's name; every tool names the document by its folder, so the manifest's copy is wrong"),
     "toc-missing": (WARN, "no bookmark TOC in the manifest: get_toc has nothing to serve and no breadcrumb can be verified"),
     "section-without-file": (FAIL, "a section names no file; build_search_db.py drops it without a word"),
     "section-bad-path": (FAIL, "a section's file is not a relative path inside sections/: a reader would leave the document, or crash on it"),
@@ -196,8 +197,8 @@ CHECKS = {
     "content-unchecked": (WARN, "the content check could not run -- PyMuPDF is missing or the PDF would not open -- so text and page numbers went unchecked"),
     "page-count-mismatch": (FAIL, "the manifest's page_count is not the source PDF's: page numbers are checked against a document that is not this one"),
     # collection
-    "duplicate-slug": (FAIL, "two documents share a slug; build_search_db.py stops on the second (documents.slug is its primary key)"),
-    "hidden-document": (FAIL, "a manifest in a docs/ folder build_index.py skips (.old, .new, dot, underscore) that build_search_db.py still indexes; keep backups outside docs/"),
+    "duplicate-slug": (FAIL, "two collections hold a document folder of the same name; build_search_db.py stops on the second (documents.slug is its primary key)"),
+    "hidden-document": (WARN, "a folder under docs/ that every tool skips (.old, .new, dot, underscore) holds a manifest: a leftover backup or an interrupted build. Move it out of docs/"),
     "index-missing": (WARN, "no docs/index.json; run build_index.py"),
     "index-stale": (WARN, "docs/index.json disagrees with the manifests on disk; run build_index.py"),
     "pdf-unaccounted": (WARN, "a PDF in source/ or the collection folder that is neither converted nor listed in superseded.json"),
@@ -771,7 +772,9 @@ def check_content(pdf: Path, page_count, chunks: list, page_of: dict, n_sample: 
 # ------------------------------------------------------------- collection
 
 def index_skips(name: str) -> bool:
-    """build_index.py's rule for folders under docs/ that are not documents."""
+    """The rule every script uses for folders under docs/ that are not
+    documents (editions.skips_name). Written out here, as this file imports
+    nothing from the converters; a test holds the two together."""
     return name.endswith((".old", ".new")) or name.startswith((".", "_"))
 
 
@@ -1095,18 +1098,14 @@ def main() -> int:
               "<root>/<collection>/docs/<slug>/manifest.json, or a docs/<slug> folder.", file=sys.stderr)
         return 2
 
-    # A slug shared anywhere under the root stops build_search_db.py, whichever
-    # collections the two copies sit in.
+    # A document folder name shared by two collections stops
+    # build_search_db.py: the folder name is the document's slug, and slugs
+    # are its primary key. Folders every tool skips are not documents.
     if collection_checks and not args.only:
         seen: dict[str, list[str]] = {}
-        for collection_dir, doc_dirs, hidden in targets:
-            for d in doc_dirs + hidden:
-                try:
-                    slug = load_json(d / "manifest.json").get("slug")
-                except (OSError, ValueError, AttributeError):
-                    continue
-                if slug:
-                    seen.setdefault(slug, []).append(f"{collection_dir.name}/docs/{d.name}")
+        for collection_dir, doc_dirs, _hidden in targets:
+            for d in doc_dirs:
+                seen.setdefault(d.name, []).append(f"{collection_dir.name}/docs/{d.name}")
         for slug, where in seen.items():
             if len(where) > 1:
                 owner = where[1].split("/docs/")[0]

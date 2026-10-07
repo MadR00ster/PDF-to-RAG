@@ -240,12 +240,12 @@ def find_collections(root: Path) -> list[tuple[str, str, Path]]:
     hardcoded, so a new subfolder is picked up with no change here.
     """
     found: list[tuple[str, str, Path]] = []
-    if (root / "docs").is_dir() and any((root / "docs").glob("*/manifest.json")):
+    if editions.document_dirs(root / "docs"):
         found.append((slugify(root.name), ".", root / "docs"))
         return found
     for sub in sorted(p for p in root.iterdir() if p.is_dir()):
         docs = sub / "docs"
-        if docs.is_dir() and any(docs.glob("*/manifest.json")):
+        if editions.document_dirs(docs):
             found.append((slugify(sub.name), sub.name, docs))
     return found
 
@@ -258,10 +258,18 @@ def load_documents(root: Path) -> tuple[list, list[str]]:
     worse than that: if it was a manual's newest edition, an older one is
     marked current and every default answer quietly changes release. Which
     edition is current can only be decided from all of them.
+
+    A document is its folder: the folder name is its slug, whatever the
+    manifest's copy says. build_index.py has always listed folders, and two
+    tools naming one document differently is how a slug clash slipped past
+    one of them. A manifest whose slug disagrees is reported and indexed
+    under its folder's name. Backups and interrupted builds in docs/ (.old,
+    .new, dot, underscore) are not documents and are not read.
     """
     documents, failed = [], []
     for key, display, docs in find_collections(root):
-        for manifest_path in sorted(docs.glob("*/manifest.json")):
+        for doc_dir in editions.document_dirs(docs):
+            manifest_path = doc_dir / "manifest.json"
             manifest, why, delay = None, "", 0.3
             for attempt in range(3):
                 try:
@@ -275,11 +283,16 @@ def load_documents(root: Path) -> tuple[list, list[str]]:
                 except ValueError as exc:     # not JSON, or not UTF-8: reading again will not help
                     why = str(exc)
                     break
-            if manifest is not None and not (isinstance(manifest, dict) and manifest.get("slug")):
-                manifest, why = None, "it is not a manifest with a slug"
+            if manifest is not None and not isinstance(manifest, dict):
+                manifest, why = None, "it is not a JSON object"
             if manifest is None:
                 failed.append(f"{manifest_path.relative_to(root).as_posix()}: {why}")
                 continue
+            if manifest.get("slug") != doc_dir.name:
+                print(f"  !! {manifest_path.relative_to(root).as_posix()}: the manifest's slug is "
+                      f"{manifest.get('slug')!r}; indexed as {doc_dir.name!r}, its folder's name",
+                      file=sys.stderr)
+                manifest["slug"] = doc_dir.name
             documents.append((key, display, manifest_path, manifest))
     return documents, failed
 
