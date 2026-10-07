@@ -36,7 +36,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import bisect
 import importlib.util
 import json
 import re
@@ -86,22 +85,6 @@ def build_pages(pdf_path: Path, title: str) -> tuple[str, list[int], list[int], 
         parts.append(cleaned)
         cursor += len(cleaned)
     return "".join(parts), starts, numbers, removed
-
-
-def locate(full_md: str, body: str, cursor: int) -> int:
-    """Character offset of `body` in full_md at/after cursor.
-
-    Chunks are slices of full_md, but paragraph-packing can rejoin with
-    slightly different whitespace, so match on a distinctive prefix rather
-    than the whole body.
-    """
-    probe = body.strip()[:200]
-    if not probe:
-        return cursor
-    pos = full_md.find(probe, cursor)
-    if pos < 0:
-        pos = full_md.find(probe)
-    return pos if pos >= 0 else cursor
 
 
 def main() -> None:
@@ -250,11 +233,8 @@ def main() -> None:
     chunks = []  # (heading, level, body, abs_offset, command)
     for r_start, r_end, name in regions:
         region = full_md[r_start:r_end]
-        cursor = 0
-        for heading, level, body in cm.chunk_markdown(region, dictionary=True):
-            off = locate(region, body, cursor)
-            cursor = max(cursor, off)
-            chunks.append((heading, level, body, r_start + off, name))
+        for span in cm.chunk_spans(region, dictionary=True):
+            chunks.append((span.heading, span.level, region[span.start:span.end], r_start + span.start, name))
 
     staging = editions.staging_dir(out_root, args.slug)
     sections_dir = staging / "sections"
@@ -262,9 +242,8 @@ def main() -> None:
 
     seen, entries = {}, []
     for i, (heading, level, body, off, command) in enumerate(chunks, start=1):
-        pi_start = max(0, bisect.bisect_right(page_starts, off) - 1)
-        pi_end = max(0, bisect.bisect_right(page_starts, off + len(body) - 1) - 1)
-        p_start, p_end = page_numbers[pi_start], page_numbers[pi_end]
+        c_start, c_end = cm.trim_span(full_md, off, off + len(body))
+        p_start, p_end = cm.page_range(page_starts, page_numbers, c_start, max(c_end, c_start + 1))
 
         crumb = args.title + (f"{ec.BREADCRUMB_SEP}{command}" if command else "")
         text = ec.apply_breadcrumb(body.strip() + "\n", crumb, args.title)

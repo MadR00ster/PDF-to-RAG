@@ -10,7 +10,7 @@ from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import SCRIPTS, WS, run, inverted_fixture, gadget_fixture, write_pdf, load_script  # noqa: E402
+from _support import SCRIPTS, WS, run, inverted_fixture, gadget_fixture, write_pdf, load_script, edition_reference_fixture  # noqa: E402
 import pymupdf  # noqa: E402
 
 
@@ -488,6 +488,66 @@ class ConverterTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertRegex(r.stdout, r"\d+x  'Feedback'")
         self.assertNotIn("would be", r.stdout)
+
+
+    def test_39_chunks_are_exact_spans_of_the_text(self):
+        """A chunk's offsets come from where the chunker cut, not from finding
+        its text again. That holds only if every chunk is a slice of the text:
+        packing used to join siblings with nothing, dropping the blank line
+        between two paragraphs."""
+        cm = load_script("convert_manual")
+
+        short_lines = "\n".join(f"Line {n:03d} of the long paragraph." for n in range(290))   # about 9,500 characters
+        texts = {
+            "tail of a split heading": (
+                "## A\n\n" + "Intro of A.\n\n" + "### B\n\n" + short_lines + "\n\nShort tail of B.\n\n"
+                "### C\n\nText of C.\n"),
+            "one line, no newline": "## A\n\n" + "word " * 6000,
+            "dictionary entries": "".join(
+                f"**cmd_{n:02d}**\n\n" + ("\n\n".join(f"Paragraph {k} of entry {n}. " * 12 for k in range(40) if n == 5 or k < 2))
+                + "\n\n" for n in range(12)),
+        }
+        for name in ("prose", "ref", "tiny", "nested"):
+            texts[f"full.md of {name}"] = (WS.corpus() / "docs" / name / "full.md").read_text(encoding="utf-8")
+        long_entry = WS.collection("longentry")
+        edition_reference_fixture(long_entry / "long.pdf", list(range(8)), "End of the long option.")
+        r = run("rebuild_reference.py", str(long_entry / "long.pdf"), "--title", "Long", "--slug", "long")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        texts["full.md of a reference with an entry over the limit"] = (
+            long_entry / "docs" / "long" / "full.md").read_text(encoding="utf-8")
+
+        strip = lambda t: re.sub(r"\s", "", t)
+        for name, text in texts.items():
+            for dictionary in (False, True):
+                with self.subTest(text=name, dictionary=dictionary):
+                    spans = cm.chunk_spans(text, dictionary)
+                    self.assertTrue(spans)
+                    edge = 0
+                    for sp in spans:
+                        self.assertTrue(edge <= sp.start < sp.end <= len(text), f"{sp} is out of order or outside the text")
+                        self.assertLessEqual(sp.end - sp.start, cm.MAX_CHUNK)
+                        edge = sp.end
+                    bodies = [b for _h, _l, b in cm.chunk_markdown(text, dictionary)]
+                    self.assertEqual(bodies, [text[sp.start:sp.end] for sp in spans])
+                    self.assertEqual(strip("".join(bodies)), strip(text), "text was lost or repeated")
+
+        tail = [sp for sp in cm.chunk_spans(texts["tail of a split heading"], False)
+                if "Short tail of B." in texts["tail of a split heading"][sp.start:sp.end]]
+        self.assertEqual(len(tail), 1)
+        self.assertIn("\n\nShort tail of B.", texts["tail of a split heading"][tail[0].start:tail[0].end])
+        self.assertGreater(len(cm.chunk_spans(texts["one line, no newline"], False)), 1, "the long line was not wrapped")
+
+    def test_39b_a_page_is_where_a_chunks_first_word_is(self):
+        """A piece cut at a newline starts with it, and that newline can be the
+        last character of the page before."""
+        cm = load_script("convert_manual")
+        text = "aaa\nbbb\n" + "ccc\nddd\n"
+        starts, numbers = [0, 8], [4, 5]
+        self.assertEqual(cm.page_range(starts, numbers, 0, 8), (4, 4))
+        self.assertEqual(cm.page_range(starts, numbers, 4, 12), (4, 5))
+        start, end = cm.trim_span(text, 7, 12)       # "\nccc\n"
+        self.assertEqual(text[start:end], "ccc")
+        self.assertEqual(cm.page_range(starts, numbers, start, end), (5, 5))
 
 
 if __name__ == "__main__":

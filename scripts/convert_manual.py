@@ -50,10 +50,12 @@ is the un-chunked fallback whenever a boundary lands badly.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 try:
     import pymupdf
@@ -65,6 +67,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
 
 MAX_CHUNK = 9000
+
+
+class Span(NamedTuple):
+    """A chunk's place in the text it was cut from: offsets, not a copy."""
+    heading: str
+    level: int
+    start: int
+    end: int
+
 
 TOP_HEADING_RE = re.compile(r"^(#{1,2})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 BOLD_LINE_RE = re.compile(r"^\*\*([^*\n]{2,80})\*\*[ \t]*$", re.MULTILINE)
@@ -97,107 +108,109 @@ def top_matches(text: str, dictionary: bool) -> list[tuple[int, int, str]]:
     return sorted((pos, lvl, head) for pos, (lvl, head) in matches.items())
 
 
-def next_heading_matches(text: str, min_level: int, dictionary: bool) -> list[tuple[int, int, str]]:
+def next_heading_matches(text: str, min_level: int, dictionary: bool,
+                         start: int = 0, end: int | None = None) -> list[tuple[int, int, str]]:
     """Matches for the shallowest heading level >= min_level that actually
-    appears in `text` (tries H(min_level), then H(min_level+1), ... up to
-    H6); falls back to standalone **bold** lines in --dictionary mode if no
-    numbered heading level matches at all."""
+    appears in text[start:end] (tries H(min_level), then H(min_level+1), ...
+    up to H6); falls back to standalone **bold** lines in --dictionary mode if
+    no numbered heading level matches at all. Positions are in `text`."""
+    body = text[start:end]
     for lvl in range(min_level, 7):
-        matches = [(m.start(), lvl, m.group(2).strip()) for m in heading_re(lvl).finditer(text)]
+        matches = [(start + m.start(), lvl, m.group(2).strip()) for m in heading_re(lvl).finditer(body)]
         if matches:
             return matches
     if dictionary:
-        matches = [(m.start(), min_level, f"**{m.group(1).strip()}**") for m in BOLD_LINE_RE.finditer(text)]
+        matches = [(start + m.start(), min_level, f"**{m.group(1).strip()}**") for m in BOLD_LINE_RE.finditer(body)]
         if matches:
             return matches
     return []
 
 
-def split_at(text: str, matches: list[tuple[int, int, str]]) -> list[tuple[str, int, str]]:
-    """Slice `text` at each match position. Anything before the first match
-    becomes an ('(intro)', 0, ...) block."""
+def split_at(text: str, matches: list[tuple[int, int, str]], start: int = 0, end: int | None = None) -> list[Span]:
+    """Cut text[start:end] at each match position. Anything before the first
+    match becomes an ('(intro)', 0) span."""
+    end = len(text) if end is None else end
     if not matches:
-        return [("(intro)", 0, text)] if text.strip() else []
-    blocks = []
-    if matches[0][0] > 0 and text[: matches[0][0]].strip():
-        blocks.append(("(intro)", 0, text[: matches[0][0]]))
+        return [Span("(intro)", 0, start, end)] if text[start:end].strip() else []
+    spans = []
+    if matches[0][0] > start and text[start:matches[0][0]].strip():
+        spans.append(Span("(intro)", 0, start, matches[0][0]))
     for i, (pos, level, heading) in enumerate(matches):
-        end = matches[i + 1][0] if i + 1 < len(matches) else len(text)
-        blocks.append((heading, level, text[pos:end]))
-    return blocks
+        spans.append(Span(heading, level, pos, matches[i + 1][0] if i + 1 < len(matches) else end))
+    return spans
 
 
-def hard_wrap(text: str) -> list[str]:
+def hard_wrap(text: str, start: int, end: int) -> list[tuple[int, int]]:
     """Absolute last resort for text with no blank line to break on (a huge
     table, or a wall of prose pymupdf4llm emitted without paragraph breaks):
     cut at the last newline before MAX_CHUNK, or mid-line if even that
     doesn't exist. Keeps a pathological input from becoming one enormous
     chunk -- every boundary here is arbitrary, so `full.md` is the fallback
-    if one lands badly."""
-    if len(text) <= MAX_CHUNK:
-        return [text]
+    if one lands badly. Returns (start, end) pairs covering text[start:end]."""
+    if end - start <= MAX_CHUNK:
+        return [(start, end)]
     pieces = []
-    rest = text
-    while len(rest) > MAX_CHUNK:
-        cut = rest.rfind("\n", 0, MAX_CHUNK)
+    while end - start > MAX_CHUNK:
+        cut = text.rfind("\n", start, start + MAX_CHUNK) - start
         if cut <= 0:
             cut = MAX_CHUNK
-        pieces.append(rest[:cut])
-        rest = rest[cut:]
-    if rest:
-        pieces.append(rest)
+        pieces.append((start, start + cut))
+        start += cut
+    if start < end:
+        pieces.append((start, end))
     return pieces
 
 
-def split_by_paragraph(heading: str, level: int, body: str) -> list[tuple[str, int, str]]:
+def split_by_paragraph(text: str, heading: str, level: int, start: int, end: int) -> list[Span]:
     """Last resort when a block has no deeper headings to split on: pack
     blank-line-separated paragraphs up to MAX_CHUNK each, hard-wrapping any
-    single paragraph that is itself over the limit."""
-    paragraphs = body.split("\n\n")
-    pieces: list[str] = []
-    cur: list[str] = []
+    single paragraph that is itself over the limit. A piece runs from its first
+    paragraph's start to its last paragraph's end; the blank lines between
+    pieces belong to neither."""
+    pieces: list[tuple[int, int]] = []
+    first = last_end = None      # the open piece
     cur_len = 0
-    for p in paragraphs:
+    offset = start
+    for p in text[start:end].split("\n\n"):
         p_len = len(p) + 2
-        if cur and cur_len + p_len > MAX_CHUNK:
-            pieces.append("\n\n".join(cur))
-            cur, cur_len = [], 0
-        cur.append(p)
+        if first is not None and cur_len + p_len > MAX_CHUNK:
+            pieces.append((first, last_end))
+            first, cur_len = None, 0
+        if first is None:
+            first = offset
+        last_end = offset + len(p)
         cur_len += p_len
-    if cur:
-        pieces.append("\n\n".join(cur))
+        offset += p_len
+    if first is not None:
+        pieces.append((first, last_end))
 
-    pieces = [w for piece in pieces for w in hard_wrap(piece)]
+    pieces = [w for a, b in pieces for w in hard_wrap(text, a, b)]
 
     if len(pieces) <= 1:
-        return [(heading, level, body)]
-    return [(heading if i == 0 else f"{heading} (cont.)", level, piece) for i, piece in enumerate(pieces)]
+        return [Span(heading, level, start, end)]
+    return [Span(heading if i == 0 else f"{heading} (cont.)", level, a, b) for i, (a, b) in enumerate(pieces)]
 
 
-def pack_adjacent(leaves: list[tuple[str, int, str]]) -> list[tuple[str, int, str]]:
+def pack_adjacent(leaves: list[Span]) -> list[Span]:
     """Greedily merge consecutive sibling fragments (from the same split
     operation) so they land closer to MAX_CHUNK, instead of writing one file
     per small fragment (e.g. a chapter whose only sub-structure pymupdf4llm
-    found is a run of small bold run-in phrases)."""
-    packed = []
-    group_heading = group_level = None
-    group_parts: list[str] = []
-    group_len = 0
-    for heading, level, body in leaves:
-        if group_parts and group_len + len(body) > MAX_CHUNK:
-            packed.append((group_heading, group_level, "".join(group_parts)))
-            group_parts, group_len = [], 0
-            group_heading = group_level = None
-        if group_heading is None:
-            group_heading, group_level = heading, level
-        group_parts.append(body)
-        group_len += len(body)
-    if group_parts:
-        packed.append((group_heading, group_level, "".join(group_parts)))
+    found is a run of small bold run-in phrases). A merged span runs from its
+    first part to its last, so it holds whatever lay between them, and its size
+    is measured that way."""
+    packed: list[Span] = []
+    group: Span | None = None
+    for leaf in leaves:
+        if group and leaf.end - group.start > MAX_CHUNK:
+            packed.append(group)
+            group = None
+        group = leaf if group is None else Span(group.heading, group.level, group.start, leaf.end)
+    if group:
+        packed.append(group)
     return packed
 
 
-def split_oversized(heading: str, level: int, body: str, dictionary: bool) -> list[tuple[str, int, str]]:
+def split_oversized(text: str, heading: str, level: int, dictionary: bool, start: int, end: int) -> list[Span]:
     """Recursively break a >MAX_CHUNK block into leaf fragments by descending
     one heading level at a time: split on the shallowest deeper heading level
     that actually appears, then only recurse further into whichever pieces
@@ -206,11 +219,11 @@ def split_oversized(heading: str, level: int, body: str, dictionary: bool) -> li
     the same split are then packed back together (see pack_adjacent) so a
     chapter that's only choppy at one heading level doesn't turn into dozens
     of tiny files."""
-    if len(body) <= MAX_CHUNK:
-        return [(heading, level, body)]
+    if end - start <= MAX_CHUNK:
+        return [Span(heading, level, start, end)]
 
-    matches = next_heading_matches(body, level + 1, dictionary)
-    blocks = split_at(body, matches) if matches else []
+    matches = next_heading_matches(text, level + 1, dictionary, start, end)
+    blocks = split_at(text, matches, start, end) if matches else []
 
     # No-progress guard. If the "split" failed to actually divide the body
     # into 2+ pieces, recursing would re-derive the same single block
@@ -220,13 +233,14 @@ def split_oversized(heading: str, level: int, body: str, dictionary: bool) -> li
     # offset 0), so split_at hands back one block identical to the input.
     # Paragraph packing is the correct fallback and never recurses.
     if len(blocks) < 2:
-        return split_by_paragraph(heading, level, body)
+        return split_by_paragraph(text, heading, level, start, end)
 
     children = []
-    for h, lvl, chunk in blocks:
+    for block in blocks:
+        h, lvl = block.heading, block.level
         if h == "(intro)":
             h, lvl = (f"{heading} (intro)" if heading not in (None, "(intro)") else "(intro)"), level
-        children.extend(split_oversized(h, lvl, chunk, dictionary))
+        children.extend(split_oversized(text, h, lvl, dictionary, block.start, block.end))
     return pack_adjacent(children)
 
 
@@ -255,15 +269,39 @@ def page_markdown(pdf_path: Path) -> tuple[list[str], list[int]]:
     return texts, numbers
 
 
-def chunk_markdown(md_text: str, dictionary: bool) -> list[tuple[str, int, str]]:
-    top_blocks = split_at(md_text, top_matches(md_text, dictionary))
+def chunk_spans(md_text: str, dictionary: bool) -> list[Span]:
+    """The chunks of `md_text`, each as the span it was cut from. A chunk's body
+    is exactly md_text[span.start:span.end], so anything that has to know where
+    a chunk sits in the text (its page, above all) reads it from the span
+    instead of looking the body up again."""
     chunks = []
-    for heading, level, body in top_blocks:
-        if len(body) <= MAX_CHUNK:
-            chunks.append((heading, level, body))
+    for span in split_at(md_text, top_matches(md_text, dictionary)):
+        if span.end - span.start <= MAX_CHUNK:
+            chunks.append(span)
         else:
-            chunks.extend(split_oversized(heading, level, body, dictionary))
+            chunks.extend(split_oversized(md_text, span.heading, span.level, dictionary, span.start, span.end))
     return chunks
+
+
+def chunk_markdown(md_text: str, dictionary: bool) -> list[tuple[str, int, str]]:
+    return [(s.heading, s.level, md_text[s.start:s.end]) for s in chunk_spans(md_text, dictionary)]
+
+
+def trim_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """text[start:end] without the whitespace around it. A piece cut at a
+    newline begins with that newline, which can be the last character of the
+    page before; a chunk is on the page its first word is."""
+    body = text[start:end]
+    lead = len(body) - len(body.lstrip())
+    return start + lead, start + lead + len(body.strip())
+
+
+def page_range(page_starts: list[int], numbers: list[int], start: int, end: int) -> tuple[int, int]:
+    """First and last page number of text[start:end], given each page's start
+    offset in that text and its number. Pass a span through trim_span first."""
+    first = max(0, bisect.bisect_right(page_starts, start) - 1)
+    last = max(0, bisect.bisect_right(page_starts, end - 1) - 1)
+    return numbers[first], numbers[last]
 
 
 def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:

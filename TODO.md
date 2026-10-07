@@ -188,7 +188,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T11 | Entity boost for identifiers inside a question (**done**) | 1.2 | T01 | M |
 | T12 | `eval_search.py --compare` (**done**) | 2.6 | T01 | S |
 | **Phase 4: coverage** |||||
-| T13 | Chunk in spans, so offsets are exact | 2.2 | T01 | M |
+| T13 | Chunk in spans, so offsets are exact (**done**) | 2.2 | T01 | M |
 | T14 | Page numbers on the light prose path | 2.1 | T03, T13 | L |
 | T15 | One pymupdf4llm converter | 2.1 "next step" | T14 | L |
 | **Phase 5: later** |||||
@@ -1332,7 +1332,16 @@ A. Run `eval_search.py --compare a.json b.json`. Assert the moved line, the
 
 ### T13: Chunk in spans, so every offset is exact [2.2]
 
-**Status:** not started
+**Status:** done. Additions:
+- `convert_manual.trim_span(text, start, end)`: a chunk's page is where its
+  first word is. A piece cut at a newline starts with that newline, which can
+  be the last character of the page before, so `rebuild_reference.py` measures
+  pages on the trimmed span (test_39b). T14 uses it too.
+- The fixture diff was empty except `page_end` of the last piece of
+  `edition_reference_fixture`'s long entry: 26 before, 25 now. The old code
+  searched for the body's stripped text, then added the body's full length,
+  so it ran past the end by the leading whitespace and into the next entry's
+  page. Entry 5 ends on page 25.
 
 **Why.** `rebuild_reference.locate` finds each chunk again by searching for
 its first 200 characters, and falls back to the cursor. The chunker cut the
@@ -1404,10 +1413,10 @@ explained in the commit message. `edition_reference_fixture`'s long entry is
 the one fixture block over `MAX_CHUNK`, so look at it first.
 
 **Done when**
-- [ ] `locate` is gone, and `rebuild_reference.py` gets offsets only from
+- [x] `locate` is gone, and `rebuild_reference.py` gets offsets only from
       spans.
-- [ ] The property test passes on every text listed above.
-- [ ] The fixture diff is empty or explained.
+- [x] The property test passes on every text listed above.
+- [x] The fixture diff is empty or explained.
 
 ---
 
