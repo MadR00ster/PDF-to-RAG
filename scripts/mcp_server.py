@@ -77,6 +77,27 @@ MAX_LISTED = 300
 PAGE_DPI = 120
 IMAGE_MAX_PX = 1568
 WORD_RE = re.compile(r"[0-9A-Za-z]+")
+# Written out here, not imported: this file runs on its own, beside an index.
+# tests hold it to scripts/_common.py's MESSAGE_CODE_RE.
+MESSAGE_CODE_RE = re.compile(r"[A-Z][A-Z0-9]{1,9}-\d{2,5}")
+
+
+def query_tokens(query: str) -> list[tuple[str, bool]]:
+    """The query's words as typed, lowercased, without the punctuation
+    around them, each with whether it names an identifier: it holds `_`,
+    starts with `-`, is a message code (ADES-002), or is in backticks.
+    A plain word is not one: `set` in "how do I set the clock" is English,
+    even where a command is called set."""
+    out = []
+    for raw in query.split():
+        ticked = raw.startswith("`") and raw.rstrip(".,;:?!").endswith("`")
+        tok = raw.strip("`'\"()[]{}<>,;:?!").rstrip(".")
+        if tok:
+            ident = (ticked or "_" in tok or (tok.startswith("-") and len(tok) > 1)
+                     or bool(MESSAGE_CODE_RE.fullmatch(tok)))
+            out.append((tok.lower(), ident))
+    return out
+
 
 # FTS5 ANDs every term, so "how do I define a clock" demands that a chunk
 # contain "how" and "do" and "I" -- which ranks prose padding above the page
@@ -474,7 +495,11 @@ def search(query: str, collection=None, document=None, limit=10, max_per_documen
 
 
 def rank_adjust(row: sqlite3.Row, query: str) -> float:
-    """Nudge BM25 (lower is better) using signals BM25 cannot see."""
+    """Nudge BM25 (lower is better) using signals BM25 cannot see.
+
+    An entity is boosted when the query is the entity, or names it: an
+    identifier-shaped word of the query equals it, or, for an entity of
+    several words ("tessent -shell"), they appear in a row in the query."""
     score = row["score"]
     words = [w.lower() for w in WORD_RE.findall(query)]
     if not words:
@@ -482,19 +507,25 @@ def rank_adjust(row: sqlite3.Row, query: str) -> float:
     joined = "_".join(words)
     spaced = " ".join(words)
 
-    entity = (row["entity"] or "").lower()
+    entity = " ".join((row["entity"] or "").lower().split())
     if entity:
-        if entity == joined or entity.replace("_", " ") == spaced:
-            score -= 6.0          # the query *is* this entity
-        elif joined.startswith(entity) or entity.startswith(joined):
-            score -= 2.0
+        tokens = query_tokens(query)
+        named = {t for t, ident in tokens if ident}
+        runs = {" ".join(t for t, _ in tokens[i:i + n])
+                for n in (2, 3, 4) for i in range(len(tokens) - n + 1)}
+        if (entity == joined or entity.replace("_", " ") == spaced   # the query is the entity
+                or entity in named                                   # the query names it
+                or (" " in entity and entity in runs)):               # "tessent -shell" mid-question
+            score -= 6.0
 
     heading = (row["heading"] or "").lower()
     if heading:
         if heading == spaced or heading.replace("_", " ") == spaced:
             score -= 4.0
-        elif all(w in heading for w in words):
-            score -= 1.5
+        else:
+            content = {w for w in words if w not in STOPWORDS}
+            if content and content <= set(WORD_RE.findall(heading)):
+                score -= 1.5
 
     # Near-empty stubs ("See Also" lists, one-line cross references) match
     # cheaply and answer nothing.

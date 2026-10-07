@@ -179,5 +179,49 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(noise("Overview", leaders), "a page of dot leaders is a contents page whatever it is called")
 
 
+    def test_37_an_entity_named_in_a_question_is_boosted(self):
+        """The boost fired only where the query was the bare identifier, so
+        "what does set_scan_configuration do" got none; and an entity called
+        `set` was boosted by "set the clock"."""
+        server = load_script("mcp_server")
+
+        def adjust(entity, query, heading=""):
+            row = {"score": 0.0, "entity": entity, "heading": heading, "chars": 1000, "noise": 0}
+            return server.rank_adjust(row, query)
+
+        scan = "set_scan_configuration"
+        for entity, query, want in (
+                (scan, scan, -6.0),
+                (scan, "set_scan_configuration -chain_count", -6.0),
+                (scan, "what does set_scan_configuration do?", -6.0),
+                (scan, "-chain_count option of set_scan_configuration", -6.0),
+                (scan, "set scan configuration", -6.0),
+                (scan, "scan configuration", 0.0),
+                ("set", "set", -6.0),
+                ("set", "how do I set the clock", 0.0),
+                ("set", "options of `set`", -6.0),
+                ("tessent -shell", "how to start tessent -shell in batch", -6.0),
+                ("ADES-002", "what does ADES-002 mean", -6.0)):
+            with self.subTest(entity=entity, query=query):
+                self.assertEqual(adjust(entity, query), want)
+        for heading, query, want in (("Timing Analysis", "i a", 0.0),
+                                     ("Timing Analysis", "analysis of timing", -1.5),
+                                     ("Timing Analysis", "timing analysis options", 0.0),
+                                     ("Reporting", "port", 0.0)):
+            with self.subTest(heading=heading, query=query):
+                self.assertEqual(adjust("", query, heading), want)
+
+        # the server writes the message-code pattern out; it must agree with the shared one
+        common = load_script("_common")
+        for sample in ("ADES-002", "CMD-082", "ades-002", "X-1", "ADES-002x", "AB-12345", "ABCDEFGHIJK-12"):
+            self.assertEqual(bool(common.MESSAGE_CODE_RE.match(sample)),
+                             bool(server.MESSAGE_CODE_RE.fullmatch(sample)), sample)
+
+        server.CORPUS = server.Corpus(WS.index())
+        self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
+        top = server.search("what does set_widget_option_05 do")[0]
+        self.assertEqual(top["entity"], "set_widget_option_05")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
