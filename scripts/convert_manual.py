@@ -20,6 +20,12 @@ release on the end.
 For command-dictionary-style manuals (syn2, tshell-ref, ...) where individual
 commands are marked with a bold name and no real heading, add --dictionary.
 
+A command reference (one entry per command) is converted differently: the text
+is split into one region per entry, and each chunk is written with the command
+it documents. --shape says which; by default it is decided from the PDF's
+bookmark outline, as pick_extractor.py does, and a document that is part of each
+is refused. `rebuild_reference.py` runs the same reference conversion.
+
 After converting, refresh the vendor folder's docs/index.json + docs/README.md:
   python scripts/build_index.py "Tessent Manual"
 
@@ -66,6 +72,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
 import enrich_chunks as ec  # noqa: E402
+from _common import MIN_COMMANDS, detect_shape, pick_command_level  # noqa: E402
 
 MAX_CHUNK = 9000
 
@@ -380,31 +387,266 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
     print(f'Next: python scripts/build_index.py "{plan.collection}"')
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("pdf", type=Path, help="Path to the source PDF")
-    ap.add_argument("--title", required=True, help="Manual title, as it should appear in index.json/README.md")
-    ap.add_argument("--slug", help="docs/<slug> folder name (default: derived from the PDF filename)")
-    ap.add_argument(
-        "--dictionary",
-        action="store_true",
-        help="Also split on standalone **bold** lines (for command-dictionary manuals like syn2/tshell-ref)",
+def convert_reference(plan: editions.Plan, title: str, command_level: int | None) -> None:
+    """A command reference: the same pages and chunker as `convert`, but the
+    text is first split into one region per entry, so a chunk can belong to
+    exactly one command, and each chunk is written with the command it
+    documents. `command_level` names the TOC level of the entries; where it is
+    not given the level is picked from the TOC, and where none qualifies no
+    chunk is attributed, which the manifest records."""
+    pdf_path, slug, out_root = plan.pdf, plan.slug, plan.out_root
+    out_dir = out_root / slug
+    print(f"[{slug}] extracting {pdf_path.name} with page tracking ...", flush=True)
+    texts, page_numbers = page_markdown(pdf_path)
+    full_md, page_starts, furn_removed = join_pages(texts, ec.detect_furniture(texts, title))
+    doc = pymupdf.open(str(pdf_path))
+    toc = doc.get_toc()
+    print(
+        f"[{slug}] {len(page_starts)} pages, {len(full_md):,} chars, "
+        f"{furn_removed} furniture lines stripped pre-chunking",
+        flush=True,
     )
+
+    levels = sorted({lvl for lvl, _t, _p in toc})
+    if command_level is not None:
+        if command_level not in levels:
+            sys.exit(f"no TOC entry is at level {command_level}; levels here: "
+                     f"{', '.join(map(str, levels)) or 'none (no bookmark outline)'}")
+        cmd_level, chosen_by = command_level, "option"
+    else:
+        cmd_level, chosen_by = pick_command_level(toc), "toc"
+    # Every TOC entry at the command level starts a command's entry. Every
+    # shallower one -- a chapter, an appendix, the licence -- ends the entry
+    # before it and starts a region that belongs to no command. Without those
+    # ends the last command in a chapter owned everything up to the next
+    # command: the next chapter's introduction, the appendices, the licence,
+    # all served by lookup_entity as part of that command.
+    boundaries = []  # (page, toc_index, title, command|None)
+    if cmd_level is not None:
+        for i, (lvl, entry, page) in enumerate(toc):
+            entry = (entry or "").strip()
+            if not entry:
+                continue
+            if lvl == cmd_level:
+                boundaries.append((page, i, entry, entry))
+            elif lvl < cmd_level and page >= 1:
+                boundaries.append((page, i, entry, None))
+        # By page, then TOC order: where two entries share a page, TOC order
+        # is document order and alphabetical order need not be.
+        boundaries.sort()
+    n_commands = sum(1 for b in boundaries if b[3])
+    if cmd_level is None:
+        print(
+            f"[{slug}] !! no TOC level has {MIN_COMMANDS} titles shaped like commands "
+            "(an underscore, \" -\", or a message code), so no chunk is attributed to one. "
+            "If this is a reference, pass --command-level N with the TOC level its entries are at.",
+            flush=True,
+        )
+    else:
+        print(
+            f"[{slug}] command level L{cmd_level}: {n_commands} commands",
+            flush=True,
+        )
+
+    # Split full.md into one region per command *before* chunking, so a
+    # chunk can never span two commands. Without this the splitter simply
+    # accumulates text up to MAX_CHUNK and happily merges several command
+    # entries into one chunk -- measured at 72% of syn2 chunks straddling a
+    # boundary, which makes the `command` field right at the chunk's start
+    # and wrong by its end.
+    page_index = {}
+    for i, num in enumerate(page_numbers):
+        page_index.setdefault(num, i)
+
+    def entry_offset(page: int, entry: str, floor: int) -> int:
+        """Offset where a TOC entry starts: its page, refined to the line
+        naming it when that can be found (two entries can share a page, and
+        page granularity alone would merge them)."""
+        idx = page_index.get(page)
+        base = page_starts[idx] if idx is not None else floor
+        base = max(base, floor)
+        window_end = min(len(full_md), base + 40000)
+        pat = re.compile(
+            r"^[#*_ \t]*" + re.escape(entry) + r"[*_ \t]*$", re.M
+        )
+        hit = pat.search(full_md, base, window_end)
+        return hit.start() if hit else base
+
+    regions = []  # (start, end, command|None)
+    floor = 0
+    starts = []
+    for page, _i, entry, command in boundaries:
+        off = entry_offset(page, entry, floor)
+        starts.append((off, command))
+        floor = off
+    if starts and starts[0][0] > 0:
+        regions.append((0, starts[0][0], None))
+    elif not starts:
+        regions.append((0, len(full_md), None))
+    for i, (off, name) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else len(full_md)
+        if end > off:
+            regions.append((off, end, name))
+
+    print(
+        f"[{slug}] chunking {len(regions)} command regions ...", flush=True
+    )
+    chunks = []  # (heading, level, body, abs_offset, command)
+    for r_start, r_end, name in regions:
+        region = full_md[r_start:r_end]
+        for span in chunk_spans(region, dictionary=True):
+            chunks.append((span.heading, span.level, region[span.start:span.end], r_start + span.start, name))
+
+    staging = editions.staging_dir(out_root, slug)
+    sections_dir = staging / "sections"
+    sections_dir.mkdir()
+
+    seen, entries = {}, []
+    for i, (heading, level, body, off, command) in enumerate(chunks, start=1):
+        c_start, c_end = trim_span(full_md, off, off + len(body))
+        p_start, p_end = page_range(page_starts, page_numbers, c_start, max(c_end, c_start + 1))
+
+        crumb = title + (f"{ec.BREADCRUMB_SEP}{command}" if command else "")
+        text = ec.apply_breadcrumb(body.strip() + "\n", crumb, title)
+
+        fname = f"{i:04d}-{dedupe_slug(slugify(heading), seen)}.md"
+        (sections_dir / fname).write_text(text, encoding="utf-8")
+        entries.append(
+            {
+                "file": f"sections/{fname}",
+                "heading": heading,
+                "level": level,
+                "chars": len(text),
+                "page_start": p_start,
+                "page_end": p_end,
+                "command": command,
+                "breadcrumb": crumb,
+            }
+        )
+
+    (staging / "full.md").write_text(full_md, encoding="utf-8")
+    (staging / "manifest.json").write_text(
+        json.dumps(
+            editions.with_edition_fields({
+                "source_pdf": plan.source_name,
+                "title": title,
+                "slug": slug,
+                "page_count": doc.page_count,
+                "toc": [
+                    {"level": l, "title": (t or "").strip(), "page": p} for l, t, p in toc
+                ],
+                "attribution": {
+                    "status": "attributed" if cmd_level is not None else "declined",
+                    "command_level": cmd_level,
+                    "chosen_by": chosen_by,
+                },
+                "sections": entries,
+                "full_md_chars": len(full_md),
+            }, plan.doc_id, plan.version, plan.later),
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    doc.close()
+
+    # The previous version is kept outside docs/, in .rebuild-backup/, so no
+    # index builder lists it as a manual of its own.
+    old = editions.publish(staging, out_dir)
+    if old:
+        print(
+            f"[{slug}] previous version kept at "
+            f"{old.relative_to(out_root.parent)}",
+            flush=True,
+        )
+    editions.finish(plan)
+
+    attributed = sum(1 for e in entries if e["command"])
+    print(
+        f"[{slug}] DONE: {len(entries)} chunks, "
+        f"{attributed} ({100*attributed/max(len(entries),1):.1f}%) attributed to a command",
+        flush=True,
+    )
+
+
+def main(shape: str | None = None, description: str | None = None) -> None:
+    """The command line. `shape` fixes it ("reference" for rebuild_reference.py,
+    which keeps its own command line); None lets --shape choose."""
+    ap = argparse.ArgumentParser(description=description or __doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("pdf", type=Path, help="Path to the source PDF")
+    ap.add_argument("--title", help="Manual title, as it should appear in index.json/README.md. "
+                    "Defaults to the title already in docs/<slug>/manifest.json, which keeps it "
+                    "byte-stable across rebuilds and avoids shell-encoding trouble with characters "
+                    "like the trademark sign")
+    ap.add_argument("--slug", required=shape is not None,
+                    help="docs/<slug> folder name (default: derived from the PDF filename)")
+    if shape is None:
+        ap.add_argument("--shape", choices=("auto", "prose", "reference"), default="auto",
+                        help="a prose manual, or a command reference whose entries each get their own "
+                        "chunks and name (default: decided from the PDF's bookmark outline; a "
+                        "document that is part of each is refused, and needs this said)")
+        ap.add_argument(
+            "--dictionary",
+            action="store_true",
+            help="Also split on standalone **bold** lines (for command-dictionary manuals like syn2/tshell-ref)",
+        )
+    ap.add_argument("--command-level", type=int, metavar="N",
+                    help="a reference's entries are at TOC level N. By default it is the level where "
+                    "20 or more titles look like commands (an underscore, ' -', or a message code); "
+                    "a reference whose entries are plain words has none, and is declined")
     ap.add_argument("--out-root", type=Path,
                     help="Where to write docs/<slug>/ (default: docs/ in the PDF's collection)")
     editions.add_arguments(ap)
+    ap.add_argument("--replace", action="store_true",
+                    help="overwrite an existing docs/<slug>/ (the previous one is kept in .rebuild-backup/<slug>/)")
     args = ap.parse_args()
+    shape = shape or args.shape
+    dictionary = getattr(args, "dictionary", False)
 
     pdf_path = args.pdf.resolve()
-    if not pdf_path.exists():
+    if not pdf_path.is_file():
         sys.exit(f"No such file: {pdf_path}")
+    out_root = (args.out_root or editions.collection_of(pdf_path) / "docs").resolve()
 
-    plan = editions.plan(pdf_path, args.slug, args.out_root, args.version, args.doc_id)
-    out_dir = plan.out_root / plan.slug
-    if out_dir.exists():
-        sys.exit(f"{out_dir} already exists -- pick a different --slug or remove it first")
+    def refuse_existing(slug: str) -> None:
+        if (out_root / slug).exists() and not args.replace:
+            sys.exit(f"{out_root / slug} exists -- pass --replace to rebuild it")
+    if args.slug:
+        refuse_existing(args.slug)
 
-    convert(plan, args.title, args.dictionary)
+    # A rebuild keeps what the document already is: a title, doc_id or version
+    # set by hand must survive --replace.
+    prior = {}
+    if args.slug and (out_root / args.slug / "manifest.json").exists():
+        prior = json.loads((out_root / args.slug / "manifest.json").read_text(encoding="utf-8-sig"))
+    title = args.title
+    if not title:
+        if "title" not in prior:
+            sys.exit("--title is required when docs/<slug>/manifest.json does not exist")
+        title = prior["title"]
+        print(f"[{args.slug}] title from existing manifest: {title!r}", flush=True)
+
+    if shape == "auto":
+        with pymupdf.open(str(pdf_path)) as doc:
+            found, why, _level = detect_shape(doc.get_toc(), doc.page_count)
+        print(f"shape: {found} ({why})")
+        if found == "mixed":
+            sys.exit("This is part prose and part reference. Convert it with --shape prose or --shape "
+                     "reference, whichever holds most of it, or split the PDF.")
+        shape = found
+    if shape == "prose" and args.command_level is not None:
+        sys.exit("--command-level names the entries of a reference; this is converted as prose")
+
+    plan = editions.plan(pdf_path, args.slug, out_root, args.version or prior.get("version"),
+                         args.doc_id or prior.get("doc_id"),
+                         later=not args.version and prior.get("version_and_later") is True)
+    refuse_existing(plan.slug)
+
+    if shape == "reference":
+        convert_reference(plan, title, args.command_level)
+    else:
+        convert(plan, title, dictionary)
 
 
 if __name__ == "__main__":

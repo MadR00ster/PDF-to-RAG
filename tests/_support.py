@@ -157,6 +157,19 @@ def tcl_reference_fixture(path: Path, n_commands: int) -> None:
     write_pdf(path, pages, toc)
 
 
+def mixed_fixture(path: Path) -> None:
+    """A prose manual with a section of commands: 20 entries over 150 pages, 0.13
+    a page, between what pick_extractor calls prose and what it calls a reference."""
+    pages, toc = [], []
+    for n in range(150):
+        entry = n >= 30 and n % 6 == 0
+        name = f"set_gadget_option_{n:03d}" if entry else f"Chapter {n} Overview"
+        pages.append([(name, 20), (f"This page of the guide describes how part {n} of the gadget works in use.", 11)])
+        if n < 30 or entry:
+            toc.append([1, name, n + 1])
+    write_pdf(path, pages, toc)
+
+
 def nested_reference_fixture(path: Path, n_commands: int) -> None:
     """Commands at TOC level 2 under a chapter, then chapters that are not
     commands -- the tshell-ref shape, with an appendix and a licence after the

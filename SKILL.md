@@ -143,15 +143,20 @@ build and test against.
    manuals with no false positives, and flags genuinely mixed documents as
    `mixed` rather than guessing. Read its output; don't just take the verdict.
 3. **Convert.** Pick an extractor first (next section), then
-   `scripts/convert_manual.py` for prose, `scripts/rebuild_reference.py` for
-   reference documents.
+   `scripts/convert_manual.py`. It decides prose or reference from the
+   outline the way `pick_extractor.py` does (`--shape prose` or `--shape
+   reference` says it outright, and a `mixed` document is refused until it
+   does); `scripts/rebuild_reference.py` is the same reference conversion with
+   the command line it always had.
 4. **Index.** `scripts/build_index.py <corpus>` regenerates `index.json` and
    `README.md` from what's actually on disk, and reports any PDF that is
    neither converted nor marked superseded, and any still waiting in
    `new_docs/`.
 5. **Enrich** prose documents with `scripts/enrich_chunks.py` (strips page
-   furniture, adds breadcrumbs). Reference documents get this during their
-   own conversion, so don't run both over the same document.
+   furniture, adds breadcrumbs). A reference document gets both during its own
+   conversion, so running it again is safe but pointless:
+   `enrich_chunks.py` leaves a breadcrumb a converter wrote alone, and the
+   furniture is already gone.
 6. **Extract figures** with `scripts/extract_figures.py <collection>`, then
    `scripts/ocr_figures.py <collection>` where Tesseract is installed — see
    "Figures". Both only add files, so they run on a corpus converted long ago.
@@ -187,7 +192,7 @@ Prose and reference documents scored oppositely, by wide margins:
 | shape | converter | why |
 |---|---|---|
 | prose | `convert_docling.py` | multi-level TOC-anchored breadcrumbs with a confidence on every chunk. Under review: `convert_manual.py` carries pages as well now, and the routing waits for a comparison on a real corpus |
-| reference / dictionary | `rebuild_reference.py` | 99–100% entity attribution; Docling-derived headings managed 16–62% |
+| reference / dictionary | `convert_manual.py --shape reference` (or `rebuild_reference.py`) | 99–100% entity attribution; Docling-derived headings managed 16–62% |
 | mixed | inspect first | convert the entry chapters as reference, the rest as prose |
 | no bookmark TOC | either, warily | nothing can verify a breadcrumb; treat every ancestor as unverified |
 | no text layer | neither | OCR first — the `pdf` skill bundled with Claude covers it |
@@ -574,8 +579,8 @@ which pymupdf4llm 1.28 requires.
 
 | Script | Use |
 |---|---|
-| `convert_manual.py` | One prose PDF → `docs/<slug>/` with page ranges. `--dictionary` for bold-delimited entries. |
-| `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. `--command-level N` names the TOC level of the entries when it cannot be told. |
+| `convert_manual.py` | One PDF → `docs/<slug>/` with page ranges; prose or reference by `--shape` (default: from the outline). `--dictionary` for bold-delimited entries. |
+| `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution; the same as `convert_manual.py --shape reference`. `--command-level N` names the TOC level of the entries when it cannot be told. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
 | `editions.py` | `status`: manuals, editions, pins, waiting PDFs. `stamp`: add `doc_id`/`version` to older manifests. `migrate`: move root PDFs into `source/`. The converters import it. |
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |

@@ -81,7 +81,7 @@ part or error code) and names the converter to use:
 
 ```bash
 python scripts/convert_manual.py my-corpus/vendor/new_docs/guide.pdf --title "Widget User Guide"
-python scripts/rebuild_reference.py my-corpus/vendor/new_docs/commands.pdf --slug widget-cmds --title "Widget Command Reference"
+python scripts/convert_manual.py my-corpus/vendor/new_docs/commands.pdf --slug widget-cmds --title "Widget Command Reference"
 ```
 
 Each converter writes `my-corpus/vendor/docs/<slug>/` and then moves the PDF to
@@ -147,9 +147,9 @@ useless fragments.
 | script | use |
 |---|---|
 | `pick_extractor.py` | inspect a PDF and recommend a converter |
-| `convert_manual.py` | prose PDF to chunks with page numbers (pymupdf4llm) |
+| `convert_manual.py` | PDF to chunks with page numbers, prose or reference by its outline (pymupdf4llm) |
 | `convert_docling.py` | prose PDF to chunks with page numbers and TOC-anchored breadcrumbs (Docling) |
-| `rebuild_reference.py` | reference PDF to chunks with pages and entry names |
+| `rebuild_reference.py` | reference PDF to chunks with pages and entry names (what `convert_manual.py` runs for a reference) |
 | `enrich_chunks.py` | strip page headers and footers, add breadcrumbs |
 | `extract_figures.py`, `ocr_figures.py` | crop figures; read the words in raster ones |
 | `build_index.py` | regenerate a collection's catalog |

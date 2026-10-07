@@ -10,7 +10,7 @@ from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import SCRIPTS, WS, run, inverted_fixture, gadget_fixture, write_pdf, load_script, edition_reference_fixture  # noqa: E402
+from _support import SCRIPTS, WS, run, inverted_fixture, gadget_fixture, write_pdf, load_script, edition_reference_fixture, mixed_fixture  # noqa: E402
 import pymupdf  # noqa: E402
 
 
@@ -569,6 +569,54 @@ class ConverterTest(unittest.TestCase):
         for name in ("prose", "ref"):
             pdf = WS.pdf(name)
             self.assertEqual("".join(cm.page_markdown(pdf)[0]), pymupdf4llm.to_markdown(str(pdf)), name)
+
+
+    def test_41c_the_reference_path_is_one_implementation(self):
+        """`convert_manual.py --shape reference` and `rebuild_reference.py`
+        are the same code: the same PDF gives the same files."""
+        out = {}
+        for script, extra in (("rebuild_reference.py", []), ("convert_manual.py", ["--shape", "reference"])):
+            coll = WS.collection(f"same-{script[:7]}", "ref")
+            r = run(script, str(coll / "widget-commands.pdf"), "--title", "Widget Commands", "--slug", "ref", *extra)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out[script] = coll / "docs" / "ref"
+        trees = [{str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+                 for root in out.values()]
+        self.assertTrue(trees[0])
+        self.assertEqual(trees[0].keys(), trees[1].keys())
+        for name in trees[0]:
+            self.assertEqual(trees[0][name], trees[1][name], f"{name} differs between the two commands")
+
+    def test_41d_shape_is_decided_from_the_outline_and_a_mixed_one_is_refused(self):
+        def convert(name, pdf, *extra):
+            coll = WS.collection(name, pdf) if pdf in WS.PDFS else self.tmp / name
+            return coll, run("convert_manual.py", str((coll / WS.PDFS[pdf][0]) if pdf in WS.PDFS else coll / f"{pdf}.pdf"),
+                             "--title", "T", "--slug", "doc", *extra)
+
+        coll, r = convert("auto-ref", "ref")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("shape: reference", r.stdout)
+        self.assertTrue(json.loads((coll / "docs" / "doc" / "manifest.json").read_text(encoding="utf-8"))["attribution"])
+
+        coll, r = convert("auto-prose", "prose")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("shape: prose", r.stdout)
+        self.assertNotIn("attribution", json.loads((coll / "docs" / "doc" / "manifest.json").read_text(encoding="utf-8")))
+
+        mixed = self.tmp / "auto-mixed"
+        (mixed / "docs").mkdir(parents=True)
+        mixed_fixture(mixed / "mixed.pdf")
+        r = run("convert_manual.py", str(mixed / "mixed.pdf"), "--title", "T", "--slug", "doc")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--shape", r.stderr)
+        self.assertIn("shape: mixed", r.stdout)
+        self.assertFalse((mixed / "docs" / "doc").exists(), "a document of uncertain shape was written")
+        r = run("convert_manual.py", str(mixed / "mixed.pdf"), "--title", "T", "--slug", "doc", "--shape", "prose")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+        r = run("convert_manual.py", str(coll / "widget-guide.pdf"), "--title", "T", "--slug", "doc",
+                "--shape", "prose", "--command-level", "1", "--replace")
+        self.assertNotEqual(r.returncode, 0, "--command-level was accepted for a prose conversion")
 
 
 if __name__ == "__main__":

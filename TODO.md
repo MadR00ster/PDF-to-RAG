@@ -190,7 +190,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | **Phase 4: coverage** |||||
 | T13 | Chunk in spans, so offsets are exact (**done**) | 2.2 | T01 | M |
 | T14 | Page numbers on the light prose path (**done**) | 2.1 | T03, T13 | L |
-| T15 | One pymupdf4llm converter | 2.1 "next step" | T14 | L |
+| T15 | One pymupdf4llm converter (**done**) | 2.1 "next step" | T14 | L |
 | **Phase 5: later** |||||
 | T16 | Reference breadcrumbs from the TOC chain | 2.3 | T06 | M |
 | T17 | Section identity across reconversions | 2.4 | T12 | M |
@@ -1543,9 +1543,9 @@ it in §4.
 
 ### T15: One pymupdf4llm converter [2.1, "next step"]
 
-**Status:** not started. Start after T14. It used to wait on a real-corpus
-check that the joined pages equal the whole-document markdown. The source
-settles that (§1, item 8), so there is nothing left to wait for.
+**Status:** done. `rebuild_reference.py` is 64 lines. `detect_shape`,
+`looks_like_entry` and `pick_command_level` live in `_common.py`; tests are
+test_41c and test_41d. Fixture output is byte-identical to T14's.
 
 **Why.** After T14 the two pymupdf4llm converters share:
 - page extraction
@@ -1593,9 +1593,9 @@ before chunking. Two scripts to keep in step is how features drift (SKILL.md
 - Every existing `rebuild_reference.py` test passes unchanged.
 
 **Done when**
-- [ ] One implementation of the reference path. `rebuild_reference.py` is
+- [x] One implementation of the reference path. `rebuild_reference.py` is
       under about 80 lines.
-- [ ] The output is byte-identical to before for the reference fixtures.
+- [x] The output is byte-identical to before for the reference fixtures.
 
 ---
 
