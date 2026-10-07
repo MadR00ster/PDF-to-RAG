@@ -1340,6 +1340,39 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual(corpus.root, nested, "an index in a subfolder of a moved corpus reads the old corpus")
         corpus._db.close()
 
+    def test_22c_an_entry_naming_the_index_another_way_is_reused(self):
+        """An editor entry that reaches this index by another path is still
+        this index's entry.
+
+        The build resolves its root, while an entry written earlier may name
+        the same folder through a symlink, a junction or a Windows 8.3 short
+        name. Compared as text, those looked like another corpus's entry, and
+        every build added a second server for the same index. Windows CI
+        caught it through the runner's short temp path; a symlink is the same
+        failure wherever symlinks can be made."""
+        real = self.tmp / "RealRoot"
+        coll = real / "Gadgets"
+        for folder in ("new_docs", "docs"):
+            (coll / folder).mkdir(parents=True)
+        gadget_fixture(coll / "new_docs" / "g.pdf", "2025.1", ["Setup"])
+        r = run("convert_manual.py", str(coll / "new_docs" / "g.pdf"), "--title", "G")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        link = self.tmp / "LinkedRoot"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks cannot be made here; test_22b covers Windows short names")
+        config = real / ".vscode" / "mcp.json"
+        config.parent.mkdir()
+        config.write_text(json.dumps({"servers": {"my-manuals": {
+            "type": "stdio", "command": "python",
+            "args": ["X:\\old\\checkout\\scripts\\mcp_server.py", "--db", str(link / "mcp-index.sqlite3")]}}}),
+            encoding="utf-8")
+        r = run("build_search_db.py", "--root", str(link), "--emit-vscode-config")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        servers = json.loads(config.read_text(encoding="utf-8"))["servers"]
+        self.assertEqual(list(servers), ["my-manuals"], "a second server was added for the same index")
+
     def test_23_checker_catches_edition_defects(self):
         """Each way a set of editions can be undecidable, planted alone."""
         import shutil

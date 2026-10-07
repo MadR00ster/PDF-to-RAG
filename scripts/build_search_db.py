@@ -584,8 +584,13 @@ def emit_vscode_config(root: Path, db_path: Path) -> Path:
         db_arg = str(db_path)             # --out put the index outside the corpus
 
     def same_path(arg: str, path: Path) -> bool:
+        """Whether two spellings name one file. Resolved, not just made
+        absolute: the root here is resolved, while an entry written by hand
+        or by another tool may reach the same folder through a symlink, a
+        junction or a Windows 8.3 short name (C:\\Users\\RUNNER~1), and
+        comparing those as text added a second server for one index."""
         text = str(arg).replace("${workspaceFolder}", str(root))
-        return os.path.normcase(os.path.abspath(text)) == os.path.normcase(os.path.abspath(path))
+        return os.path.normcase(os.path.realpath(text)) == os.path.normcase(os.path.realpath(path))
 
     def serves_this_index(cfg) -> bool:
         """Whether an entry is this corpus's server: by the index it opens,
