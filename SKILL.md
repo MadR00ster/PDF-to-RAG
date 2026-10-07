@@ -517,6 +517,13 @@ one cannot pass itself.
 A document is its folder: the folder's name is its slug in every tool. The
 manifest's `slug` is a copy, and the checker warns when the two differ.
 
+`scripts/manifest.schema.json` describes the manifest: the fields the builders
+read are required, the rest are optional, and a manifest may carry others.
+Every converter here writes `schema_version` and a `converter` record (the
+script, the extractor and its version, when, and whether it wrote the
+breadcrumbs itself), so a wrong page or label is traced to what produced it and
+`enrich_chunks.py` knows which breadcrumbs to leave alone.
+
 Where a value is stored twice, one copy wins:
 
 - **breadcrumb:** the manifest. The chunk's first line renders it for a reader

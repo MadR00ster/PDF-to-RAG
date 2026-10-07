@@ -587,6 +587,11 @@ class ConverterTest(unittest.TestCase):
                  for root in out.values()]
         self.assertTrue(trees[0])
         self.assertEqual(trees[0].keys(), trees[1].keys())
+        for tree in trees:
+            # the one record of which command ran, and when
+            m = json.loads(tree["manifest.json"])
+            m["converter"].pop("script"), m["converter"].pop("converted_at")
+            tree["manifest.json"] = json.dumps(m, indent=2).encode()
         for name in trees[0]:
             self.assertEqual(trees[0][name], trees[1][name], f"{name} differs between the two commands")
 

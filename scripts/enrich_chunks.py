@@ -345,16 +345,20 @@ def is_existing_breadcrumb(line: str, manual_title: str) -> bool:
 CONVERTER_BREADCRUMB_FIELDS = ("command", "confidence")
 
 
-def converter_owns_breadcrumb(section: dict) -> bool:
+def converter_owns_breadcrumb(section: dict, manifest: dict | None = None) -> bool:
     """True if a page-aware converter wrote this chunk's breadcrumb.
 
     Those are always left alone, and every other breadcrumb is rewritten --
     including this script's own earlier ones, which the TOC walk exists to
-    correct. The provenance is the manifest field, not the breadcrumb's shape:
-    a guard that kept any breadcrumb naming ancestors once protected
-    `Title › command` from a title-only pass, and would now protect every
-    wrong parent the old heading walk wrote.
+    correct. The provenance is a field, not the breadcrumb's shape: a guard
+    that kept any breadcrumb naming ancestors once protected `Title › command`
+    from a title-only pass, and would now protect every wrong parent the old
+    heading walk wrote. The field is the manifest's converter.owns_breadcrumbs;
+    a manifest written before it is read by its sections' own fields.
     """
+    declared = ((manifest or {}).get("converter") or {}).get("owns_breadcrumbs")
+    if isinstance(declared, bool):
+        return declared
     return any(f in section for f in CONVERTER_BREADCRUMB_FIELDS)
 
 
@@ -391,7 +395,7 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
         removed.update(gone)
         lines_dropped += dropped
         # Never overwrite a breadcrumb a page-aware converter wrote.
-        keep_existing = converter_owns_breadcrumb(s)
+        keep_existing = converter_owns_breadcrumb(s, manifest)
         if not keep_existing:
             new = apply_breadcrumb(new, crumbs[idx], manifest["title"])
         if new != text:

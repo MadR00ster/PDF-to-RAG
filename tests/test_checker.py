@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import WS, run, handmade_document, words, load_script  # noqa: E402
+from _support import SCRIPTS, WS, run, handmade_document, words, load_script, schema_errors  # noqa: E402
 
 
 class CheckerTest(unittest.TestCase):
@@ -311,6 +311,52 @@ class CheckerTest(unittest.TestCase):
         r, raised = self.check(coll, "--strict", "--only", "prose")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse(raised, f"a light prose conversion raised {raised}")
+
+
+    def test_48_every_manifest_the_suite_makes_fits_the_schema(self):
+        """scripts/manifest.schema.json describes what the converters write, and
+        every one of them says what wrote it."""
+        schema = json.loads((SCRIPTS / "manifest.schema.json").read_text(encoding="utf-8"))
+        checker = load_script("check_corpus")
+        self.assertEqual(tuple(schema["required"]), checker.REQUIRED_FIELDS)
+
+        roots = [WS.corpus(), WS.fig_corpus(), WS.gadgets()[0], WS.hand_corpus()]
+        seen = 0
+        for root in roots:
+            for path in sorted(root.rglob("manifest.json")):
+                if ".rebuild-backup" in path.parts:
+                    continue
+                m = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(schema_errors(m, schema), [], path.parent.name)
+                seen += 1
+                if root is not roots[3]:
+                    self.assertEqual(m["schema_version"], 1)
+                    conv = m["converter"]
+                    self.assertIn(conv["script"], ("convert_manual.py", "rebuild_reference.py"))
+                    self.assertEqual(conv["extractor"], "pymupdf4llm")
+                    self.assertRegex(conv["extractor_version"], r"^\d")
+                    self.assertEqual(conv["owns_breadcrumbs"], "command" in m["sections"][0], path.parent.name)
+        self.assertGreaterEqual(seen, 8)
+        self.assertEqual(schema_errors({"slug": "a", "title": "t", "source_pdf": "x", "page_count": 0, "sections": []}, schema),
+                         ["$.page_count: 0 is below 1"], "the validator accepts what the schema forbids")
+
+        # enrich reads the manifest's own word for who wrote a breadcrumb, and
+        # reads the sections where an older manifest has none
+        corpus = WS.fresh(WS.corpus(), "owns")
+        ref = corpus / "docs" / "ref" / "manifest.json"
+        m = json.loads(ref.read_text(encoding="utf-8"))
+        del m["converter"]
+        ref.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        before = {p: p.read_bytes() for p in (corpus / "docs" / "ref").rglob("*.md")}
+        r = run("enrich_chunks.py", str(corpus), "--only", "ref")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual({p: p.read_bytes() for p in before}, before, "enrich rewrote a reference's breadcrumbs")
+        m["converter"] = {"script": "x", "extractor": "x", "extractor_version": "1", "converted_at": "now",
+                          "owns_breadcrumbs": False}
+        ref.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        run("enrich_chunks.py", str(corpus), "--only", "ref")
+        self.assertNotEqual({p: p.read_bytes() for p in before}, before,
+                            "a manifest saying it owns no breadcrumbs was not rewritten")
 
 
 if __name__ == "__main__":

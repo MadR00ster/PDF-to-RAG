@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import re
 import shutil
@@ -199,6 +200,25 @@ def publish(staging: Path, out_dir: Path) -> Path | None:
         out_dir.rename(backup)
     staging.rename(out_dir)
     return backup
+
+
+MANIFEST_SCHEMA_VERSION = 1
+
+
+def converter_record(script: str, extractor: str, package: str, owns_breadcrumbs: bool) -> dict:
+    """The manifest's `converter`: what wrote this document, and with what.
+
+    A page number or a breadcrumb that turns out wrong is traced to the script
+    and library release that produced it, and a corpus of mixed conversions is
+    told apart from one reconverted whole. `owns_breadcrumbs` says the chunk
+    breadcrumbs came from the TOC chain at conversion, so enrich_chunks.py
+    leaves them alone."""
+    try:
+        version = importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return {"script": script, "extractor": extractor, "extractor_version": version,
+            "converted_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "owns_breadcrumbs": owns_breadcrumbs}
 
 
 def load_manifests(collection: Path) -> dict[str, dict]:

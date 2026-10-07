@@ -365,6 +365,8 @@ def convert(plan: editions.Plan, title: str, max_chars: int) -> None:
         "toc": [{"level": lvl, "title": t.strip(), "page": pg} for lvl, t, pg in toc],
         "sections": entries,
         "full_md_chars": len(full_md),
+        "schema_version": editions.MANIFEST_SCHEMA_VERSION,
+        "converter": editions.converter_record("convert_docling.py", "docling", "docling", True),
     }, plan.doc_id, plan.version, plan.later)
     # ensure_ascii=True: a non-UTF-8 default locale would otherwise mangle this
     # for any tool that opens it without an explicit encoding= argument.

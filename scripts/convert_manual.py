@@ -371,6 +371,8 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
         "toc": [{"level": lvl, "title": t.strip(), "page": pg} for lvl, t, pg in doc.get_toc()],
         "sections": section_entries,
         "full_md_chars": len(md_text),
+        "schema_version": editions.MANIFEST_SCHEMA_VERSION,
+        "converter": editions.converter_record(Path(sys.argv[0]).name, "pymupdf4llm", "pymupdf4llm", False),
     }, plan.doc_id, plan.version, plan.later)
     doc.close()
     # ensure_ascii=True: this machine's Python defaults to a non-UTF-8
@@ -563,6 +565,8 @@ def convert_reference(plan: editions.Plan, title: str, command_level: int | None
                 },
                 "sections": entries,
                 "full_md_chars": len(full_md),
+                "schema_version": editions.MANIFEST_SCHEMA_VERSION,
+                "converter": editions.converter_record(Path(sys.argv[0]).name, "pymupdf4llm", "pymupdf4llm", True),
             }, plan.doc_id, plan.version, plan.later),
             indent=2,
         )

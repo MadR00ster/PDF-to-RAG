@@ -77,6 +77,46 @@ def run(script: str, *args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
+JSON_TYPES = {"string": str, "boolean": bool, "array": list, "object": dict, "null": type(None)}
+
+
+def schema_errors(value, schema: dict, path: str = "$") -> list[str]:
+    """What is wrong with `value` under a JSON Schema, for the keywords
+    scripts/manifest.schema.json uses: type, required, properties, items, enum,
+    const, minimum, pattern and additionalProperties (true). Anything else in a
+    schema is documentation here."""
+    errors = []
+    if "type" in schema:
+        for name in ([schema["type"]] if isinstance(schema["type"], str) else schema["type"]):
+            if name == "integer":
+                ok = isinstance(value, int) and not isinstance(value, bool)
+            elif name == "number":
+                ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+            else:
+                ok = isinstance(value, JSON_TYPES[name]) and not (name != "boolean" and isinstance(value, bool))
+            if ok:
+                break
+        else:
+            return [f"{path}: {value!r} is not {schema['type']}"]
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{path}: {value!r} is not one of {schema['enum']}")
+    if "const" in schema and value != schema["const"]:
+        errors.append(f"{path}: {value!r} is not {schema['const']!r}")
+    if "minimum" in schema and isinstance(value, (int, float)) and value < schema["minimum"]:
+        errors.append(f"{path}: {value} is below {schema['minimum']}")
+    if "pattern" in schema and isinstance(value, str) and not re.search(schema["pattern"], value):
+        errors.append(f"{path}: {value!r} does not match {schema['pattern']}")
+    if isinstance(value, dict):
+        errors += [f"{path}: lacks {name!r}" for name in schema.get("required", []) if name not in value]
+        for name, sub in schema.get("properties", {}).items():
+            if name in value:
+                errors += schema_errors(value[name], sub, f"{path}.{name}")
+    if isinstance(value, list) and "items" in schema:
+        for i, item in enumerate(value):
+            errors += schema_errors(item, schema["items"], f"{path}[{i}]")
+    return errors
+
+
 def write_pdf(path: Path, pages: list[list[tuple[str, int]]], toc: list) -> None:
     """Build a PDF from [(text, fontsize), ...] per page, plus a bookmark TOC.
 

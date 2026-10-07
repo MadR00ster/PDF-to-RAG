@@ -196,7 +196,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T17 | Section identity across reconversions (**done**) | 2.4 | T12 | M |
 | T18 | Retrieval experiments behind flags (**done**) | 2.5 | T11, T12 | M |
 | T19 | Say which copy of a field is canonical; stop writing `chars` (**done**) | 3.1 | T07 | M |
-| T20 | Manifest schema and provenance | 3.2 | T06 | M |
+| T20 | Manifest schema and provenance (**done**) | 3.2 | T06 | M |
 | T21 | Export chunks as JSONL | 3.3 | T07 | S |
 | T22 | Warn when the index is stale | 3.4 | T07 | M |
 | T23 | One `collection.json` (**not now: skip**) | 3.6 | — | — |
@@ -1815,7 +1815,7 @@ rule to catch the copies drifting apart:
 
 ### T20: Manifest schema and provenance [3.2]
 
-**Status:** not started
+**Status:** done. Test: test_48 (in test_checker.py); test_41c now strips `converter.script` and `converted_at` before comparing.
 
 **Files.** `scripts/manifest.schema.json` (new), the three converters,
 `scripts/enrich_chunks.py`, `SKILL.md`, tests.
@@ -1868,8 +1868,8 @@ rule to catch the copies drifting apart:
      still rewrites `prose`'s.
 
 **Done when**
-- [ ] Every converter's manifest validates and carries `converter`.
-- [ ] SKILL.md's contract section points at the schema.
+- [x] Every converter's manifest validates and carries `converter`.
+- [x] SKILL.md's contract section points at the schema.
 
 ---
 
