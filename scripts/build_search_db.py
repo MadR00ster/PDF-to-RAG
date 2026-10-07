@@ -293,6 +293,15 @@ def find_collections(root: Path) -> list[tuple[str, str, Path]]:
             for c in editions.find_collections(root)]
 
 
+def collection_clashes(root: Path) -> dict[str, list[str]]:
+    """The collection keys more than one folder under `root` gives, with those
+    folders. Every script that reads a whole corpus stops on these."""
+    by_key: dict[str, list[str]] = {}
+    for key, display, _docs in find_collections(root):
+        by_key.setdefault(key, []).append(display)
+    return {k: v for k, v in sorted(by_key.items()) if len(v) > 1}
+
+
 def load_documents(root: Path) -> tuple[list, list[str]]:
     """Every document's manifest, and the manifests that could not be used.
 
@@ -400,10 +409,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
     # A collection is known in the index by a key made from its folder name,
     # and a document by that key and its slug. Two folders giving one key
     # would merge two vendors' documents into one collection.
-    by_key: dict[str, list[str]] = {}
-    for key, display, _docs in find_collections(root):
-        by_key.setdefault(key, []).append(display)
-    clashes = {k: v for k, v in by_key.items() if len(v) > 1}
+    clashes = collection_clashes(root)
     if clashes:
         print("Collection folders whose names give the same collection key:", file=sys.stderr)
         for key, folders in sorted(clashes.items()):

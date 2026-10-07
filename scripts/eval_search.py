@@ -89,14 +89,14 @@ def resolve_quotes(questions: list[dict]) -> list[str]:
             try:
                 doc = mcp_server.resolve_document(a.get("doc_id"), a.get("version"), a.get("collection"))
             except ValueError as exc:
-                stale.append(f"{q['id']}: {exc}")
+                stale.append(f"{q.get('id', '(no id)')}: {exc}")
                 continue
             rows = mcp_server.CORPUS.db.execute(
                 "SELECT file, body FROM chunks WHERE slug = ? AND collection = ? ORDER BY ord",
                 (doc["slug"], doc["collection"])).fetchall()
             hits = [r["file"] for r in rows if quote in " ".join(r["body"].split())]
             if not 1 <= len(hits) <= MAX_QUOTE_SECTIONS:
-                stale.append(f"{q['id']}: {quote[:50]!r} is in {len(hits)} sections of {doc['slug']}")
+                stale.append(f"{q.get('id', '(no id)')}: {quote[:50]!r} is in {len(hits)} sections of {doc['slug']}")
                 continue
             resolved.extend({"slug": doc["slug"], "collection": doc["collection"],
                              "file": "sections/" + h.rsplit("/", 1)[-1]} for h in hits)
@@ -117,7 +117,7 @@ def missing_answers(questions: list[dict]) -> list[str]:
                 params.append(a["collection"])
             hit = mcp_server.CORPUS.db.execute(sql, params).fetchone()
             if not hit:
-                out.append(f"{q['id']}: {a['slug']} {a['file']}")
+                out.append(f"{q.get('id', '(no id)')}: {a['slug']} {a['file']}")
     return out
 
 

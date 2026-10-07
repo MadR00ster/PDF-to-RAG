@@ -402,6 +402,10 @@ class ServerTest(unittest.TestCase):
                 if name == "idents":
                     self.assertEqual(server.ident_rows("how do I set the clock"), frozenset())
                     held = server.ident_rows(query)
+                    # Asked only about the candidates being ranked.
+                    one = next(iter(held))
+                    self.assertEqual(server.ident_rows(query, [one, -1]), frozenset({one}))
+                    self.assertEqual(server.ident_rows(query, []), frozenset())
                     row = {"score": 0.0, "entity": "", "heading": "", "chars": 1000, "noise": 0, "id": next(iter(held))}
                     self.assertEqual(server.rank_adjust(row, query, held), -3.0)
                     self.assertEqual(server.rank_adjust(row, query), 0.0)
@@ -510,6 +514,19 @@ class ServerTest(unittest.TestCase):
         c._root = away
         self.assertEqual(c.staleness_warning(), "")
         c._db.close()
+
+        # one server, as an editor keeps it: the first answer is not kept for good
+        manifest.write_bytes(original)
+        shutil.rmtree(corpus / "docs" / "ref")
+        r = run("build_search_db.py", "--root", str(corpus), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        live = server.Corpus(db)
+        self.addCleanup(lambda: live._db and live._db.close())
+        self.assertEqual(live.staleness_warning(), "")
+        manifest.write_text(json.dumps(changed, indent=2), encoding="utf-8")
+        self.assertEqual(live.staleness_warning(), "", "rechecked within STALE_RECHECK")
+        live._stale_checked -= server.STALE_RECHECK
+        self.assertIn("Stale index", live.staleness_warning(), "a change after the first check was never seen")
 
         # and it reaches an answer, wherever the partial-index warning would
         manifest.write_text(json.dumps(changed, indent=2), encoding="utf-8")

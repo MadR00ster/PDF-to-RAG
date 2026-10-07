@@ -9,11 +9,12 @@ learned, which a later change to this code will want.
 Updated 2026-10-07, after the session that carried out TODO.md.
 
 - **Branch:** `claude/wizardly-maxwell-6r2cni`, based on `main` at `0e4dd59`.
-  No pull request is open; don't open one unless the user asks.
+  Opened as a pull request against `main` after a review whose ten findings
+  were fixed in one commit ("Fix what the review of this branch found").
 - **Done:** every task in TODO.md except **T23**, which was decided against.
   Each is marked done in TODO.md with its checkboxes ticked, one commit apiece,
   CI green on every push (Linux and Windows, Python 3.10 and 3.13).
-- **Tests:** 73, all passing, with 2 skipped (no Tesseract language data, no
+- **Tests:** 74, all passing, with 2 skipped (no Tesseract language data, no
   Docling). `python tests/run_each.py` passes too: every test alone.
 - **Owed, and why:** TODO.md section 4 lists the measurements that need the
   user's corpus (search comparisons for T10, T11, T16 and T18, furniture for

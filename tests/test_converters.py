@@ -481,6 +481,11 @@ class ConverterTest(unittest.TestCase):
             return ec.detect_furniture(texts, title)
 
         self.assertEqual(furniture_for("Design Compiler"), set(), "the product name alone was taken for furniture")
+        for line in ("Design Compiler User Guide conventions are listed below",
+                     "Design Compiler User Guides"):
+            self.assertEqual(furniture_for(line), set(), f"{line!r} only starts with the title")
+        self.assertEqual(ec.detect_furniture([f"## P{n}\n\nDCShell starts the Flow.\n" for n in range(4)], "DC"),
+                         set(), "a short title matched the start of a word")
         for line in ("Design Compiler User Guide", "Design Compiler User Guide V-2024.06",
                      "Design Compiler User"):       # 77% of the title
             self.assertIn(line, furniture_for(line), f"{line!r} is the running title")

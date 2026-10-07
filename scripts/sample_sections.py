@@ -94,13 +94,15 @@ def pools(root: Path, min_chars: int, used: set, figures_only: bool) -> dict:
             for s in manifest.get("sections", []):
                 if (manifest["slug"], s["file"]) in used:
                     continue
+                if BOILERPLATE_RE.search(clean_heading(s.get("heading") or "")):
+                    continue
+                # Bytes, not characters: close enough for a floor, and no
+                # section is read in full only to be measured.
                 try:
-                    size = len((mp.parent / s["file"]).read_text(encoding="utf-8", errors="replace"))
+                    size = (mp.parent / s["file"]).stat().st_size
                 except OSError:
                     continue
                 if size < min_chars:
-                    continue
-                if BOILERPLATE_RE.search(clean_heading(s.get("heading") or "")):
                     continue
                 if figures_only and s["file"] not in figures:
                     continue

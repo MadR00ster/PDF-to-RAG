@@ -607,6 +607,44 @@ class EditionsTest(unittest.TestCase):
         self.assertIn("hand-2/manifest.json", r.stdout + r.stderr)
         self.assertEqual(db.read_bytes(), before, "a build that could not read every manifest replaced the index")
 
+    def test_25f_a_corpus_root_finds_its_collections_one_way(self):
+        """Each script took a corpus root by its own reading of docs/: a stray
+        empty docs/ at the root hid every collection from build_index.py while
+        build_search_db.py indexed them, a collection with nothing converted
+        yet was invisible to `editions.py status`, a mistyped path raised a
+        traceback, and one unreadable manifest stopped build_index.py before
+        the collections after it."""
+        root = self.tmp / "RootWithStray"
+        (root / "docs").mkdir(parents=True)                       # empty, at the root
+        for vendor in ("Alpha", "Beta"):
+            handmade_document(root / vendor, "hand")
+        r = run("build_index.py", str(root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for vendor in ("Alpha", "Beta"):
+            self.assertTrue((root / vendor / "docs" / "index.json").is_file(), vendor)
+        self.assertFalse((root / "docs" / "index.json").exists(), "the empty docs/ was taken for the collection")
+
+        waiting = self.tmp / "Waiting"
+        (waiting / "docs").mkdir(parents=True)
+        (waiting / "new_docs").mkdir()
+        write_pdf(waiting / "new_docs" / "first.pdf", [[("One", 12)]], [])
+        r = run("editions.py", "status", str(waiting))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("first.pdf", r.stdout)
+
+        r = run("build_index.py", str(self.tmp / "No Such Manual"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("No docs/", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+        (root / "Alpha" / "docs" / "hand" / "manifest.json").write_text("{", encoding="utf-8")
+        (root / "Beta" / "docs" / "index.json").unlink()
+        r = run("build_index.py", str(root))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("Alpha", r.stderr)
+        self.assertTrue((root / "Beta" / "docs" / "index.json").is_file(), "the collection after it was not built")
+
     def test_25c_a_filed_pdf_is_never_overwritten(self):
         """PTUG.PDF is a PDF, and a filed one is never replaced.
 

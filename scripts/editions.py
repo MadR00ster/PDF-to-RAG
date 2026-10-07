@@ -153,17 +153,21 @@ def find_collections(root: Path) -> list[Path]:
     """A collection is a folder whose docs/ holds at least one document. `root`
     itself is the one collection when its own docs/ does, otherwise each
     subfolder that does is one. The one rule every tool uses: a docs/ folder
-    with nothing in it is not a collection, so it never hides the ones below."""
+    with nothing in it is not a collection, so it never hides the ones below.
+    A path that is not a folder holds none."""
     if document_dirs(root / "docs"):
         return [root]
+    if not root.is_dir():
+        return []
     return sorted(p for p in root.iterdir() if p.is_dir() and document_dirs(p / "docs"))
 
 
 def collections_under(path: Path) -> list[Path]:
-    """The collections a command line path means: `path` itself when it has a
-    docs/ folder, otherwise each collection below it (find_collections). The
-    one rule every script that takes a collection takes a corpus root by."""
-    return [path] if (path / "docs").is_dir() else find_collections(path)
+    """The collections a command line path means: those find_collections
+    finds, or, where it finds none, `path` itself when it has a docs/ folder:
+    a collection with nothing converted yet. The one rule every script that
+    takes a collection takes a corpus root by."""
+    return find_collections(path) or ([path] if (path / "docs").is_dir() else [])
 
 
 def skips_name(name: str) -> bool:
@@ -835,7 +839,7 @@ def cmd_migrate(args) -> int:
 
 def cmd_status(args) -> int:
     root = args.path.resolve()
-    collections = find_collections(root)
+    collections = collections_under(root)
     if not collections:
         sys.exit(f"No docs/ under {root}")
     worst = 0

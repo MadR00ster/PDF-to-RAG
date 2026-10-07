@@ -42,6 +42,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 import traceback
 import unicodedata
 from collections import Counter
@@ -118,6 +119,11 @@ def log(msg: str) -> None:
     print(f"[mcp_server] {msg}", file=sys.stderr, flush=True)
 
 
+# How long a check that found the index up to date is trusted before the
+# files are looked at again.
+STALE_RECHECK = 30.0
+
+
 class Corpus:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -127,6 +133,7 @@ class Corpus:
         self._has_editions: bool | None = None
         self._has_idents: bool | None = None
         self._stale: str | None = None
+        self._stale_checked = 0.0
         self._documents: dict[tuple[str, str], sqlite3.Row] | None = None
         self.name = db_path.stem
 
@@ -155,15 +162,22 @@ class Corpus:
         """A line to append when the corpus has changed since the index was built.
 
         The same failure as a partial index, one rebuild later: search answers
-        confidently from manifests that are gone. Worked out once per process,
-        from the files the index recorded (manifests, figures.json and
-        current_versions.json, each by size, then mtime, then content) and from
-        any document folder it did not know. Empty where there is no record,
+        confidently from manifests that are gone. Worked out from the files the
+        index recorded (manifests, figures.json and current_versions.json,
+        each by size, then mtime, then content) and from any document folder
+        it did not know. Empty where there is no record,
         or where none of the recorded files can be found: an index copied
         without its corpus has nothing to be compared with.
+
+        Once found stale, the index stays stale for the life of the process.
+        Until then the answer is kept for STALE_RECHECK seconds, not for good:
+        the server lives as long as the editor, and a manual reconverted
+        after the first search is the case this warning exists for.
         """
-        if self._stale is None:
+        now = time.monotonic()
+        if self._stale is None or (not self._stale and now - self._stale_checked >= STALE_RECHECK):
             self._stale = self._compute_staleness()
+            self._stale_checked = now
         return self._stale
 
     def _compute_staleness(self) -> str:
@@ -559,7 +573,7 @@ def search(query: str, collection=None, document=None, limit=10, max_per_documen
         # to stay one phrase rather than become "set OR scan OR ...".
         rows = run_match(" OR ".join(terms), collection, document, limit)
 
-    holding = ident_rows(query) if rows else frozenset()
+    holding = ident_rows(query, [r["id"] for r in rows]) if rows else frozenset()
     scored = sorted(((rank_adjust(r, query, holding), r) for r in rows), key=lambda pair: pair[0])
     picked: list[sqlite3.Row] = []
     per_doc: dict[tuple[str, str], int] = {}
@@ -576,9 +590,12 @@ def search(query: str, collection=None, document=None, limit=10, max_per_documen
     return picked
 
 
-def ident_rows(query: str) -> frozenset[int]:
-    """Rowids of the chunks that hold an identifier the query names, in an index
-    built with --ident-index; empty where there is none or the query names none."""
+def ident_rows(query: str, candidates: list[int] | None = None) -> frozenset[int]:
+    """Rowids, among `candidates` where given, of the chunks that hold an
+    identifier the query names, in an index built with --ident-index; empty
+    where there is none or the query names none. Only the candidates are asked about: a flag
+    such as -help is in tens of thousands of chunks, and only the few being
+    ranked matter."""
     if not CORPUS.has_idents:
         return frozenset()
     named = dict.fromkeys(t for t, ident in query_tokens(query) if ident)
@@ -586,7 +603,11 @@ def ident_rows(query: str) -> frozenset[int]:
         return frozenset()
     expr = " OR ".join('"' + t.replace('"', "") + '"' for t in named)
     try:
-        return frozenset(r[0] for r in CORPUS.db.execute("SELECT rowid FROM idents WHERE idents MATCH ?", (expr,)))
+        sql, params = "SELECT rowid FROM idents WHERE idents MATCH ?", [expr]
+        if candidates is not None:
+            sql += f" AND rowid IN ({', '.join('?' * len(candidates))})"
+            params += candidates
+        return frozenset(r[0] for r in CORPUS.db.execute(sql, params))
     except sqlite3.OperationalError:
         return frozenset()
 

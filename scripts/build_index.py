@@ -211,7 +211,13 @@ def build_collection(vendor_dir: Path) -> bool:
     written, if its editions cannot be ordered or its superseded.json cannot be
     used."""
     docs_dir = vendor_dir / "docs"
-    manuals = load_manuals(docs_dir)
+    try:
+        manuals = load_manuals(docs_dir)
+    except (OSError, ValueError, KeyError) as exc:
+        # ValueError covers a manifest that is not JSON; KeyError one missing
+        # a field the index needs.
+        print(f"!! A manifest under {docs_dir} could not be read: {exc!r}")
+        return False
     try:
         superseded = load_superseded(vendor_dir, {m["slug"] for m in manuals})
     except SystemExit as stop:

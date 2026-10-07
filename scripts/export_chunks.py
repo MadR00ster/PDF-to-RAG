@@ -33,10 +33,7 @@ from _common import utf8_console  # noqa: E402
 
 def chunk_lines(root: Path, current_only: bool):
     """(JSON lines, problems) for every section of every document."""
-    by_key: dict[str, list[str]] = {}
-    for key, display, _docs in bsd.find_collections(root):
-        by_key.setdefault(key, []).append(display)
-    problems = [f"{', '.join(v)} are all collection '{k}'" for k, v in sorted(by_key.items()) if len(v) > 1]
+    problems = [f"{', '.join(v)} are all collection '{k}'" for k, v in bsd.collection_clashes(root).items()]
     documents, failed = bsd.load_documents(root)
     problems += [f"{line}" for line in failed]
     if problems:

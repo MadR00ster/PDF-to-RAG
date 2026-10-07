@@ -68,6 +68,11 @@ ADJACENCY = 3
 # share of the title such a line has to cover.
 TITLE_SHARE = 0.6
 
+# What follows the title in a running footer is a release, a page number or
+# a date. Three lower-case words in a row are a sentence that happens to start
+# with the title, and are kept.
+PROSE_RUN_RE = re.compile(r"\b[a-z]+\s+[a-z]+\s+[a-z]+\b")
+
 
 def iter_lines_outside_code(text: str):
     """Yield (index, raw_line, in_code) tracking fenced code blocks."""
@@ -143,10 +148,13 @@ def detect_furniture(section_texts: list[str], title: str) -> set[str]:
     # line is unrecoverable without reconverting the PDF. So the only things
     # that qualify are the "Feedback" link and the running title footer.
     furniture = set()
+    head = title_core[:40]
     for line, n in counts.items():
-        norm = re.sub(r"\s+", " ", line).strip().lower()
+        spaced = re.sub(r"\s+", " ", line).strip()
+        norm = spaced.lower()
         is_title_line = title_core and (
-            norm.startswith(title_core[:40])
+            (norm.startswith(head) and not norm[len(head):len(head) + 1].isalnum()
+             and not PROSE_RUN_RE.search(spaced[len(head):]))
             or (title_core.startswith(norm[:40]) and len(norm) >= TITLE_SHARE * len(title_core))
         )
         if norm == "feedback" or (is_title_line and n >= 3):
