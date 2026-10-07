@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import SCRIPTS, WS, run, figure_fixture, words  # noqa: E402
+from _support import SCRIPTS, WS, run, figure_fixture, words, load_script  # noqa: E402
 
 
 class FigureTest(unittest.TestCase):
@@ -118,6 +118,24 @@ class FigureTest(unittest.TestCase):
         after = json.loads(index.read_text(encoding="utf-8"))["figures"]
         self.assertFalse([f for f in after if "ocr" in f],
                          "a figure Tesseract could not read was recorded as read")
+
+
+    def test_41_an_uncaptioned_figure_in_prose_falls_back_to_its_paragraph(self):
+        """Prose chunks carry pages now, and two chunks can share one: the page
+        ties nothing there, and the paragraph above the figure has to decide.
+        A rebuilt reference keeps only its pages."""
+        ef = load_script("extract_figures")
+        texts = ["Setting up the widget needs the green cable.\n", "Next the widget is powered on after the fuse is checked.\n"]
+        figure = {"page": 1, "caption": "", "context": "the widget is powered on after the fuse is checked"}
+
+        linker = ef.Linker(texts, [(1, 1), (1, 1)])
+        self.assertEqual(ef.link_uncaptioned(linker, figure, paragraph_rule=True), (1, "context"))
+        self.assertEqual(ef.link_uncaptioned(linker, figure, paragraph_rule=False), (None, None),
+                         "the paragraph rule ran on a reference with one chunk per entry")
+        linker = ef.Linker(texts, [(1, 1), (2, 2)])
+        self.assertEqual(ef.link_uncaptioned(linker, figure, paragraph_rule=False), (0, "page"))
+        self.assertEqual(ef.link_uncaptioned(ef.Linker(texts, []), figure, paragraph_rule=False), (1, "context"),
+                         "chunks with no pages have only the paragraph")
 
 
 if __name__ == "__main__":

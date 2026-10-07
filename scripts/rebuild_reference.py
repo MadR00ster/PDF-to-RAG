@@ -65,26 +65,10 @@ from _common import MIN_COMMANDS, IDENTIFIER_RE, MESSAGE_CODE_RE, pick_command_l
 
 def build_pages(pdf_path: Path, title: str) -> tuple[str, list[int], list[int], int]:
     """Return (full_md, page_start_offsets, page_numbers, furniture_lines_removed).
-
-    Furniture is stripped per page *before* concatenation, for two reasons:
-    the running footer would otherwise become a chunk boundary in
-    --dictionary mode (a standalone "**Feedback**" line is exactly the shape
-    the splitter looks for, which produced one junk chunk per page), and
-    stripping after concatenation would invalidate the page offsets this
-    whole script depends on.
-    """
+    Furniture goes before the pages are joined; convert_manual.join_pages says why."""
     page_texts, numbers = cm.page_markdown(pdf_path)
-
-    furniture = ec.detect_furniture(page_texts, title)
-
-    parts, starts, cursor, removed = [], [], 0, 0
-    for text in page_texts:
-        cleaned, n = ec.strip_furniture(text, furniture)
-        removed += n
-        starts.append(cursor)
-        parts.append(cleaned)
-        cursor += len(cleaned)
-    return "".join(parts), starts, numbers, removed
+    full_md, starts, removed = cm.join_pages(page_texts, ec.detect_furniture(page_texts, title))
+    return full_md, starts, numbers, removed
 
 
 def main() -> None:

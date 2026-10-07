@@ -65,6 +65,7 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
+import enrich_chunks as ec  # noqa: E402
 
 MAX_CHUNK = 9000
 
@@ -304,14 +305,35 @@ def page_range(page_starts: list[int], numbers: list[int], start: int, end: int)
     return numbers[first], numbers[last]
 
 
+def join_pages(texts: list[str], furniture: set[str]) -> tuple[str, list[int], int]:
+    """(full_md, each page's start offset in it, furniture lines removed).
+
+    Furniture is stripped per page *before* concatenation, for two reasons:
+    the running footer would otherwise become a chunk boundary in
+    --dictionary mode (a standalone "**Feedback**" line is exactly the shape
+    the splitter looks for, which produced one junk chunk per page), and
+    stripping after concatenation would invalidate the page offsets every
+    page number depends on."""
+    parts, starts, cursor, removed = [], [], 0, 0
+    for text in texts:
+        cleaned, n = ec.strip_furniture(text, furniture)
+        removed += n
+        starts.append(cursor)
+        parts.append(cleaned)
+        cursor += len(cleaned)
+    return "".join(parts), starts, removed
+
+
 def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
     pdf_path, slug, out_root = plan.pdf, plan.slug, plan.out_root
-    print(f"Extracting markdown from {pdf_path.name} ...")
-    md_text = pymupdf4llm.to_markdown(str(pdf_path))
+    print(f"Extracting markdown from {pdf_path.name} with page tracking ...")
+    texts, numbers = page_markdown(pdf_path)
+    md_text, page_starts, removed = join_pages(texts, ec.detect_furniture(texts, title))
+    print(f"{len(page_starts)} pages, {len(md_text):,} chars, {removed} furniture lines stripped pre-chunking")
     doc = pymupdf.open(str(pdf_path))
 
     print("Chunking ...")
-    chunks = chunk_markdown(md_text, dictionary)
+    spans = chunk_spans(md_text, dictionary)
 
     out_dir = out_root / slug
     staging = editions.staging_dir(out_root, slug)
@@ -320,13 +342,16 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
 
     seen_slugs: dict = {}
     section_entries = []
-    for i, (heading, level, body) in enumerate(chunks, start=1):
-        file_slug = dedupe_slug(slugify(heading), seen_slugs)
+    for i, span in enumerate(spans, start=1):
+        file_slug = dedupe_slug(slugify(span.heading), seen_slugs)
         filename = f"{i:03d}-{file_slug}.md"
-        body = body.strip() + "\n"
+        body = md_text[span.start:span.end].strip() + "\n"
         (sections_dir / filename).write_text(body, encoding="utf-8")
+        c_start, c_end = trim_span(md_text, span.start, span.end)
+        p_start, p_end = page_range(page_starts, numbers, c_start, max(c_end, c_start + 1))
         section_entries.append(
-            {"file": f"sections/{filename}", "heading": heading, "level": level, "chars": len(body)}
+            {"file": f"sections/{filename}", "heading": span.heading, "level": span.level, "chars": len(body),
+             "page_start": p_start, "page_end": p_end}
         )
 
     (staging / "full.md").write_text(md_text, encoding="utf-8")

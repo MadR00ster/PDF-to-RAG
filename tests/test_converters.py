@@ -43,6 +43,11 @@ class ConverterTest(unittest.TestCase):
             self.assertTrue(f.is_file(), f"manifest names a missing file: {s['file']}")
             self.assertEqual(s["chars"], len(f.read_text(encoding="utf-8")),
                              "manifest 'chars' disagrees with the file on disk")
+        pages = [(s["page_start"], s["page_end"]) for s in m["sections"]]
+        for first, last in pages:
+            self.assertTrue(isinstance(first, int) and isinstance(last, int) and 1 <= first <= last <= m["page_count"],
+                            f"a chunk's pages {first}-{last} are outside 1..{m['page_count']}")
+        self.assertEqual([p[0] for p in pages], sorted(p[0] for p in pages), "page_start went backwards")
 
     def test_02_enrich_is_idempotent(self):
         # A collection nothing has enriched yet: on one already enriched,
@@ -480,6 +485,10 @@ class ConverterTest(unittest.TestCase):
         coll = WS.collection("furniture", "prose")
         r = run("convert_manual.py", str(coll / "widget-guide.pdf"), "--title", "Widget Guide", "--slug", "prose")
         self.assertEqual(r.returncode, 0, r.stderr)
+        # The converter strips the page footer itself; put it back, as a document
+        # converted by another tool would have it.
+        for section in sorted((coll / "docs" / "prose" / "sections").glob("*.md")):
+            section.write_text(section.read_text(encoding="utf-8") + "\nFeedback\n", encoding="utf-8")
         r = run("enrich_chunks.py", str(coll), "--dry-run", "--list-furniture")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertRegex(r.stdout, r"would be deleted")
@@ -548,6 +557,18 @@ class ConverterTest(unittest.TestCase):
         start, end = cm.trim_span(text, 7, 12)       # "\nccc\n"
         self.assertEqual(text[start:end], "ccc")
         self.assertEqual(cm.page_range(starts, numbers, start, end), (5, 5))
+
+
+    def test_41b_joined_pages_are_the_whole_document(self):
+        """The prose path chunks the pages joined together. pymupdf4llm 1.28.2
+        builds a page's markdown the same way with and without page_chunks;
+        a release that stops doing so changes prose chunks quietly, so it
+        fails here instead."""
+        import pymupdf4llm
+        cm = load_script("convert_manual")
+        for name in ("prose", "ref"):
+            pdf = WS.pdf(name)
+            self.assertEqual("".join(cm.page_markdown(pdf)[0]), pymupdf4llm.to_markdown(str(pdf)), name)
 
 
 if __name__ == "__main__":

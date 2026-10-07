@@ -40,12 +40,12 @@ class CheckerTest(unittest.TestCase):
     def test_16_checker_accepts_what_the_pipeline_writes(self):
         """Everything the earlier tests converted, enriched and linked passes.
 
-        Warnings are allowed here -- the prose path writes no page numbers --
+        Warnings are allowed here -- the tiny reference declines to attribute --
         failures are not.
         """
         r, raised = self.check(WS.corpus())
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("no-pages", raised, "the prose path's missing pages went unreported")
+        self.assertNotIn("no-pages", raised, "the prose path wrote no page numbers")
 
     def test_17_checker_accepts_a_handmade_document_strictly(self):
         """A document no script here wrote, following only the contract, passes
@@ -297,6 +297,20 @@ class CheckerTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertRegex(r.stdout, r"!!.*nope")
         self.assertTrue(catalog.exists())
+
+
+    def test_40_light_prose_conversion_passes_the_strict_check(self):
+        """What convert_manual.py and enrich_chunks.py write passes every check,
+        warnings included, now that the chunks carry pages."""
+        coll = WS.collection("strictprose", "prose")
+        for script, args in (("convert_manual.py", [str(coll / "widget-guide.pdf"), "--title", "Widget Guide",
+                                                    "--slug", "prose"]),
+                             ("enrich_chunks.py", [str(coll)]), ("build_index.py", [str(coll)])):
+            r = run(script, *args)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r, raised = self.check(coll, "--strict", "--only", "prose")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(raised, f"a light prose conversion raised {raised}")
 
 
 if __name__ == "__main__":

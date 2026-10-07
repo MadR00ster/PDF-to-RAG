@@ -176,15 +176,17 @@ The decision matters because of the root cause behind most of
 `references/failure-modes.md`: **`pymupdf4llm` infers heading levels from font
 size, so the "hierarchy" is a guess.** Docling parses a real document model and
 attaches a page number to every chunk — measured across seven slices and five
-PDF producers, 100% page coverage against 0%. Pages are what make every other
-piece of metadata auditable.
+PDF producers, 100% page coverage against 0% for the light prose path as it was
+then. `convert_manual.py` now tracks pages too, so what Docling still adds is
+the TOC-anchored breadcrumb with a confidence on every chunk. Pages are what
+make every other piece of metadata auditable.
 
 **Route by document shape. Do not pick one extractor for a whole corpus.**
 Prose and reference documents scored oppositely, by wide margins:
 
 | shape | converter | why |
 |---|---|---|
-| prose | `convert_docling.py` | 100% pages, multi-level TOC-anchored breadcrumbs |
+| prose | `convert_docling.py` | multi-level TOC-anchored breadcrumbs with a confidence on every chunk. Under review: `convert_manual.py` carries pages as well now, and the routing waits for a comparison on a real corpus |
 | reference / dictionary | `rebuild_reference.py` | 99–100% entity attribution; Docling-derived headings managed 16–62% |
 | mixed | inspect first | convert the entry chapters as reference, the rest as prose |
 | no bookmark TOC | either, warily | nothing can verify a breadcrumb; treat every ancestor as unverified |
@@ -374,7 +376,10 @@ reach 93–96% of chunks at 89–95% right: a wrong parent in one chunk of ten.
 ### Page range — so answers can cite
 
 Extract with page tracking (`page_chunks=True` in pymupdf4llm), record each
-page's character span, and map chunk offsets back to pages. Engineers using
+page's character span, and map chunk offsets back to pages. The chunker returns
+where it cut each chunk, so the offsets are read, not searched for. Both
+`convert_manual.py` and `rebuild_reference.py` do this; a prose document
+converted before that has no pages until it is reconverted. Engineers using
 vendor manuals need to verify claims; a chunk that can't cite a page can't be
 checked.
 
@@ -439,16 +444,17 @@ depends on what the converter left behind. Its own caption appearing as a line
 of the section is exact: 331 of 331 captioned figures in one Tessent guide, 454
 of 454 in a Synopsys one. Failing that:
 
-- **Its page, where the chunks carry page numbers** (`rebuild_reference.py`,
-  `convert_docling.py`) and the page belongs to one section. Checked against the
+- **Its page, where the chunks carry page numbers** (every converter here) and
+  the page belongs to one section. Checked against the
   caption: 100% agreement on an unshared page, 76.7% where one entry ends and
   the next begins on it — so a shared page ties nothing.
-- **The paragraph above it, where they carry no pages**: found just after the
-  previous figure's section, or else exactly once in the document. Checked
+- **The paragraph above it**, where the page ties nothing or the chunks carry
+  none: found just after the previous figure's section, or else exactly once in
+  the document. Checked
   against the caption, that is 96–99% right on documents chunked by heading —
   and 5.8% on a command reference rebuilt into one chunk per entry, where a bold
   caption starts its own chunk and strands the paragraph above it in the
-  previous one. So it is never used where pages exist.
+  previous one. So it is never used on a reference rebuilt one chunk per entry.
 
 Otherwise the figure stays unattached and is served by page — a guessed section
 would present a diagram as illustrating text it does not.
@@ -568,7 +574,7 @@ which pymupdf4llm 1.28 requires.
 
 | Script | Use |
 |---|---|
-| `convert_manual.py` | One prose PDF → `docs/<slug>/`. `--dictionary` for bold-delimited entries. |
+| `convert_manual.py` | One prose PDF → `docs/<slug>/` with page ranges. `--dictionary` for bold-delimited entries. |
 | `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. `--command-level N` names the TOC level of the entries when it cannot be told. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
 | `editions.py` | `status`: manuals, editions, pins, waiting PDFs. `stamp`: add `doc_id`/`version` to older manifests. `migrate`: move root PDFs into `source/`. The converters import it. |

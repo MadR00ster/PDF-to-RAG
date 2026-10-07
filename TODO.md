@@ -189,7 +189,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T12 | `eval_search.py --compare` (**done**) | 2.6 | T01 | S |
 | **Phase 4: coverage** |||||
 | T13 | Chunk in spans, so offsets are exact (**done**) | 2.2 | T01 | M |
-| T14 | Page numbers on the light prose path | 2.1 | T03, T13 | L |
+| T14 | Page numbers on the light prose path (**done**) | 2.1 | T03, T13 | L |
 | T15 | One pymupdf4llm converter | 2.1 "next step" | T14 | L |
 | **Phase 5: later** |||||
 | T16 | Reference breadcrumbs from the TOC chain | 2.3 | T06 | M |
@@ -1422,7 +1422,7 @@ the one fixture block over `MAX_CHUNK`, so look at it first.
 
 ### T14: Page numbers on the light prose path [2.1]
 
-**Status:** not started
+**Status:** done, except the real-corpus check (§4). `convert_manual.join_pages` is the shared helper; `rebuild_reference.build_pages` uses it. The trim test is test_39b, so T14's tests keep their numbers.
 
 **Why.** This is the largest gain on the list. `convert_manual.py` calls
 `to_markdown()` without `page_chunks=True`, so prose chunks carry no page
@@ -1533,10 +1533,10 @@ often each fallback agrees with the caption) with the old conversion. Record
 it in §4.
 
 **Done when**
-- [ ] Prose sections carry pages. test_16 and the new tests pass.
-- [ ] Figures in prose fall back to the paragraph rule; figures in a rebuilt
+- [x] Prose sections carry pages. test_16 and the new tests pass.
+- [x] Figures in prose fall back to the paragraph rule; figures in a rebuilt
       reference don't.
-- [ ] Docs updated. The real-corpus check is done, or its §4 row says why
+- [x] Docs updated. The real-corpus check is done, or its §4 row says why
       not.
 
 ---
@@ -2175,7 +2175,7 @@ you could not run. Never write a number you did not measure.
 | T08 | Lines no longer deleted as furniture | `enrich_chunks.py --dry-run --list-furniture`, old vs new, diffed | not measured: no real corpus here. Run `enrich_chunks.py <collection> --dry-run --list-furniture` with `TITLE_SHARE = 0` (the old rule) and with 0.6, and diff; for references, reconvert one and run `check_corpus.py` (its `furniture` check) | 2026-10-07 |
 | T10 | Search change from whole-heading front matter | `eval_search.py --json`, then `--compare` | not measured: needs the user's corpus and its eval questions. Rebuild the index with this commit (`noise` is stored at build time, so an existing index does not change) and compare with a run from before using T12's `--compare` | 2026-10-07 |
 | T11 | Identifier hit@1 and every rank moved | `eval_search.py --json`, then `--compare` | not measured: needs the user's corpus and its eval questions. Run `eval_search.py --json` on an index built before this commit and on one built after, compare with T12's `--compare`, and read every question whose rank moved | 2026-10-07 |
-| T14 | Strict check and figure links after reconverting prose | the T14 real-corpus check | | |
+| T14 | Strict check and figure links after reconverting prose | the T14 real-corpus check | not measured: needs two or three of the user's prose manuals. Reconvert them, run `check_corpus.py --strict` and the content check, and compare `extract_figures.py`'s summary (links by caption, page and context, and how often each fallback agrees with the caption) with the old conversion | 2026-10-07 |
 | T16 | Search change from chain breadcrumbs | `--compare` after reconverting the references | | |
 | T18 | Each experiment flag against the default | `--compare` | | |
 

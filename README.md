@@ -115,8 +115,9 @@ another client, register the command `python my-corpus/mcp_server.py` as a
 stdio server; it reads the index beside it. The index is a snapshot: rebuild it
 after any conversion, which also refreshes the server copy.
 
-Prose manuals convert better with `convert_docling.py`, which puts a page
-number on every chunk. It needs Docling, a multi-gigabyte install that is
+`convert_manual.py` puts a page range on every chunk of a prose manual.
+`convert_docling.py` adds breadcrumbs anchored to the PDF's table of contents,
+each with a confidence. It needs Docling, a multi-gigabyte install that is
 deliberately left out of `requirements.txt`: `pip install docling`.
 
 To add a newer release of a manual later, drop its PDF in `new_docs/` and
@@ -146,8 +147,8 @@ useless fragments.
 | script | use |
 |---|---|
 | `pick_extractor.py` | inspect a PDF and recommend a converter |
-| `convert_manual.py` | prose PDF to chunks (pymupdf4llm) |
-| `convert_docling.py` | prose PDF to chunks with page numbers (Docling) |
+| `convert_manual.py` | prose PDF to chunks with page numbers (pymupdf4llm) |
+| `convert_docling.py` | prose PDF to chunks with page numbers and TOC-anchored breadcrumbs (Docling) |
 | `rebuild_reference.py` | reference PDF to chunks with pages and entry names |
 | `enrich_chunks.py` | strip page headers and footers, add breadcrumbs |
 | `extract_figures.py`, `ocr_figures.py` | crop figures; read the words in raster ones |

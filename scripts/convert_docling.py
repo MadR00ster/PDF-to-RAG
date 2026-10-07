@@ -5,9 +5,9 @@ Same output layout as convert_manual.py -- docs/<slug>/{manifest.json, full.md,
 sections/NNN-heading-slug.md} -- so build_index.py and build_search_db.py work
 on it unchanged. What differs is the metadata each chunk carries:
 
-  * page_start / page_end on every chunk, from Docling's provenance. The
-    pymupdf4llm prose path carries none, and without pages a breadcrumb cannot
-    be audited positionally at all.
+  * page_start / page_end on every chunk, from Docling's provenance. Without
+    pages a breadcrumb cannot be audited positionally at all; convert_manual.py
+    tracks them too now, from pymupdf4llm's pages.
   * breadcrumb built from the PDF's bookmark TOC rather than from detected
     headings, so an artifact like "Note:" or a shell transcript line can never
     become an ancestor. Docling offers those as headings; measurements are in
