@@ -6,6 +6,7 @@ that answers it rank?
   python scripts/eval_search.py --db <corpus>/mcp-index.sqlite3 --questions eval/questions.jsonl
   python scripts/eval_search.py --db ... --questions ... --misses        # what came back instead
   python scripts/eval_search.py --db ... --questions ... --json run.json # keep a run to compare
+  python scripts/eval_search.py --compare before.json after.json         # what moved between two runs
 
 Runs the server's own search() in-process with its defaults -- the ranking an
 agent's first search_docs call gets, stopwords, fallback, front-matter demotion
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -91,6 +93,56 @@ def score(items: list[dict]) -> dict:
     }
 
 
+def git_commit() -> str | None:
+    """The short hash of the code this run used, so a saved run can be traced to it."""
+    try:
+        out = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent.parent), "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def rank_text(rank) -> str:
+    return "-" if rank is None else str(rank)
+
+
+def compare(path_a: Path, path_b: Path) -> None:
+    """Print what changed between two saved runs: their totals by kind, and
+    every question whose rank differs. The totals say whether a change helped;
+    the questions say why, and one question is a point or two."""
+    runs = [json.loads(p.read_text(encoding="utf-8-sig")) for p in (path_a, path_b)]
+    for label, path, run in zip("AB", (path_a, path_b), runs):
+        meta = run.get("meta") or {}
+        figures = "on" if meta.get("figure_text") == "1" else "off" if "figure_text" in meta else "?"
+        print(f"{label}: {path.name}  built {meta.get('built_at', '?')}  "
+              f"code {run.get('git_commit') or '?'}  figure text {figures}")
+    a, b = runs
+    print(f"\n{'kind':12} {'n':>4} {'hit@1 A':>8} {'hit@1 B':>8} {'hit@5 A':>8} {'hit@5 B':>8} {'MRR A':>7} {'MRR B':>7}")
+    for kind in sorted(set(a["summary"]) | set(b["summary"]), key=lambda k: (k == "all", k)):
+        sa, sb = a["summary"].get(kind), b["summary"].get(kind)
+        n = f"{sa['n']}" if sa and sb and sa["n"] == sb["n"] else f"{sa['n'] if sa else 0}/{sb['n'] if sb else 0}"
+
+        def cell(s, key, fmt):
+            return format(s[key], fmt) if s else "-"
+        print(f"{kind:12} {n:>4} {cell(sa, 'hit@1', '.0%'):>8} {cell(sb, 'hit@1', '.0%'):>8} "
+              f"{cell(sa, 'hit@5', '.0%'):>8} {cell(sb, 'hit@5', '.0%'):>8} "
+              f"{cell(sa, 'mrr', '.3f'):>7} {cell(sb, 'mrr', '.3f'):>7}")
+
+    by_a = {r["id"]: r for r in a["results"]}
+    by_b = {r["id"]: r for r in b["results"]}
+    moved = sorted((r for i, r in by_b.items() if i in by_a and by_a[i]["rank"] != r["rank"]),
+                   key=lambda r: (r["kind"], str(r["id"])))
+    print(f"\nRank changes (rank 11+ shown as -): {len(moved)}")
+    for r in moved:
+        question = r.get("question") or by_a[r["id"]].get("question") or ""
+        print(f"  [{r['id']}] {r['kind']:12} {rank_text(by_a[r['id']]['rank']):>2} -> "
+              f"{rank_text(r['rank']):<2}  {question}")
+    for label, only in (("A", sorted(set(by_a) - set(by_b), key=str)), ("B", sorted(set(by_b) - set(by_a), key=str))):
+        if only:
+            print(f"Only in {label}: {', '.join(map(str, only))}")
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -98,11 +150,19 @@ def main() -> int:
         except (AttributeError, ValueError):
             pass
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--db", required=True, help="index built by build_search_db.py")
-    ap.add_argument("--questions", required=True, type=Path, help="questions.jsonl")
+    ap.add_argument("--db", help="index built by build_search_db.py")
+    ap.add_argument("--questions", type=Path, help="questions.jsonl")
     ap.add_argument("--misses", action="store_true", help="print each question missing the top 5")
     ap.add_argument("--json", type=Path, help="write per-question results here")
+    ap.add_argument("--compare", nargs=2, type=Path, metavar=("A.json", "B.json"),
+                    help="compare two runs saved with --json; needs no index")
     args = ap.parse_args()
+
+    if args.compare:
+        compare(*args.compare)
+        return 0
+    if not args.db or not args.questions:
+        ap.error("--db and --questions are required unless --compare is given")
 
     mcp_server.CORPUS = mcp_server.Corpus(Path(args.db).resolve())
     if not mcp_server.CORPUS.available:
@@ -130,6 +190,7 @@ def main() -> int:
         results.append({
             "id": q.get("id"),
             "kind": q.get("kind", "-"),
+            "question": q["question"],
             "rank": rank,
             "top": [f"{row['slug']} · {row['file'].rsplit('/', 1)[-1]}" for row in rows[:3]],
         })
@@ -166,7 +227,8 @@ def main() -> int:
                 print(f"   got:    {t}")
 
     if args.json:
-        args.json.write_text(json.dumps({"db": str(args.db), "meta": meta, "summary": summary,
+        args.json.write_text(json.dumps({"db": str(args.db), "git_commit": git_commit(),
+                                         "meta": meta, "summary": summary,
                                          "results": results, "errors": errors},
                                         indent=2) + "\n", encoding="utf-8")
     return 3 if errors else 0

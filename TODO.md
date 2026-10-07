@@ -186,7 +186,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | **Phase 3: search** |||||
 | T10 | Demote front matter by whole heading (**done**) | 1.1 | T01 | S |
 | T11 | Entity boost for identifiers inside a question (**done**) | 1.2 | T01 | M |
-| T12 | `eval_search.py --compare` | 2.6 | T01 | S |
+| T12 | `eval_search.py --compare` (**done**) | 2.6 | T01 | S |
 | **Phase 4: coverage** |||||
 | T13 | Chunk in spans, so offsets are exact | 2.2 | T01 | M |
 | T14 | Page numbers on the light prose path | 2.1 | T03, T13 | L |
@@ -1280,7 +1280,7 @@ every question whose rank moved. Record in §4.
 
 ### T12: `eval_search.py --compare` [2.6]
 
-**Status:** not started
+**Status:** done
 
 **Why.** The references keep saying to read the per-question changes, not
 the totals, but nothing prints them. A saved run also can't be traced to the
@@ -1325,8 +1325,8 @@ A. Run `eval_search.py --compare a.json b.json`. Assert the moved line, the
 `git_commit` and each `question` are present.
 
 **Done when**
-- [ ] `--compare` works without `--db`.
-- [ ] SKILL.md step 5 names it.
+- [x] `--compare` works without `--db`.
+- [x] SKILL.md step 5 names it.
 
 ---
 

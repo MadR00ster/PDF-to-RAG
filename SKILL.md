@@ -730,6 +730,10 @@ descriptions — is a guess until it moves a number. Build the number first.
    test did not know about.
 5. Compare configurations on the same questions and read the per-question
    changes, not just the totals — on 57 questions, one question is 1.75 points.
+   Save each run with `--json`, then `eval_search.py --compare before.json
+   after.json` prints the totals side by side and every question whose rank
+   moved. Each run records the build time of its index and the commit of the
+   code.
 
 Questions written by someone who has just read the answer share its words, so
 they flatter lexical search. `paraphrase` measures that bias; `real` questions

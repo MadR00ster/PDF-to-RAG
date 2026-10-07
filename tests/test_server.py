@@ -223,5 +223,53 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(top["entity"], "set_widget_option_05")
 
 
+    def test_38_eval_compare_lists_each_rank_that_moved(self):
+        """Two saved runs can be compared without an index, and only the
+        questions whose rank differs are listed."""
+        def run_file(name, ranks, commit, built):
+            results = [{"id": i, "kind": kind, "question": f"question {i}", "rank": rank, "top": []}
+                       for (i, kind), rank in ranks.items()]
+            summary = {}
+            for kind in {k for _i, k in ranks} | {"all"}:
+                mine = [r for r in results if kind == "all" or r["kind"] == kind]
+                summary[kind] = {"n": len(mine), **{f"hit@{k}": sum(1 for r in mine if r["rank"] and r["rank"] <= k) / len(mine)
+                                                    for k in (1, 3, 5, 10)},
+                                 "mrr": sum(1 / r["rank"] for r in mine if r["rank"]) / len(mine)}
+            path = self.tmp / name
+            path.write_text(json.dumps({"db": "x", "git_commit": commit, "meta": {"built_at": built, "figure_text": "1"},
+                                        "summary": summary, "results": results, "errors": []}), encoding="utf-8")
+            return path
+
+        a = run_file("run-a.json", {("q1", "identifier"): 3, ("q2", "concept"): 2, ("q3", "concept"): None,
+                                    ("q7", "concept"): 1}, "0e4dd59", "2026-10-01T10:00:00")
+        b = run_file("run-b.json", {("q1", "identifier"): 1, ("q2", "concept"): 2, ("q3", "concept"): 7},
+                     "1a2b3c4", "2026-10-07T12:00:00")
+        r = run("eval_search.py", "--compare", str(a), str(b))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("code 0e4dd59", r.stdout)
+        self.assertIn("code 1a2b3c4", r.stdout)
+        self.assertRegex(r.stdout, r"\[q1\] identifier\s+3 -> 1\s+question q1")
+        self.assertRegex(r.stdout, r"\[q3\] concept\s+- -> 7\s+question q3")
+        self.assertIn("Only in A: q7", r.stdout)
+        self.assertNotIn("[q2]", r.stdout, "a question whose rank did not move was listed")
+
+        questions = self.tmp / "questions.jsonl"
+        manifest = json.loads((WS.corpus() / "docs" / "ref" / "manifest.json").read_text(encoding="utf-8"))
+        wanted = manifest["sections"][3]
+        questions.write_text("\n".join(json.dumps({
+            "id": f"q{n}", "kind": "identifier", "question": text,
+            "answers": [{"slug": "ref", "file": wanted["file"]}]})
+            for n, text in enumerate(("what does set_widget_option_03 do", "set_widget_option_04"), 1)),
+            encoding="utf-8")
+        out = self.tmp / "real-run.json"
+        r = run("eval_search.py", "--db", str(WS.index()), "--questions", str(questions), "--json", str(out))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        saved = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual([x["question"] for x in saved["results"]],
+                         ["what does set_widget_option_03 do", "set_widget_option_04"])
+        self.assertIn("git_commit", saved)
+        self.assertTrue(saved["git_commit"] is None or isinstance(saved["git_commit"], str))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
