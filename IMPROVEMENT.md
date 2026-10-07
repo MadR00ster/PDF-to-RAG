@@ -267,6 +267,7 @@ concatenates those strings (`document_output += md_string`), `page_chunks=True`
 returns each one as the page's `text`, and `page_chunks` is never passed to
 the parser. The layout path is the one used: pymupdf_layout is a hard
 dependency of pymupdf4llm 1.28.2.
+
 `rebuild_reference.py` already does the page-span bookkeeping (`build_pages`
 and the offset-to-page mapping). Doing the same in `convert_manual.py` would:
 
