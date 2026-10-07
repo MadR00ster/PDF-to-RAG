@@ -1,38 +1,28 @@
 # Hand-over: carrying out TODO.md
 
-Written 2026-10-07 for the next session, which picks up the plan in
-`TODO.md` and carries out the rest of it. Read this file first, then TODO.md
-§0 to §2, then start at T03.
+Written 2026-10-07 for the next session. The plan in `TODO.md` has been carried out;
+see "Where things stand". The rest of this file is how the work was done and what it
+learned, which a later change to this code will want.
 
 ## Where things stand
 
+Updated 2026-10-07, after the session that carried out TODO.md.
+
 - **Branch:** `claude/wizardly-maxwell-6r2cni`, based on `main` at `0e4dd59`.
-  Develop and push here. No pull request is open; don't open one unless the
-  user asks.
-- **Documents:**
-  - `IMPROVEMENT.md` is the review: what is wrong and why. It is corrected
-    where it was wrong; look for **Amended** and **Decided**.
-  - `TODO.md` is the plan: one task per review item, with the code to
-    change, the tests and a "Done when" list. The two documents agree.
-  - This file is the state of play.
-- **Done** (each marked done in TODO.md, with its checkboxes ticked):
-  - **T02**: CI. `.github/workflows/tests.yml` runs the suite on Linux and
-    Windows with Python 3.10 and 3.13 on every push. Its first run found a
-    Windows-only bug, fixed in `b5c3172` (editor config paths compared as
-    text).
-  - **T01**: the tests are split by area. `tests/_support.py` holds the
-    fixtures and `WS`, and every test passes alone (`python tests/run_each.py`).
-  - **T07**: conversions are built in `.rebuild-backup/.staging/<slug>/` and
-    moved into `docs/` whole. Every script skips `.old`/`.new`/dot/underscore
-    folders, and the folder name is the document's slug.
-  - **T09**: documents are keyed by (collection, slug) in the index, the
-    server, the eval, the sampler and the smoke test.
-- **Tests:** 44, all passing, with 2 skipped (no Tesseract language data, no
-  Docling). About 85 s for `python -m unittest discover -s tests -v`.
-- **CI:** green on every push since `b5c3172`.
-- **Next:** T03, then on in TODO.md §2's order. **Skip T23**, as decided.
-  Every other gate is settled: see the "Decisions already made" table in
-  TODO.md §0. Nothing should need the user except the measurements in §4.
+  No pull request is open; don't open one unless the user asks.
+- **Done:** every task in TODO.md except **T23**, which was decided against.
+  Each is marked done in TODO.md with its checkboxes ticked, one commit apiece,
+  CI green on every push (Linux and Windows, Python 3.10 and 3.13).
+- **Tests:** 73, all passing, with 2 skipped (no Tesseract language data, no
+  Docling). `python tests/run_each.py` passes too: every test alone.
+- **Owed, and why:** TODO.md section 4 lists the measurements that need the
+  user's corpus (search comparisons for T10, T11, T16 and T18, furniture for
+  T08, a prose reconversion for T14, Docling for T05). Each row says "not
+  measured:" with what to run. None was invented. Section 5 lists what turned
+  up along the way, including that Docling itself was never run.
+- **Next:** nothing in the plan. Whatever the user does with section 4's
+  numbers is next: T18's flags and T14's routing advice ("under review" in
+  SKILL.md) wait on them.
 
 ## How to work
 
@@ -80,6 +70,27 @@ text:
   - The version rule (test_20b).
 - **`duplicate-slug` is gone** from `check_corpus.py`. `collection-clash`
   replaces it, and `hidden-document` is now a warning.
+
+## Structure after the whole plan
+
+- `scripts/_common.py` holds what several scripts share, standard library only:
+  `pick_command_level`, `detect_shape`, `looks_like_entry`, `slugify`,
+  `strip_emphasis`, `BREADCRUMB_SEP`, `utf8_console`. `check_corpus.py` and
+  `mcp_server.py` still import nothing from `scripts/`; their copies of a rule
+  are each held to the shared one by a test (test_31b, test_37, test_47, test_50).
+- `convert_manual.py` is both pymupdf4llm converters: `convert` (prose) and
+  `convert_reference`, chosen by `--shape`. `rebuild_reference.py` is a 64-line
+  wrapper that keeps its command line. Both read pages with `page_markdown`,
+  strip furniture with `join_pages`, cut with `chunk_spans` and read a chunk's
+  pages with `trim_span` and `page_range`: a chunk is on the page its first word
+  is, not the one its leading newline is on.
+- Every manifest carries `schema_version` and `converter`
+  (`scripts/manifest.schema.json`); no converter writes `chars`.
+- `editions.collections_under(path)` is how every command line turns a path
+  into collections, and `editions.find_collections` is the one rule for what a
+  collection is.
+- The search experiments (`--body-without-breadcrumb`, `--ident-index`) are
+  flags and off. Changing a default is the user's decision, from section 4.
 
 ## Tests: how the suite is laid out
 

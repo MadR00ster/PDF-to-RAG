@@ -2188,3 +2188,16 @@ it.
   Node.js 20, which GitHub has deprecated; for now it runs them on Node.js
   24. Harmless today. Bump them to the releases that target Node.js 24 when
   convenient, and check the next run stays green.
+- Nothing here has run Docling, so `convert_docling.py` is checked only by
+  importing it and by unit tests of its pure functions. Three of this work's
+  changes reach it: T05 (it reads a chunk's own heading), T14 (figures link to
+  it through the paragraph fallback too) and T20 (it writes `converter`).
+  Convert one real document with it and read the output before relying on any.
+- `mcp_server.tool_get_section` takes a file argument through
+  `lstrip("./")`, which strips any run of leading dots and slashes, not just a
+  `./` prefix: a name that begins with a dot loses it.
+- `ocr_figures.py` now takes a corpus root (T25), like the other three, but no
+  test exercises it: its test needs Tesseract language data.
+- The header comment of `build_index.write_readme` and SKILL.md still describe
+  "vendor folders"; a collection need not be a vendor. Say "collection" when
+  next in those files.
