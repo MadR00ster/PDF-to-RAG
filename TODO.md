@@ -179,7 +179,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T04 | Docs and code that disagree; dead code (**done**) | 1.7 | T01 | S |
 | **Phase 2: the corpus** |||||
 | T05 | Docling chunks: use their own heading (**done**) | 1.3 | T01 | S |
-| T06 | Make a declined attribution loud; `--command-level` | 1.5 | T01 | M |
+| T06 | Make a declined attribution loud; `--command-level` (**done**) | 1.5 | T01 | M |
 | T07 | Stage conversions outside `docs/`; skip hidden folders everywhere (**done**) | 1.6 | T01 | M |
 | T08 | Stop deleting short lines that begin the title | 1.8 | T04 | S |
 | T09 | Key documents by (collection, slug) (**done**) | 3.5 | T07 | L |
@@ -655,7 +655,7 @@ measured before this fix and have not been re-measured.
 
 ### T06: Make a declined attribution loud; `--command-level` [1.5]
 
-**Status:** not started
+**Status:** done, as specified below.
 
 **Why.** `pick_extractor.py` counts a lowercase single word (`after`,
 `foreach`) as an entry. `rebuild_reference.py` needs an `_`, a `" -"`, or a
@@ -752,13 +752,13 @@ is. Write that in `_common.py`'s docstring, next to `pick_command_level`, in
 two or three sentences, so nobody merges them later without measuring.
 
 **Done when**
-- [ ] `_common.py` exists, imports only the standard library, and holds
+- [x] `_common.py` exists, imports only the standard library, and holds
       `pick_command_level`.
-- [ ] The declined, attributed and given-level cases are all recorded in the
+- [x] The declined, attributed and given-level cases are all recorded in the
       manifest and tested.
-- [ ] Converting `ref` before and after differs only by the new
+- [x] Converting `ref` before and after differs only by the new
       `attribution` field.
-- [ ] `_common.py`'s docstring says why the two entry tests stay separate.
+- [x] `_common.py`'s docstring says why the two entry tests stay separate.
 
 ---
 

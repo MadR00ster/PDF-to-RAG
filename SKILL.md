@@ -187,6 +187,15 @@ Prose and reference documents scored oppositely, by wide margins:
 | no bookmark TOC | either, warily | nothing can verify a breadcrumb; treat every ancestor as unverified |
 | no text layer | neither | OCR first — the `pdf` skill bundled with Claude covers it |
 
+`rebuild_reference.py` takes the TOC level whose titles look like commands (an
+underscore, ` -`, or a message code; 20 or more of them). Where none has that
+many, it converts without attributing a chunk, says so on a line beginning
+`!!`, and records `"attribution": {"status": "declined", ...}` in the manifest,
+which `check_corpus.py` reports as `attribution-declined`. A reference whose
+entries are plain words does this; pass `--command-level N` with the level they
+are at. `pick_extractor.py` prints the same warning, and another when its own
+level and the converter's differ.
+
 **A structure-aware extractor does not retire TOC verification.** Docling's
 heading precision measured no better (41% vs 43% TOC-confirmed), and it offers
 its own artifacts as headings — including shell transcript lines like
@@ -557,7 +566,7 @@ which pymupdf4llm 1.28 requires.
 | Script | Use |
 |---|---|
 | `convert_manual.py` | One prose PDF → `docs/<slug>/`. `--dictionary` for bold-delimited entries. |
-| `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. |
+| `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution. `--command-level N` names the TOC level of the entries when it cannot be told. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
 | `editions.py` | `status`: manuals, editions, pins, waiting PDFs. `stamp`: add `doc_id`/`version` to older manifests. `migrate`: move root PDFs into `source/`. The converters import it. |
 | `enrich_chunks.py` | Post-process existing chunks: strip furniture, add breadcrumbs. `--dry-run` supported. |

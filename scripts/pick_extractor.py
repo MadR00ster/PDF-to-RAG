@@ -37,6 +37,9 @@ except ImportError:  # older wheels
     except ImportError:
         sys.exit("Missing dependency. Run: pip install -r scripts/requirements.txt")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import pick_command_level  # noqa: E402
+
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
@@ -71,13 +74,16 @@ def looks_like_entry(title: str) -> bool:
 MIN_ENTRIES_PER_PAGE = 0.10
 
 
-def detect_shape(toc, pages: int) -> tuple[str, str]:
+def detect_shape(toc, pages: int) -> tuple[str, str, int | None]:
     """Reference/dictionary if some TOC level is mostly identifier-like titles.
 
     Keyed on a level rather than the whole TOC because a dictionary keeps its
     entries at one depth (tshell-ref at L3, syn2 at L1) under prose chapter
     headings that would otherwise dilute the signal. Density then separates a
     real dictionary from a prose manual that happens to list some identifiers.
+
+    Returns (shape, why, level): the level judged to hold the entries, or None
+    where no level did.
     """
     by_level: dict[int, list[str]] = {}
     for lvl, title, _page in toc:
@@ -89,16 +95,16 @@ def detect_shape(toc, pages: int) -> tuple[str, str]:
             if best is None or n > best[1]:
                 best = (lvl, n, len(titles))
     if not best:
-        return "prose", "no level is dominated by identifier-like titles"
+        return "prose", "no level is dominated by identifier-like titles", None
 
     lvl, n, total = best
     per_page = n / max(pages, 1)
     if per_page < MIN_ENTRIES_PER_PAGE:
         return "prose", (f"L{lvl} has {n} identifier-like titles but only "
-                         f"{per_page:.3f}/page -- a list inside a prose manual")
+                         f"{per_page:.3f}/page -- a list inside a prose manual"), None
     if per_page < 0.15:
-        return "mixed", (f"L{lvl}: {n}/{total} titles look like entries, {per_page:.2f}/page")
-    return "reference", f"L{lvl}: {n}/{total} titles look like entries, {per_page:.2f}/page"
+        return "mixed", f"L{lvl}: {n}/{total} titles look like entries, {per_page:.2f}/page", lvl
+    return "reference", f"L{lvl}: {n}/{total} titles look like entries, {per_page:.2f}/page", lvl
 
 
 def anchoring_band(density: float) -> tuple[str, str]:
@@ -162,13 +168,25 @@ def report(path: Path, verbose: bool) -> None:
         doc.close()
         return
 
-    shape, why = detect_shape(toc, pages)
+    shape, why, level = detect_shape(toc, pages)
     density = len(toc) / max(pages, 1)
     starts = Counter(p for _, _, p in toc)
     multi = sum(1 for _p, c in starts.items() if c >= 2)
     multi_share = multi / max(len(starts), 1)
 
     print(f"  shape: {shape:10s} ({why})")
+
+    if shape in ("reference", "mixed"):
+        # rebuild_reference.py picks its own level, by a different test; where
+        # it would take none, or another one, it converts without a word.
+        picked = pick_command_level(toc)
+        if picked is None:
+            print("  !! rebuild_reference.py would attribute nothing here: it takes no TOC "
+                  f"level for commands. Pass --command-level {level}.")
+        elif picked != level:
+            print(f"  !! rebuild_reference.py would take L{picked} for commands, where this "
+                  f"check found entries at L{level}. Check which is right; pass "
+                  "--command-level if needed.")
 
     if shape == "mixed":
         print("  => Mixed: a prose manual with a substantial entry section.")

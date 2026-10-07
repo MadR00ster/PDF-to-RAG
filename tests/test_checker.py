@@ -141,6 +141,9 @@ class CheckerTest(unittest.TestCase):
             ("source PDF that will not open", lambda d, m: (d.parents[1] / "hand.pdf").write_bytes(b"not a pdf"),
              "content-unchecked", False),
             ("index.json title out of date", stale_index, "index-stale", False),
+            ("attribution declined",
+             lambda d, m: m.update(attribution={"status": "declined", "command_level": None, "chosen_by": "toc"}),
+             "attribution-declined", False),
             ("a converted PDF still listed as set aside",
              lambda d, m: (d.parents[1] / "superseded.json").write_text(
                  json.dumps([{"file": "hand.pdf", "superseded_by": "hand"}]), encoding="utf-8"),

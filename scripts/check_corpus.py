@@ -200,6 +200,7 @@ CHECKS = {
     # collection
     "collection-clash": (FAIL, "two collection folders whose names give one collection key (letters and digits, lowercased); build_search_db.py stops"),
     "hidden-document": (WARN, "a folder under docs/ that every tool skips (.old, .new, dot, underscore) holds a manifest: a leftover backup or an interrupted build. Move it out of docs/"),
+    "attribution-declined": (WARN, "a reference conversion attributed no chunk to an entry (manifest attribution.status is declined): pass --command-level if it is a reference"),
     "index-missing": (WARN, "no docs/index.json; run build_index.py"),
     "index-stale": (WARN, "docs/index.json disagrees with the manifests on disk; run build_index.py"),
     "pdf-unaccounted": (WARN, "a PDF in source/ or the collection folder that is neither converted nor listed in superseded.json"),
@@ -930,6 +931,9 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
             pass
         if isinstance(m, dict):
             manifests[r["folder"]] = m
+            attribution = m.get("attribution")
+            if isinstance(attribution, dict) and attribution.get("status") == "declined":
+                f.add("attribution-declined", r["folder"])
 
     index_path = docs / "index.json"
     listed = None

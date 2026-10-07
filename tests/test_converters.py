@@ -215,6 +215,8 @@ class ConverterTest(unittest.TestCase):
         m = self.manifest("tiny")
         self.assertFalse([s for s in m["sections"] if s.get("command")],
                          "attributed commands from below-threshold evidence")
+        self.assertEqual(m["attribution"], {"status": "declined", "command_level": None, "chosen_by": "toc"})
+        self.assertRegex(r.stdout, r"!! no TOC level has 20 titles", "a declined attribution passed quietly")
 
     def test_06b_message_codes_are_entries(self):
         """An error-message catalogue (ADES-002, CMD-082) is a reference too.
@@ -423,6 +425,40 @@ class ConverterTest(unittest.TestCase):
         self.assertEqual(merged[0]["heading"], "Setup")
         self.assertIn("\n\n### Use\n\n", merged[0]["text"])
         self.assertNotIn("### Setup", merged[0]["text"], "a heading repeated within one section was written twice")
+
+
+    def test_30_a_declined_attribution_is_said_and_recorded(self):
+        """A Tcl-style reference (entries are plain words) was sent to
+        rebuild_reference.py by pick_extractor and came out with no command
+        on any chunk, exit code 0 and a line saying `command level LNone`."""
+        self.corpus = WS.collection("tcl", "tcl")
+        pdf = str(self.corpus / "tcl-commands.pdf")
+
+        r = run("pick_extractor.py", pdf)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("shape: reference", r.stdout)
+        self.assertIn("--command-level 1", r.stdout)
+
+        r = run("rebuild_reference.py", pdf, "--title", "Tcl Commands", "--slug", "tcl")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"!! no TOC level has 20 titles.*--command-level N")
+        m = self.manifest("tcl")
+        self.assertEqual(m["attribution"], {"status": "declined", "command_level": None, "chosen_by": "toc"})
+        self.assertFalse([s for s in m["sections"] if s.get("command")])
+
+        r = run("rebuild_reference.py", pdf, "--title", "Tcl Commands", "--slug", "tcl",
+                "--replace", "--command-level", "1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = self.manifest("tcl")
+        self.assertEqual(m["attribution"], {"status": "attributed", "command_level": 1, "chosen_by": "option"})
+        self.assertEqual({s["command"] for s in m["sections"] if s.get("command")},
+                         {t["title"] for t in m["toc"]}, "not every command was attributed")
+        self.assertEqual(len({t["title"] for t in m["toc"]}), 30)
+
+        r = run("rebuild_reference.py", pdf, "--title", "Tcl Commands", "--slug", "tcl",
+                "--replace", "--command-level", "7")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertRegex(r.stderr, r"level 7.*levels here: 1")
 
 
 if __name__ == "__main__":

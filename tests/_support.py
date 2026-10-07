@@ -144,6 +144,19 @@ def reference_fixture(path: Path, n_commands: int) -> None:
     write_pdf(path, pages, toc)
 
 
+def tcl_reference_fixture(path: Path, n_commands: int) -> None:
+    """A command dictionary whose entries are plain lowercase words, the way
+    Tcl command names are: nothing in a title says "command" to the level
+    picker, though pick_extractor sees a reference."""
+    pages, toc = [], []
+    for i in range(n_commands):
+        name = "verb" + chr(97 + i // 26) + chr(97 + i % 26)
+        # Enough text that pick_extractor sees a text layer (100 characters a page).
+        pages.append(command_page(name) + [("Sets the widget option of the same name.", 11)])
+        toc.append([1, name, len(pages)])
+    write_pdf(path, pages, toc)
+
+
 def nested_reference_fixture(path: Path, n_commands: int) -> None:
     """Commands at TOC level 2 under a chapter, then chapters that are not
     commands -- the tshell-ref shape, with an appendix and a licence after the
@@ -305,6 +318,7 @@ class Workspace:
         "ref": ("widget-commands.pdf", lambda p: reference_fixture(p, 25)),    # clears the >=20 command threshold
         "tiny": ("tiny-commands.pdf", lambda p: reference_fixture(p, 8)),      # deliberately below it
         "nested": ("nested-commands.pdf", lambda p: nested_reference_fixture(p, 22)),
+        "tcl": ("tcl-commands.pdf", lambda p: tcl_reference_fixture(p, 30)),   # no underscore: the picker declines
     }
 
     def __init__(self) -> None:

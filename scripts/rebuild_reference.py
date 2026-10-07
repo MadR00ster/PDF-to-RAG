@@ -49,6 +49,7 @@ except ImportError:
     sys.exit("Missing dependency. Run: pip install -r scripts/requirements.txt")
 
 _HERE = Path(__file__).parent
+sys.path.insert(0, str(_HERE.resolve()))
 
 
 def _load(name: str):
@@ -61,36 +62,7 @@ def _load(name: str):
 cm = _load("convert_manual")
 ec = _load("enrich_chunks")
 editions = cm.editions
-
-IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*(\s+-[a-z0-9_]+)*$", re.I)
-# An error/warning message code ("ADES-002", "CMD-082"): a reference entry too.
-MESSAGE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}-\d{2,5}$")
-
-
-def pick_command_level(toc: list) -> int | None:
-    """The TOC level whose titles look most like command names.
-
-    Necessary because the level differs per manual -- tshell-ref keeps
-    commands at L3, syn2 at L1 (with SYNTAX/ARGUMENTS/DESCRIPTION at L2).
-    Picking "the most populous level" gets syn2 wrong.
-    """
-    best, best_n = None, 0
-    by_level: dict[int, list[str]] = {}
-    for lvl, title, _page in toc:
-        by_level.setdefault(lvl, []).append((title or "").strip())
-    for lvl, titles in by_level.items():
-        n = sum(
-            1
-            for t in titles
-            # Parenthesised as Python already groups it. The bare `or " -" in t`
-            # predates this change; tightening it would move which level is
-            # picked for manuals that already convert correctly.
-            if (IDENTIFIER_RE.match(t) and "_" in t) or " -" in t or MESSAGE_CODE_RE.match(t)
-        )
-        if n > best_n:
-            best, best_n = lvl, n
-    return best if best_n >= 20 else None
-
+from _common import MIN_COMMANDS, IDENTIFIER_RE, MESSAGE_CODE_RE, pick_command_level  # noqa: E402,F401
 
 def build_pages(pdf_path: Path, title: str) -> tuple[str, list[int], list[int], int]:
     """Return (full_md, page_start_offsets, page_numbers, furniture_lines_removed).
@@ -151,6 +123,12 @@ def main() -> None:
         action="store_true",
         help="overwrite an existing docs/<slug>/ (the previous one is kept in .rebuild-backup/<slug>/)",
     )
+    ap.add_argument(
+        "--command-level", type=int, metavar="N",
+        help="the TOC level whose entries are the commands. By default it is the level "
+        "where 20 or more titles look like commands (an underscore, ' -', or a message "
+        "code); a reference whose entries are plain words has none, and is declined",
+    )
     args = ap.parse_args()
 
     pdf_path = args.pdf.resolve()
@@ -185,7 +163,14 @@ def main() -> None:
         flush=True,
     )
 
-    cmd_level = pick_command_level(toc)
+    levels = sorted({lvl for lvl, _t, _p in toc})
+    if args.command_level is not None:
+        if args.command_level not in levels:
+            sys.exit(f"no TOC entry is at level {args.command_level}; levels here: "
+                     f"{', '.join(map(str, levels)) or 'none (no bookmark outline)'}")
+        cmd_level, chosen_by = args.command_level, "option"
+    else:
+        cmd_level, chosen_by = pick_command_level(toc), "toc"
     # Every TOC entry at the command level starts a command's entry. Every
     # shallower one -- a chapter, an appendix, the licence -- ends the entry
     # before it and starts a region that belongs to no command. Without those
@@ -206,10 +191,18 @@ def main() -> None:
         # is document order and alphabetical order need not be.
         boundaries.sort()
     n_commands = sum(1 for b in boundaries if b[3])
-    print(
-        f"[{args.slug}] command level L{cmd_level}: {n_commands} commands",
-        flush=True,
-    )
+    if cmd_level is None:
+        print(
+            f"[{args.slug}] !! no TOC level has {MIN_COMMANDS} titles shaped like commands "
+            "(an underscore, \" -\", or a message code), so no chunk is attributed to one. "
+            "If this is a reference, pass --command-level N with the TOC level its entries are at.",
+            flush=True,
+        )
+    else:
+        print(
+            f"[{args.slug}] command level L{cmd_level}: {n_commands} commands",
+            flush=True,
+        )
 
     # Split full.md into one region per command *before* chunking, so a
     # chunk can never span two commands. Without this the splitter simply
@@ -302,6 +295,11 @@ def main() -> None:
                 "toc": [
                     {"level": l, "title": (t or "").strip(), "page": p} for l, t, p in toc
                 ],
+                "attribution": {
+                    "status": "attributed" if cmd_level is not None else "declined",
+                    "command_level": cmd_level,
+                    "chosen_by": chosen_by,
+                },
                 "sections": entries,
                 "full_md_chars": len(full_md),
             }, plan.doc_id, plan.version, plan.later),
