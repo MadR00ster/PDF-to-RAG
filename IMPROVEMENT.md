@@ -3,6 +3,10 @@
 A review of the implementation, the methodology and the data layout, written
 2026-10-07 against commit `0e4dd59`. Nothing here is built yet.
 
+Scope: what the repo does today, which is converting PDFs into a corpus and
+serving that corpus to an editor over stdio. The shared answering server in
+ROADMAP.md is left out.
+
 Each item says how it is known:
 
 - **Verified**: reproduced here by running the code (Python 3.13,
@@ -86,9 +90,8 @@ function:
 - Match headings on whole words, using content words only.
 
 **Measure it.** Identifier questions reach 100% hit@5 but only 85% hit@1
-(`references/retrieval-measurement.md`). This fix targets exactly that gap,
-and costs less than the reranker the roadmap plans for it. Run
-`eval_search.py` before and after.
+(`references/retrieval-measurement.md`). This fix targets exactly that gap.
+Run `eval_search.py` before and after.
 
 ### 1.3 Docling chunks use the outermost heading, not their own — Verified in docling-core's source; not run end to end
 
@@ -302,8 +305,8 @@ Measure each of these with `eval_search.py` before adopting it.
   `unicode61 tokenchars '_-'` would match `set_scan_configuration` as one
   token, where now it is a phrase that also matches prose saying "set scan
   configuration". The aim is hit@1; hit@5 for identifiers is already 100%.
-- **Fix 1.1 and 1.2 first.** They cost nothing to run, and they move the same
-  number the roadmap's reranker is meant to move.
+- **Fix 1.1 and 1.2 first.** They are small, already verified, and aim at the
+  same number: which section comes first.
 
 ### 2.6 Let the eval tool compare runs — From reading
 
@@ -338,8 +341,8 @@ can be the folder name.
 
 The contract exists as prose in SKILL.md and as code in `check_corpus.py`. A
 `manifest.schema.json` file, plus a `schema_version` field in each manifest,
-would give the planned HTML importer, a third-party converter, or an editor
-something exact to target.
+would give any new converter, or an editor validating a manifest, something
+exact to target.
 
 Also record which converter wrote each document, in every manifest:
 `converter`, its version, the pymupdf4llm or Docling version, and
@@ -374,9 +377,8 @@ if they differ, adds a warning line just as the coverage warning does.
 
 `documents.slug` is the primary key (`build_search_db.py:76`). Two vendors
 that both have a `user-guide` therefore crash the build, on the
-multi-collection layout the README itself shows. The roadmap lists this under
-the HTTP work, but it is a crash on a supported setup: fix it now. Key
-documents by `(collection, slug)`.
+multi-collection layout the README itself shows. Key documents by
+`(collection, slug)`.
 
 ### 3.6 Merge the three collection files — From reading
 
@@ -460,13 +462,17 @@ cross-check test like the version rule's.
 
 ## Suggested order
 
+The order follows the repo's own rule: wrong metadata in the corpus is worse
+than missing metadata. So the items that can put a wrong label, a wrong page
+or a deleted line into the corpus come before anything about structure.
+
 | when | items | why |
 |---|---|---|
-| now, hours each | 1.1, 1.2, 1.4, 1.7, 4.1, 4.5 | free retrieval gains, a silent failure removed, CI to keep it that way |
-| next | 1.3 (and rerun the benchmark), 1.5, 1.6, 3.5, 2.6 | wrong labels and crashes on supported inputs; a way to see each ranking change |
-| then | 2.1, then the merged converter | page numbers for all prose without Docling; one fewer path to keep in step |
-| later | 2.3, 2.4, 3.2, 3.3, 3.4, 4.2–4.4 | structure that pays off as corpora and contributors grow |
+| first, hours each | 4.1, 4.2, 1.4, 1.7 | CI and tests that run alone, so every later change is checked; a latent page-numbering failure closed; docs that match the code |
+| then: the corpus | 1.3 (confirm on a real PDF, then rerun the benchmark), 1.5, 1.6, 1.8, 3.5 | wrong labels, silent declines, leftover files and lost lines are what the rule exists to prevent |
+| then: search | 1.1, 1.2, 2.6 | verified ranking faults, and a way to see each question's rank move before and after |
+| then: coverage | 2.1, then the merged converter | page numbers on every prose chunk without Docling; one pymupdf4llm path to keep in step |
+| later | 2.2–2.5, 3.1–3.4, 3.6, 4.3–4.5 | structure that pays off as corpora and contributors grow |
 
-Fixes 1.1 and 1.2 should come before the roadmap's `ask_docs` work. A model
-writing answers inherits whatever retrieval puts first, and these two change
-what comes first at no cost.
+1.1 and 1.2 change no corpus file, only the index and the server. That is why
+they can wait behind the corpus fixes even though they are the quickest wins.
