@@ -159,6 +159,13 @@ def find_collections(root: Path) -> list[Path]:
     return sorted(p for p in root.iterdir() if p.is_dir() and document_dirs(p / "docs"))
 
 
+def collections_under(path: Path) -> list[Path]:
+    """The collections a command line path means: `path` itself when it has a
+    docs/ folder, otherwise each collection below it (find_collections). The
+    one rule every script that takes a collection takes a corpus root by."""
+    return [path] if (path / "docs").is_dir() else find_collections(path)
+
+
 def skips_name(name: str) -> bool:
     """A folder under docs/ that is not a document: a backup (.old), an
     interrupted build (.new), or anything hidden or private. Every script that

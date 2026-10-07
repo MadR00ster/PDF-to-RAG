@@ -575,7 +575,7 @@ def report(r: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("collection", type=Path, help="folder holding source/ and docs/")
+    ap.add_argument("collection", type=Path, help="folder holding source/ and docs/, or a corpus root of several")
     ap.add_argument("--only", action="append", default=[], help="restrict to this slug (repeatable)")
     ap.add_argument("--skip", action="append", default=[], help="exclude this slug (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="detect and link, write nothing")
@@ -586,29 +586,30 @@ def main() -> int:
     ap.add_argument("--max-px", type=int, default=MAX_PX, help=f"cap on a crop's long edge (default {MAX_PX})")
     args = ap.parse_args()
 
-    coll = args.collection.resolve()
-    docs = coll / "docs"
-    if not docs.is_dir():
-        sys.exit(f"No docs/ under {coll}")
+    root = args.collection.resolve()
+    collections = editions.collections_under(root)
+    if not collections:
+        sys.exit(f"No docs/ under {root}")
 
     jobs = []
-    for doc_dir in editions.document_dirs(docs):
-        mp, slug = doc_dir / "manifest.json", doc_dir.name
-        if slug in args.skip or (args.only and slug not in args.only):
-            continue
-        source = json.loads(mp.read_text(encoding="utf-8-sig")).get("source_pdf") or ""
-        pdf = editions.find_source_pdf(coll, source)
-        if pdf is None:
-            print(f"  !! {slug}: source PDF {source!r} is in neither {editions.SOURCE_DIR}/ nor "
-                  f"{coll.name}/ -- skipped")
-            continue
-        jobs.append((str(mp.parent), str(pdf), args.dry_run, args.dpi, args.max_px))
+    for coll in collections:
+        for doc_dir in editions.document_dirs(coll / "docs"):
+            mp, slug = doc_dir / "manifest.json", doc_dir.name
+            if slug in args.skip or (args.only and slug not in args.only):
+                continue
+            source = json.loads(mp.read_text(encoding="utf-8-sig")).get("source_pdf") or ""
+            pdf = editions.find_source_pdf(coll, source)
+            if pdf is None:
+                print(f"  !! {slug}: source PDF {source!r} is in neither {editions.SOURCE_DIR}/ nor "
+                      f"{coll.name}/ -- skipped")
+                continue
+            jobs.append((str(mp.parent), str(pdf), args.dry_run, args.dpi, args.max_px))
 
     workers = max(1, min(args.jobs, len(jobs)))
     threads = args.threads or ((os.cpu_count() or 2) // workers if workers > 1 else 0)
     jobs = [j + (threads,) for j in jobs]
 
-    print(f"{coll.name} ({'DRY RUN -- nothing written' if args.dry_run else 'writing'}), "
+    print(f"{root.name} ({'DRY RUN -- nothing written' if args.dry_run else 'writing'}), "
           f"{len(jobs)} document(s)" + (f", {workers} at a time, {threads} threads each" if workers > 1 else ""),
           flush=True)
     totals = Counter()

@@ -602,8 +602,9 @@ def main(shape: str | None = None, description: str | None = None) -> None:
                     "Defaults to the title already in docs/<slug>/manifest.json, which keeps it "
                     "byte-stable across rebuilds and avoids shell-encoding trouble with characters "
                     "like the trademark sign")
-    ap.add_argument("--slug", required=shape is not None,
-                    help="docs/<slug> folder name (default: derived from the PDF filename)")
+    ap.add_argument("--slug",
+                    help="docs/<slug> folder name (default: the PDF's filename with the release on the end, "
+                    "so a second edition shares its manual's doc_id)")
     if shape is None:
         ap.add_argument("--shape", choices=("auto", "prose", "reference"), default="auto",
                         help="a prose manual, or a command reference whose entries each get their own "
@@ -639,13 +640,21 @@ def main(shape: str | None = None, description: str | None = None) -> None:
     def refuse_existing(slug: str) -> None:
         if (out_root / slug).exists() and not args.replace:
             sys.exit(f"{out_root / slug} exists -- pass --replace to rebuild it")
-    if args.slug:
-        refuse_existing(args.slug)
+
+    if not args.slug:
+        # Named the way every conversion names one, with the release on the end,
+        # so a second edition shares the first's doc_id. A slug picked by hand
+        # for it often did not, and both editions then answered every search.
+        version = (editions.split_version(args.version)[0] if args.version
+                   else editions.read_cover(pdf_path).version)
+        args.slug = editions.default_slug(editions.slugify(pdf_path.stem) or "document", version)
+        print(f"slug: {args.slug}")
+    refuse_existing(args.slug)
 
     # A rebuild keeps what the document already is: a title, doc_id or version
     # set by hand must survive --replace.
     prior = {}
-    if args.slug and (out_root / args.slug / "manifest.json").exists():
+    if (out_root / args.slug / "manifest.json").exists():
         prior = json.loads((out_root / args.slug / "manifest.json").read_text(encoding="utf-8-sig"))
     title = args.title
     if not title:
@@ -668,7 +677,6 @@ def main(shape: str | None = None, description: str | None = None) -> None:
     plan = editions.plan(pdf_path, args.slug, out_root, args.version or prior.get("version"),
                          args.doc_id or prior.get("doc_id"),
                          later=not args.version and prior.get("version_and_later") is True)
-    refuse_existing(plan.slug)
 
     if shape == "reference":
         convert_reference(plan, title, args.command_level, args.prose_outside_entries)

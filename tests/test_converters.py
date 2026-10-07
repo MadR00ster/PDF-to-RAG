@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -10,7 +11,7 @@ from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import SCRIPTS, WS, run, inverted_fixture, gadget_fixture, write_pdf, load_script, edition_reference_fixture, mixed_fixture  # noqa: E402
+from _support import SCRIPTS, WS, run, inverted_fixture, gadget_fixture, write_pdf, load_script, edition_reference_fixture, mixed_fixture, command_page  # noqa: E402
 import pymupdf  # noqa: E402
 
 
@@ -783,6 +784,80 @@ class ConverterTest(unittest.TestCase):
                     (root / "docs").mkdir()
                 self.assertEqual(build.find_collections(root), old_build(root))
                 self.assertEqual([c for c in editions.find_collections(root)], [p.parent for _k, _d, p in old_build(root)])
+
+
+    def two_collections(self, name: str) -> Path:
+        """A corpus root holding two collections, each with one converted prose manual."""
+        root = self.tmp / name
+        for coll, slug in (("Alpha Vendor", "alpha-guide"), ("Beta Vendor", "beta-guide")):
+            (root / coll / "docs").mkdir(parents=True)
+            shutil.copy(WS.pdf("prose"), root / coll / "widget-guide.pdf")
+            r = run("convert_manual.py", str(root / coll / "widget-guide.pdf"), "--title", f"Widget {slug}", "--slug", slug)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        return root
+
+    def test_51_commands_take_a_corpus_root_as_well_as_a_collection(self):
+        root = self.two_collections("tworoot")
+        r = run("build_index.py", str(root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for coll in ("Alpha Vendor", "Beta Vendor"):
+            self.assertTrue((root / coll / "docs" / "index.json").is_file(), f"{coll} has no index.json")
+        # a collection that cannot be indexed is reported, the others are written
+        (root / "Beta Vendor" / "docs" / "index.json").unlink()
+        (root / "Alpha Vendor" / "docs" / "index.json").unlink()
+        (root / "Beta Vendor" / "superseded.json").write_text("[{\"file\": \"x.pdf\"}]", encoding="utf-8")
+        r = run("build_index.py", str(root))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue((root / "Alpha Vendor" / "docs" / "index.json").is_file())
+        self.assertFalse((root / "Beta Vendor" / "docs" / "index.json").exists(), "a collection with a problem was written")
+        self.assertIn("Beta Vendor", r.stdout + r.stderr)
+        (root / "Beta Vendor" / "superseded.json").unlink()
+
+        r = run("enrich_chunks.py", str(root), "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("alpha-guide", r.stdout)
+        self.assertIn("beta-guide", r.stdout)
+        r = run("enrich_chunks.py", str(root), "--only", "beta-guide")
+        self.assertNotIn("alpha-guide", r.stdout, "--only did not apply across collections")
+
+        # one collection still works as it did
+        r = run("enrich_chunks.py", str(root / "Alpha Vendor"), "--dry-run")
+        self.assertIn("alpha-guide", r.stdout)
+        self.assertNotIn("beta-guide", r.stdout)
+
+        db = self.tmp / "tworoot.sqlite3"
+        r = run("build_search_db.py", str(root), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run("build_search_db.py", str(root), "--root", str(root), "--out", str(db))
+        self.assertNotEqual(r.returncode, 0, "the corpus root was accepted twice")
+
+        r = run("extract_figures.py", str(root), "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"2 document\(s\)")
+
+    def test_52_a_second_edition_gets_the_first_ones_doc_id_without_a_slug(self):
+        """A slug picked by hand for a second edition often lacked the version
+        suffix the doc_id is read from, so the two became different manuals."""
+        coll = self.tmp / "NoSlug"
+        for folder in ("new_docs", "docs"):
+            (coll / folder).mkdir(parents=True)
+        pdf = coll / "new_docs" / "widget_ref.pdf"
+        pages = [[("Widget Reference", 24), ("Software Version 2026.1", 11)]]
+        toc = []
+        for i in range(25):
+            name = f"set_widget_option_{i:02d}"
+            pages.append(command_page(name))
+            toc.append([1, name, len(pages)])
+        write_pdf(pdf, pages, toc)
+        r = run("rebuild_reference.py", str(pdf), "--title", "Widget Reference")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("slug: widget-ref-2026-1", r.stdout)
+        m = json.loads((coll / "docs" / "widget-ref-2026-1" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual((m["doc_id"], m["version"]), ("widget-ref", "2026.1"))
+        # and the next run, from the filed copy, rebuilds the same document
+        r = run("rebuild_reference.py", str(coll / "source" / "widget_ref.pdf"), "--replace")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("title from existing manifest", r.stdout)
 
 
 if __name__ == "__main__":

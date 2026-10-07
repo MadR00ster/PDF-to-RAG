@@ -201,7 +201,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T22 | Warn when the index is stale (**done**) | 3.4 | T07 | M |
 | T23 | One `collection.json` (**not now: skip**) | 3.6 | — | — |
 | T24 | Remove accidental duplication (**done**) | 4.3 | T06, T07 | M |
-| T25 | Consistent command lines | 4.4 | T07 | M |
+| T25 | Consistent command lines (**done**) | 4.4 | T07 | M |
 | T26 | Server robustness and tool metadata | 4.5 | T01 | S |
 
 T26 is independent and small, so it can be done any time after T01. The
@@ -2056,7 +2056,7 @@ copies, each held by a cross-check test.
 
 ### T25: Consistent command lines [4.4]
 
-**Status:** not started
+**Status:** done. Tests: test_51 and test_52. `ocr_figures.py` takes a root too, but nothing here exercises it: it needs Tesseract language data. The convention in `editions.collections_under`.
 
 **Steps.**
 

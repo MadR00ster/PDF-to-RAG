@@ -38,6 +38,7 @@ Layout it expects -- either shape works, and both are auto-detected:
     corpus/<collection>/docs/<slug>/manifest.json    several collections
 
 Usage:
+  python scripts/build_search_db.py "D:/Manuals"
   python scripts/build_search_db.py --root "D:/Manuals"
   python scripts/build_search_db.py --root "D:/Manuals" --emit-vscode-config
   python scripts/build_search_db.py --root "D:/Manuals" --stats-only
@@ -725,7 +726,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--root", default=".", help="corpus root (default: current directory)")
+    ap.add_argument("corpus", nargs="?", help="corpus root, as an argument or as --root")
+    ap.add_argument("--root", help="corpus root (default: current directory)")
     ap.add_argument("--out", help=f"index path (default: <root>/{DEFAULT_DB_NAME})")
     ap.add_argument("--stats-only", action="store_true", help="report what would be indexed, write nothing")
     ap.add_argument(
@@ -755,7 +757,9 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    root = Path(args.root).resolve()
+    if args.corpus and args.root:
+        ap.error("give the corpus root once: as an argument or as --root, not both")
+    root = Path(args.corpus or args.root or ".").resolve()
     if not root.is_dir():
         print(f"--root '{root}' is not a folder.", file=sys.stderr)
         return 1

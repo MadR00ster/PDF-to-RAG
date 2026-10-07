@@ -432,19 +432,24 @@ def main() -> None:
     ap.add_argument("--only", action="append", default=[])
     args = ap.parse_args()
 
-    docs = args.vendor.resolve() / "docs"
-    if not docs.is_dir():
+    root = args.vendor.resolve()
+    collections = editions.collections_under(root)
+    if not collections:
         sys.exit(f"No docs/ under {args.vendor}")
+    for vendor in collections:
+        report_collection(vendor, args)
 
+
+def report_collection(vendor: Path, args) -> None:
     results = []
-    for doc_dir in editions.document_dirs(docs):     # backups and interrupted builds are not documents
+    for doc_dir in editions.document_dirs(vendor / "docs"):     # backups and interrupted builds are not documents
         slug = doc_dir.name
         if slug in args.skip or (args.only and slug not in args.only):
             continue
         results.append(process_manual(doc_dir, args.dry_run))
 
     mode = "DRY RUN -- nothing written" if args.dry_run else "applied"
-    print(f"{args.vendor.name} ({mode})\n")
+    print(f"{vendor.name} ({mode})\n")
     print(f"{'chunks':>7} {'changed':>8} {'lines':>7} {'crumbs':>7}  manual")
     for r in results:
         print(

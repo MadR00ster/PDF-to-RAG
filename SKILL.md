@@ -645,6 +645,13 @@ python scripts/mcp_smoke_test.py --db "<corpus>/mcp-index.sqlite3"
 The last two are the ones people skip: without them the server keeps answering
 from the corpus as it used to be.
 
+None of these needs `--slug`: the converters name a document after its PDF with
+the release on the end (`widget-ref-2026-1`), which is what makes a second
+edition share the first's `doc_id`. A slug chosen by hand for one often lacked
+that ending, and the two became different manuals that both answered every
+search. Every command above also takes the corpus root in place of `<collection>`
+and runs each collection under it (`--only` and `--skip` apply across them).
+
 Read what the converter prints first: the version it took from the cover, the
 `doc_id`, and whether that makes this a new manual or an edition of one already
 here. A new release of a manual already converted needs nothing more — it

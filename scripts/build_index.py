@@ -15,6 +15,11 @@ unless current_versions.json pins another (see editions.py).
 Usage:
   python scripts/build_index.py "Synopsys Manual"
   python scripts/build_index.py "Tessent Manual"
+  python scripts/build_index.py "D:/Manuals"        every collection under a corpus root
+
+Given a corpus root, each collection that has no problems is written and each
+that has is reported with nothing written for it; the exit status is 1 if any
+did.
 """
 from __future__ import annotations
 
@@ -201,16 +206,18 @@ def report_orphans(vendor_dir: Path, manuals: list[dict], superseded: list[dict]
     )
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit("Usage: python build_index.py <vendor-folder>")
-    vendor_dir = Path(sys.argv[1]).resolve()
+def build_collection(vendor_dir: Path) -> bool:
+    """Write one collection's index.json and README.md. False, with nothing
+    written, if its editions cannot be ordered or its superseded.json cannot be
+    used."""
     docs_dir = vendor_dir / "docs"
-    if not docs_dir.exists():
-        sys.exit(f"No docs/ folder under {vendor_dir}")
-
     manuals = load_manuals(docs_dir)
-    superseded = load_superseded(vendor_dir, {m["slug"] for m in manuals})
+    try:
+        superseded = load_superseded(vendor_dir, {m["slug"] for m in manuals})
+    except SystemExit as stop:
+        if isinstance(stop.code, str):
+            print(stop.code)
+        return False
     problems = mark_current(vendor_dir, manuals)
     if problems:
         # Before anything is written. With a pin that matches nothing, the
@@ -221,11 +228,29 @@ def main() -> None:
               "stops on these too:")
         for p in problems:
             print(f"  !! {p}")
-        sys.exit(1)
+        return False
 
     write_index_json(docs_dir, manuals, superseded)
     write_readme(vendor_dir, docs_dir, manuals, superseded)
     report_orphans(vendor_dir, manuals, superseded)
+    return True
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        sys.exit("Usage: python build_index.py <vendor-folder or corpus root>")
+    path = Path(sys.argv[1]).resolve()
+    collections = editions.collections_under(path)
+    if not collections:
+        sys.exit(f"No docs/ folder under {path}")
+    failed = []
+    for vendor_dir in collections:
+        if len(collections) > 1:
+            print(f"\n{vendor_dir.name}")
+        if not build_collection(vendor_dir):
+            failed.append(vendor_dir.name)
+    if failed:
+        sys.exit(1 if len(collections) == 1 else f"\nNothing was written for: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

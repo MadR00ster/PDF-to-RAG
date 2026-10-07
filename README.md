@@ -81,7 +81,7 @@ part or error code) and names the converter to use:
 
 ```bash
 python scripts/convert_manual.py my-corpus/vendor/new_docs/guide.pdf --title "Widget User Guide"
-python scripts/convert_manual.py my-corpus/vendor/new_docs/commands.pdf --slug widget-cmds --title "Widget Command Reference"
+python scripts/convert_manual.py my-corpus/vendor/new_docs/commands.pdf --title "Widget Command Reference"
 ```
 
 Each converter writes `my-corpus/vendor/docs/<slug>/` and then moves the PDF to
