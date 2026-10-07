@@ -165,5 +165,19 @@ class ServerTest(unittest.TestCase):
                          "the index has no entities, so the identifier probes never ran")
 
 
+    def test_36_front_matter_is_a_whole_heading(self):
+        """is_noise took any heading that began with a front-matter word, so
+        "Index Types" and "Feedback Loops in PLLs" were demoted below the
+        text that answers them."""
+        noise = load_script("build_search_db").is_noise
+        for real in ("Indexing Options", "Index Types", "Contents of the Install Kit", "Feedback Loops in PLLs"):
+            self.assertFalse(noise(real, "Real text.\n"), f"{real!r} is a real section")
+        for front in ("Contents", "TABLE OF CONTENTS", "Index", "Index (cont.)", "Contents (intro) (cont.)",
+                      "Feedback", "List of Figures", "List of Tables", "About This Manual", "  List  of   Tables "):
+            self.assertTrue(noise(front, "Real text.\n"), f"{front!r} is front matter")
+        leaders = "".join(f"Rule K{n} . . . . {100 + n}\n" for n in range(6))
+        self.assertTrue(noise("Overview", leaders), "a page of dot leaders is a contents page whatever it is called")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

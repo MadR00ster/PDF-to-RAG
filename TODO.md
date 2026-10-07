@@ -184,7 +184,7 @@ The order follows IMPROVEMENT.md's "Suggested order" with one change: 2.2
 | T08 | Stop deleting short lines that begin the title (**done**) | 1.8 | T04 | S |
 | T09 | Key documents by (collection, slug) (**done**) | 3.5 | T07 | L |
 | **Phase 3: search** |||||
-| T10 | Demote front matter by whole heading | 1.1 | T01 | S |
+| T10 | Demote front matter by whole heading (**done**) | 1.1 | T01 | S |
 | T11 | Entity boost for identifiers inside a question | 1.2 | T01 | M |
 | T12 | `eval_search.py --compare` | 2.6 | T01 | S |
 | **Phase 4: coverage** |||||
@@ -1118,7 +1118,7 @@ Every table already has a `collection` column.
 
 ### T10: Demote front matter only by its whole heading [1.1]
 
-**Status:** not started
+**Status:** done, except the eval comparison (§4).
 
 **Why.** Verified: `is_noise` flags `Indexing Options`, `Index Types`,
 `Contents of the Install Kit` and `Feedback Loops in PLLs` as front matter,
@@ -1163,8 +1163,8 @@ intended.
 change (T12's `--compare`). Record the result in §4.
 
 **Done when**
-- [ ] The test fails before the change and passes after it.
-- [ ] The eval comparison is done, or its §4 row says why not.
+- [x] The test fails before the change and passes after it.
+- [x] The eval comparison is done, or its §4 row says why not.
 
 ---
 
@@ -2164,7 +2164,7 @@ you could not run. Never write a number you did not measure.
 | T05 | Do Docling's later chunks list the title first? | the snippet in T05, on a real manual | not measured: Docling is not installed here and needs several GB; the claim rests on docling-core's source, as T05 says | 2026-10-07 |
 | T05 | Docling anchored share, after the fix | rerun `references/extractor-benchmark.md`'s method | not measured: needs Docling and the benchmark's corpus slices, neither here; the benchmark file carries a dated note that its numbers predate the fix | 2026-10-07 |
 | T08 | Lines no longer deleted as furniture | `enrich_chunks.py --dry-run --list-furniture`, old vs new, diffed | not measured: no real corpus here. Run `enrich_chunks.py <collection> --dry-run --list-furniture` with `TITLE_SHARE = 0` (the old rule) and with 0.6, and diff; for references, reconvert one and run `check_corpus.py` (its `furniture` check) | 2026-10-07 |
-| T10 | Search change from whole-heading front matter | `eval_search.py --json`, then `--compare` | | |
+| T10 | Search change from whole-heading front matter | `eval_search.py --json`, then `--compare` | not measured: needs the user's corpus and its eval questions. Rebuild the index with this commit (`noise` is stored at build time, so an existing index does not change) and compare with a run from before using T12's `--compare` | 2026-10-07 |
 | T11 | Identifier hit@1 and every rank moved | `eval_search.py --json`, then `--compare` | | |
 | T14 | Strict check and figure links after reconverting prose | the T14 real-corpus check | | |
 | T16 | Search change from chain breadcrumbs | `--compare` after reconverting the references | | |

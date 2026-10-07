@@ -166,10 +166,14 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 DOT_LEADER_RE = re.compile(r"\.\s?\.\s?\.\s?\.")
-FRONT_MATTER_HEADINGS = (
-    "contents", "table of contents", "feedback", "index",
-    "list of figures", "list of tables", "about this",
-)
+# The whole heading, not its first word: "Index Types", "Contents of the
+# Install Kit" and "Feedback Loops in PLLs" are real sections. The chunker
+# names the pieces of a split heading "<heading> (cont.)" and "<heading>
+# (intro)", so those count as the heading. "About this" stays a prefix: it
+# only ever starts "About This Manual" or "About This Guide".
+FRONT_MATTER_RE = re.compile(
+    r"^(?:contents|table of contents|index|feedback|list of (?:figures|tables))"
+    r"(?: \((?:cont\.|intro)\))*$")
 
 
 def slugify(name: str) -> str:
@@ -185,8 +189,8 @@ def is_noise(heading: str, body: str) -> bool:
     "DRC Rule K23 . . . 151" beats the text of rule K23. Flagged rather than
     dropped: the chunks stay searchable, just demoted at query time.
     """
-    h = heading.lower().strip()
-    if any(h.startswith(f) for f in FRONT_MATTER_HEADINGS):
+    h = " ".join(heading.lower().split())
+    if FRONT_MATTER_RE.match(h) or h.startswith("about this"):
         return True
     lines = [l for l in body.splitlines() if l.strip()]
     if len(lines) < 4:
