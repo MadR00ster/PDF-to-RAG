@@ -38,12 +38,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
+from _common import utf8_console  # noqa: E402
 
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+utf8_console()
 
 try:
     import pymupdf
@@ -108,7 +105,7 @@ def ocr_document(job: tuple) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("collection", type=Path, help="folder holding source/ and docs/")
+    ap.add_argument("collection", type=Path, help="folder holding source/ and docs/, or a corpus root of several")
     ap.add_argument("--only", action="append", default=[], help="restrict to this slug (repeatable)")
     ap.add_argument("--skip", action="append", default=[], help="exclude this slug (repeatable)")
     ap.add_argument("--jobs", type=int, default=1, help="documents to read in parallel (default 1)")
@@ -121,22 +118,25 @@ def main() -> int:
         sys.exit(f"No Tesseract language data for '{args.language}' found. Install Tesseract, then set "
                  "TESSDATA_PREFIX to its tessdata folder or pass --tessdata.")
 
-    coll = args.collection.resolve()
+    root = args.collection.resolve()
     jobs = []
-    for fig_path in sorted((coll / "docs").glob("*/figures.json")):
-        slug = fig_path.parent.name
-        if slug in args.skip or (args.only and slug not in args.only):
-            continue
-        manifest = json.loads((fig_path.parent / "manifest.json").read_text(encoding="utf-8-sig"))
-        pdf = editions.find_source_pdf(coll, manifest.get("source_pdf"))
-        if pdf is None:
-            print(f"  !! {slug}: source PDF is in neither {editions.SOURCE_DIR}/ nor {coll.name}/ -- skipped")
-            continue
-        jobs.append((str(fig_path.parent), str(pdf), tessdata, args.language))
+    for coll in editions.collections_under(root):
+        for doc_dir in editions.document_dirs(coll / "docs"):
+            fig_path, slug = doc_dir / "figures.json", doc_dir.name
+            if not fig_path.is_file():
+                continue
+            if slug in args.skip or (args.only and slug not in args.only):
+                continue
+            manifest = json.loads((fig_path.parent / "manifest.json").read_text(encoding="utf-8-sig"))
+            pdf = editions.find_source_pdf(coll, manifest.get("source_pdf"))
+            if pdf is None:
+                print(f"  !! {slug}: source PDF is in neither {editions.SOURCE_DIR}/ nor {coll.name}/ -- skipped")
+                continue
+            jobs.append((str(fig_path.parent), str(pdf), tessdata, args.language))
     if not jobs:
-        sys.exit(f"No figures.json under {coll / 'docs'} -- run extract_figures.py first.")
+        sys.exit(f"No figures.json under {root / 'docs'} -- run extract_figures.py first.")
 
-    print(f"{coll.name}: OCR of figures without text, {len(jobs)} document(s)", flush=True)
+    print(f"{root.name}: OCR of figures without text, {len(jobs)} document(s)", flush=True)
     totals = {"read": 0, "empty": 0, "failed": 0}
 
     def report(r: dict) -> None:

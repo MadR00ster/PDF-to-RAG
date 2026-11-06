@@ -101,6 +101,13 @@ Position refinement locates both the TOC heading and the chunk by y-coordinate
 via PyMuPDF text search (77.7% of chunks locatable; degrades to page behaviour
 otherwise). No new dependency.
 
+*Note, 2026-10-07:* the anchored shares above were measured before
+`convert_docling.py` stopped reading the outermost heading as a chunk's own
+(Docling lists headings outermost first, so once the cover is the document's
+title it came first for every later chunk). If they came from that script,
+they undercount what anchoring by the chunk's own heading gives. They have
+not been re-measured.
+
 That estimate is optimistic — anchorable chunks sit at section starts. Bounding
 it on the real fallback population: **47.6% of fallback chunks sit on a page
 where no TOC entry starts**, so the stack cannot be wrong; 37.4% have one

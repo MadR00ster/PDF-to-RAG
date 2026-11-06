@@ -41,9 +41,11 @@ Per document:
                without pages it can only compare with the whole document, so
                it catches text lost wholesale and not a single missing chunk.
 Per collection:
-  slugs two documents share (build_search_db.py stops on one), document
-  folders build_index.py skips but build_search_db.py indexes, a stale
-  index.json, PDFs neither converted nor marked superseded.
+  collection folders whose names give one key (build_search_db.py stops on
+  that), manifests left in folders every tool skips (.old, .new, dot,
+  underscore), a stale index.json, PDFs neither converted nor marked
+  superseded. Two collections may each have a document of one name: the
+  index keys documents by collection and slug.
   editions     documents sharing a `doc_id` are releases of one manual. Each
                needs a version the others can be ordered against, no two the
                same, and a pin in current_versions.json has to name a release
@@ -59,7 +61,7 @@ labelling that gives 99% of chunks an owner can be 17.5% wrong, and only a
 signal the labeller did not use can tell.
 
 What it cannot see: idempotency, which needs the converter run twice
-(tests/test_pipeline.py does that), and which of two same-titled TOC entries
+(the suite in tests/ does that), and which of two same-titled TOC entries
 with overlapping pages a breadcrumb meant.
 
 Usage:
@@ -87,8 +89,8 @@ from pathlib import Path, PurePosixPath
 
 BREADCRUMB_SEP = " › "
 REQUIRED_FIELDS = ("slug", "title", "source_pdf", "page_count", "sections")
-# Present is not enough: `"slug": null` passes a key check and then fails
-# build_search_db.py's NOT NULL primary key.
+# Present is not enough: `"slug": null` passed a key check once, and failed
+# the index build back when the index took a document's name from it.
 FIELD_VALID = {
     "slug": lambda v: isinstance(v, str) and bool(v.strip()),
     "title": lambda v: isinstance(v, str) and bool(v.strip()),
@@ -149,7 +151,7 @@ CHECKS = {
     "manifest-unreadable": (FAIL, "manifest.json is not readable JSON, so every tool skips or stops on this document"),
     "manifest-missing-field": (FAIL, "manifest.json lacks a field build_index.py or build_search_db.py reads"),
     "manifest-invalid-field": (FAIL, "a required manifest field is null, empty or the wrong type; build_search_db.py rejects it or reads it wrongly"),
-    "slug-mismatch": (WARN, "the manifest's slug is not its folder's name; build_index.py lists the folder, build_search_db.py the slug"),
+    "slug-mismatch": (WARN, "the manifest's slug is not its folder's name; every tool names the document by its folder, so the manifest's copy is wrong"),
     "toc-missing": (WARN, "no bookmark TOC in the manifest: get_toc has nothing to serve and no breadcrumb can be verified"),
     "section-without-file": (FAIL, "a section names no file; build_search_db.py drops it without a word"),
     "section-bad-path": (FAIL, "a section's file is not a relative path inside sections/: a reader would leave the document, or crash on it"),
@@ -157,7 +159,7 @@ CHECKS = {
     "section-unreadable": (FAIL, "a section file that cannot be read as UTF-8 text"),
     "section-duplicate-file": (WARN, "two sections name the same file, so its text is indexed twice"),
     "section-orphan-file": (WARN, "a file in sections/ the manifest does not list; no tool will read it"),
-    "chars-mismatch": (WARN, "the manifest's chars disagrees with the file: one was edited without the other"),
+    "chars-mismatch": (WARN, "a manifest that still records a section's chars disagrees with the file. Converters no longer write it, and enrich_chunks.py removes it; the file is the copy"),
     "empty-chunk": (WARN, "a chunk with no text besides its breadcrumb"),
     "oversized-chunk": (WARN, f"a chunk over {OVERSIZED:,} chars: chunking never split it"),
     "full-md-missing": (FAIL, "no full.md, the un-chunked fallback for when a chunk boundary lands badly"),
@@ -196,8 +198,9 @@ CHECKS = {
     "content-unchecked": (WARN, "the content check could not run -- PyMuPDF is missing or the PDF would not open -- so text and page numbers went unchecked"),
     "page-count-mismatch": (FAIL, "the manifest's page_count is not the source PDF's: page numbers are checked against a document that is not this one"),
     # collection
-    "duplicate-slug": (FAIL, "two documents share a slug; build_search_db.py stops on the second (documents.slug is its primary key)"),
-    "hidden-document": (FAIL, "a manifest in a docs/ folder build_index.py skips (.old, .new, dot, underscore) that build_search_db.py still indexes; keep backups outside docs/"),
+    "collection-clash": (FAIL, "two collection folders whose names give one collection key (letters and digits, lowercased); build_search_db.py stops"),
+    "hidden-document": (WARN, "a folder under docs/ that every tool skips (.old, .new, dot, underscore) holds a manifest: a leftover backup or an interrupted build. Move it out of docs/"),
+    "attribution-declined": (WARN, "a reference conversion attributed no chunk to an entry (manifest attribution.status is declined): pass --command-level if it is a reference"),
     "index-missing": (WARN, "no docs/index.json; run build_index.py"),
     "index-stale": (WARN, "docs/index.json disagrees with the manifests on disk; run build_index.py"),
     "pdf-unaccounted": (WARN, "a PDF in source/ or the collection folder that is neither converted nor listed in superseded.json"),
@@ -771,8 +774,17 @@ def check_content(pdf: Path, page_count, chunks: list, page_of: dict, n_sample: 
 # ------------------------------------------------------------- collection
 
 def index_skips(name: str) -> bool:
-    """build_index.py's rule for folders under docs/ that are not documents."""
+    """The rule every script uses for folders under docs/ that are not
+    documents (editions.skips_name). Written out here, as this file imports
+    nothing from the converters; a test holds the two together."""
     return name.endswith((".old", ".new")) or name.startswith((".", "_"))
+
+
+def collection_key(name: str) -> str:
+    """The key build_search_db.py gives a collection folder (its slugify).
+    Written out here, as this file imports nothing from the scripts; a test
+    holds the two together."""
+    return re.sub(r"[^0-9A-Za-z]+", "-", name).strip("-").lower() or "corpus"
 
 
 def find_source_pdf(collection_dir: Path, name) -> Path | None:
@@ -919,6 +931,9 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
             pass
         if isinstance(m, dict):
             manifests[r["folder"]] = m
+            attribution = m.get("attribution")
+            if isinstance(attribution, dict) and attribution.get("status") == "declined":
+                f.add("attribution-declined", r["folder"])
 
     index_path = docs / "index.json"
     listed = None
@@ -1000,10 +1015,12 @@ def check_collection(collection_dir: Path, doc_dirs: list[Path], hidden: list[Pa
 def find_targets(path: Path):
     """[(collection_dir, doc_dirs, hidden_dirs)], and whether collection-level
     checks apply. Discovery follows build_search_db.py: <root>/docs is one
-    collection, otherwise every <root>/<collection>/docs."""
+    collection when it holds a document, otherwise every
+    <root>/<collection>/docs; an empty docs/ at the root hides nothing."""
     if (path / "manifest.json").is_file():
         return [(path.parent.parent, [path], [])], False
-    if (path / "docs").is_dir():
+    root_docs = path / "docs"
+    if root_docs.is_dir() and any((d / "manifest.json").is_file() for d in root_docs.iterdir()):
         collections = [path]
     else:
         collections = sorted(p for p in path.iterdir() if p.is_dir() and (p / "docs").is_dir())
@@ -1095,23 +1112,18 @@ def main() -> int:
               "<root>/<collection>/docs/<slug>/manifest.json, or a docs/<slug> folder.", file=sys.stderr)
         return 2
 
-    # A slug shared anywhere under the root stops build_search_db.py, whichever
-    # collections the two copies sit in.
+    # Two collection folders whose names give one key stop
+    # build_search_db.py: the index would merge their documents into one
+    # collection. Only folders holding a document count, as there.
     if collection_checks and not args.only:
         seen: dict[str, list[str]] = {}
-        for collection_dir, doc_dirs, hidden in targets:
-            for d in doc_dirs + hidden:
-                try:
-                    slug = load_json(d / "manifest.json").get("slug")
-                except (OSError, ValueError, AttributeError):
-                    continue
-                if slug:
-                    seen.setdefault(slug, []).append(f"{collection_dir.name}/docs/{d.name}")
-        for slug, where in seen.items():
-            if len(where) > 1:
-                owner = where[1].split("/docs/")[0]
-                collection_findings.setdefault(owner, Findings()).add(
-                    "duplicate-slug", f"{slug!r} in {', '.join(where)}")
+        for collection_dir, doc_dirs, _hidden in targets:
+            if doc_dirs:
+                seen.setdefault(collection_key(collection_dir.name), []).append(collection_dir.name)
+        for key, folders in seen.items():
+            if len(folders) > 1:
+                collection_findings.setdefault(folders[1], Findings()).add(
+                    "collection-clash", f"{', '.join(folders)} are all {key!r}")
 
     if pdf_pages and _pymupdf is False:
         print("note: pymupdf is not installed, so the content check did not run "

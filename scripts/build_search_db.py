@@ -38,6 +38,7 @@ Layout it expects -- either shape works, and both are auto-detected:
     corpus/<collection>/docs/<slug>/manifest.json    several collections
 
 Usage:
+  python scripts/build_search_db.py "D:/Manuals"
   python scripts/build_search_db.py --root "D:/Manuals"
   python scripts/build_search_db.py --root "D:/Manuals" --emit-vscode-config
   python scripts/build_search_db.py --root "D:/Manuals" --stats-only
@@ -45,6 +46,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -57,6 +59,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import editions  # noqa: E402
+from _common import slugify as common_slugify, utf8_console  # noqa: E402
 
 DEFAULT_DB_NAME = "mcp-index.sqlite3"
 SERVER_NAME = "mcp_server.py"
@@ -72,8 +75,9 @@ SCHEMA = """
 PRAGMA journal_mode = OFF;
 PRAGMA synchronous = OFF;
 
+-- A document is (collection, slug): two vendors may each have a user-guide.
 CREATE TABLE documents (
-    slug          TEXT PRIMARY KEY,
+    slug          TEXT NOT NULL,
     collection    TEXT NOT NULL,
     collection_dir TEXT NOT NULL,
     title         TEXT NOT NULL,
@@ -92,7 +96,8 @@ CREATE TABLE documents (
     has_pages     INTEGER NOT NULL DEFAULT 0,
     has_entities  INTEGER NOT NULL DEFAULT 0,
     figure_count  INTEGER NOT NULL DEFAULT 0,
-    toc_json      TEXT
+    toc_json      TEXT,
+    PRIMARY KEY (collection, slug)
 );
 
 -- One row per section chunk. The five leading columns are searchable; the
@@ -139,7 +144,7 @@ CREATE TABLE entities (
     page_end    INTEGER
 );
 CREATE INDEX idx_entities_lower ON entities(name_lower);
-CREATE INDEX idx_entities_slug  ON entities(slug);
+CREATE INDEX idx_entities_slug  ON entities(collection, slug);
 
 -- Figures from extract_figures.py. section_ord ties one to the chunk it
 -- illustrates, and is NULL when nothing tied it without guessing.
@@ -158,21 +163,66 @@ CREATE TABLE figures (
     section_ord INTEGER,
     link        TEXT             -- how section_ord was decided: caption | page | context
 );
-CREATE INDEX idx_figures_section ON figures(slug, section_ord);
+CREATE INDEX idx_figures_section ON figures(collection, slug, section_ord);
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+
+-- The files this index was built from, as they were. The server compares them
+-- with what is on disk and says when the corpus has moved on: an index nobody
+-- rebuilt answers confidently from a corpus that is gone.
+CREATE TABLE sources (
+    path     TEXT PRIMARY KEY,   -- relative to the corpus root, with /
+    size     INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    sha256   TEXT NOT NULL
+);
 """
 
+# Made only with --ident-index: the identifier-shaped words of each chunk, kept
+# whole, one row per chunk with the chunk's rowid. FTS5 splits `set_scan_configuration`
+# into three tokens for prose search; here `_` and `-` stay inside a token.
+IDENT_SCHEMA = """
+CREATE VIRTUAL TABLE idents USING fts5(words, tokenize = "unicode61 tokenchars '_-'");
+"""
+
+# Written out in mcp_server.py too, which runs on its own; a test holds them together.
+MESSAGE_CODE_RE = re.compile(r"[A-Z][A-Z0-9]{1,9}-\d{2,5}")
+
+
+def identifiers(*texts: str) -> list[str]:
+    """The identifier-shaped words of some text, lowercased and without the
+    punctuation around them: they hold `_`, start with `-`, or are a message
+    code (ADES-002). The rule the server applies to a query."""
+    found = []
+    for text in texts:
+        for raw in (text or "").split():
+            tok = raw.strip("`'\"()[]{}<>,;:?!").rstrip(".")
+            if tok and ("_" in tok or (tok.startswith("-") and len(tok) > 1) or MESSAGE_CODE_RE.fullmatch(tok)):
+                found.append(tok.lower())
+    return found
+
+
+def without_breadcrumb(body: str, breadcrumb: str | None) -> str:
+    """A chunk's text without the breadcrumb line its converter put first: the
+    chunk's own label, which the index holds in a column of its own. The rule
+    mcp_server.without_label applies."""
+    crumb = (breadcrumb or "").strip("*").strip()
+    first, _, rest = body.partition("\n")
+    return rest if crumb and first.strip().strip("*").strip() == crumb else body
+
 DOT_LEADER_RE = re.compile(r"\.\s?\.\s?\.\s?\.")
-FRONT_MATTER_HEADINGS = (
-    "contents", "table of contents", "feedback", "index",
-    "list of figures", "list of tables", "about this",
-)
+# The whole heading, not its first word: "Index Types", "Contents of the
+# Install Kit" and "Feedback Loops in PLLs" are real sections. The chunker
+# names the pieces of a split heading "<heading> (cont.)" and "<heading>
+# (intro)", so those count as the heading. "About this" stays a prefix: it
+# only ever starts "About This Manual" or "About This Guide".
+FRONT_MATTER_RE = re.compile(
+    r"^(?:contents|table of contents|index|feedback|list of (?:figures|tables))"
+    r"(?: \((?:cont\.|intro)\))*$")
 
 
 def slugify(name: str) -> str:
-    s = re.sub(r"[^0-9A-Za-z]+", "-", name).strip("-").lower()
-    return s or "corpus"
+    return common_slugify(name, default="corpus", lower_first=False)
 
 
 def is_noise(heading: str, body: str) -> bool:
@@ -183,8 +233,8 @@ def is_noise(heading: str, body: str) -> bool:
     "DRC Rule K23 . . . 151" beats the text of rule K23. Flagged rather than
     dropped: the chunks stay searchable, just demoted at query time.
     """
-    h = heading.lower().strip()
-    if any(h.startswith(f) for f in FRONT_MATTER_HEADINGS):
+    h = " ".join(heading.lower().split())
+    if FRONT_MATTER_RE.match(h) or h.startswith("about this"):
         return True
     lines = [l for l in body.splitlines() if l.strip()]
     if len(lines) < 4:
@@ -239,15 +289,17 @@ def find_collections(root: Path) -> list[tuple[str, str, Path]]:
     documents into subfolders gets one collection per subfolder. Nothing is
     hardcoded, so a new subfolder is picked up with no change here.
     """
-    found: list[tuple[str, str, Path]] = []
-    if (root / "docs").is_dir() and any((root / "docs").glob("*/manifest.json")):
-        found.append((slugify(root.name), ".", root / "docs"))
-        return found
-    for sub in sorted(p for p in root.iterdir() if p.is_dir()):
-        docs = sub / "docs"
-        if docs.is_dir() and any(docs.glob("*/manifest.json")):
-            found.append((slugify(sub.name), sub.name, docs))
-    return found
+    return [(slugify(c.name), ".", c / "docs") if c == root else (slugify(c.name), c.name, c / "docs")
+            for c in editions.find_collections(root)]
+
+
+def collection_clashes(root: Path) -> dict[str, list[str]]:
+    """The collection keys more than one folder under `root` gives, with those
+    folders. Every script that reads a whole corpus stops on these."""
+    by_key: dict[str, list[str]] = {}
+    for key, display, _docs in find_collections(root):
+        by_key.setdefault(key, []).append(display)
+    return {k: v for k, v in sorted(by_key.items()) if len(v) > 1}
 
 
 def load_documents(root: Path) -> tuple[list, list[str]]:
@@ -258,10 +310,18 @@ def load_documents(root: Path) -> tuple[list, list[str]]:
     worse than that: if it was a manual's newest edition, an older one is
     marked current and every default answer quietly changes release. Which
     edition is current can only be decided from all of them.
+
+    A document is its folder: the folder name is its slug, whatever the
+    manifest's copy says. build_index.py has always listed folders, and two
+    tools naming one document differently is how a slug clash slipped past
+    one of them. A manifest whose slug disagrees is reported and indexed
+    under its folder's name. Backups and interrupted builds in docs/ (.old,
+    .new, dot, underscore) are not documents and are not read.
     """
     documents, failed = [], []
     for key, display, docs in find_collections(root):
-        for manifest_path in sorted(docs.glob("*/manifest.json")):
+        for doc_dir in editions.document_dirs(docs):
+            manifest_path = doc_dir / "manifest.json"
             manifest, why, delay = None, "", 0.3
             for attempt in range(3):
                 try:
@@ -275,11 +335,16 @@ def load_documents(root: Path) -> tuple[list, list[str]]:
                 except ValueError as exc:     # not JSON, or not UTF-8: reading again will not help
                     why = str(exc)
                     break
-            if manifest is not None and not (isinstance(manifest, dict) and manifest.get("slug")):
-                manifest, why = None, "it is not a manifest with a slug"
+            if manifest is not None and not isinstance(manifest, dict):
+                manifest, why = None, "it is not a JSON object"
             if manifest is None:
                 failed.append(f"{manifest_path.relative_to(root).as_posix()}: {why}")
                 continue
+            if manifest.get("slug") != doc_dir.name:
+                print(f"  !! {manifest_path.relative_to(root).as_posix()}: the manifest's slug is "
+                      f"{manifest.get('slug')!r}; indexed as {doc_dir.name!r}, its folder's name",
+                      file=sys.stderr)
+                manifest["slug"] = doc_dir.name
             documents.append((key, display, manifest_path, manifest))
     return documents, failed
 
@@ -296,13 +361,32 @@ def load_figures(doc_dir: Path) -> list[dict]:
         return []
 
 
-def resolve_editions(documents: list) -> tuple[dict[str, dict], list[str]]:
-    """{slug: doc_id, version, is_latest, is_current} for every document, and
-    whatever stops that being decided. Editions are grouped within a
-    collection: two vendors may both have a `user-guide`."""
+def record_sources(db: sqlite3.Connection, root: Path, documents: list) -> None:
+    """Note every file the index depends on besides the sections: each manifest,
+    each figures.json, and each collection's current_versions.json."""
+    files = []
+    for _key, _display, manifest_path, _manifest in documents:
+        files += [manifest_path, manifest_path.parent / "figures.json"]
+        files.append(manifest_path.parent.parent.parent / editions.PINS_FILE)
+    rows = {}
+    for path in files:
+        if path.is_file():
+            st = path.stat()
+            rows[path.relative_to(root).as_posix()] = (
+                st.st_size, st.st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest())
+    db.executemany("INSERT INTO sources (path, size, mtime_ns, sha256) VALUES (?,?,?,?)",
+                   [(p, *v) for p, v in sorted(rows.items())])
+
+
+def resolve_editions(documents: list) -> tuple[dict[tuple[str, str], dict], list[str]]:
+    """{(collection, slug): doc_id, version, is_latest, is_current} for every
+    document, and whatever stops that being decided. Editions are grouped
+    within a collection: two vendors may both have a `user-guide`."""
     by_collection: dict[Path, list[dict]] = {}
-    for _key, _display, manifest_path, manifest in documents:
+    keys: dict[Path, str] = {}
+    for key, _display, manifest_path, manifest in documents:
         slug = manifest["slug"]
+        keys[manifest_path.parent.parent.parent] = key
         by_collection.setdefault(manifest_path.parent.parent.parent, []).append(
             {"slug": slug, "doc_id": manifest.get("doc_id") or slug, "version": manifest.get("version"),
              # Exactly true, as check_corpus.py reads it: "false" in quotes is
@@ -316,11 +400,23 @@ def resolve_editions(documents: list) -> tuple[dict[str, dict], list[str]]:
             pins = {}
             problems.append(str(exc))
         problems += [f"{collection_dir.name}: {p}" for p in editions.resolve_editions(docs, pins)]
-        resolved.update((d["slug"], d) for d in docs)
+        resolved.update(((keys[collection_dir], d["slug"]), d) for d in docs)
     return resolved, problems
 
 
-def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: bool = True) -> int:
+def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: bool = True,
+          body_without_breadcrumb: bool = False, ident_index: bool = False) -> int:
+    # A collection is known in the index by a key made from its folder name,
+    # and a document by that key and its slug. Two folders giving one key
+    # would merge two vendors' documents into one collection.
+    clashes = collection_clashes(root)
+    if clashes:
+        print("Collection folders whose names give the same collection key:", file=sys.stderr)
+        for key, folders in sorted(clashes.items()):
+            print(f"  !! {', '.join(folders)} are all '{key}'", file=sys.stderr)
+        print("Nothing was written. Rename all but one, then rerun.", file=sys.stderr)
+        return 1
+
     documents, failed = load_documents(root)
     if failed:
         print("Manifests that could not be read:", file=sys.stderr)
@@ -353,7 +449,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         for key, _display, _mpath, manifest in documents:
             n = len(manifest.get("sections", []))
             total += n
-            e = edition_of[manifest["slug"]]
+            e = edition_of[(key, manifest["slug"])]
             note = "" if e["is_current"] else "  (not current)"
             shown = editions.display_version(e["version"], e["version_and_later"])
             print(f"{key:20s} {manifest['slug']:42s} {shown:16s} {n:5d} chunks{note}")
@@ -414,7 +510,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
                 heading,
                 entity,
                 sec.get("breadcrumb") or "",
-                body,
+                without_breadcrumb(body, sec.get("breadcrumb")) if body_without_breadcrumb else body,
                 " ".join(figure_words.get(sec["file"], [])),
                 slug,
                 key,
@@ -424,7 +520,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
                 sec.get("level"),
                 page_start,
                 page_end,
-                sec.get("chars") or len(body),
+                len(body),
                 1 if is_noise(heading, body) else 0,
             ))
             chars_here += len(body)
@@ -443,7 +539,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
-        edition = edition_of[slug]
+        edition = edition_of[(key, slug)]
         pdf = editions.find_source_pdf(doc_dir.parent.parent, manifest.get("source_pdf"))
         db.execute(
             "INSERT INTO documents (slug, collection, collection_dir, title, doc_id, version,"
@@ -489,6 +585,7 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
             note += "  (not current)"
         print(f"  {key:18s} {slug:40s} {len(rows):5d} chunks  {chars_here:>10,} chars{figs}{note}")
 
+    record_sources(db, root, documents)
     for k, v in (
         ("built_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
         ("root", str(root)),
@@ -503,11 +600,19 @@ def build(root: Path, out_path: Path, stats_only: bool = False, figure_text: boo
         ("chunks", str(total_chunks)),
         ("figures", str(total_figures)),
         ("figure_text", "1" if figure_text else "0"),
+        ("body_without_breadcrumb", "1" if body_without_breadcrumb else "0"),
+        ("ident_index", "1" if ident_index else "0"),
         ("unreadable", str(len(unreadable))),
-        ("schema_version", "3"),
+        ("schema_version", "4"),
     ):
         db.execute("INSERT INTO meta (key, value) VALUES (?,?)", (k, v))
 
+    if ident_index:
+        db.executescript(IDENT_SCHEMA)
+        db.executemany(
+            "INSERT INTO idents (rowid, words) VALUES (?, ?)",
+            [(rowid, " ".join(dict.fromkeys(identifiers(heading, entity, body))))
+             for rowid, heading, entity, body in db.execute("SELECT rowid, heading, entity, body FROM chunks")])
     db.execute("INSERT INTO chunks(chunks) VALUES ('optimize')")
     db.commit()
     db.execute("VACUUM")
@@ -584,8 +689,13 @@ def emit_vscode_config(root: Path, db_path: Path) -> Path:
         db_arg = str(db_path)             # --out put the index outside the corpus
 
     def same_path(arg: str, path: Path) -> bool:
+        """Whether two spellings name one file. Resolved, not just made
+        absolute: the root here is resolved, while an entry written by hand
+        or by another tool may reach the same folder through a symlink, a
+        junction or a Windows 8.3 short name (C:\\Users\\RUNNER~1), and
+        comparing those as text added a second server for one index."""
         text = str(arg).replace("${workspaceFolder}", str(root))
-        return os.path.normcase(os.path.abspath(text)) == os.path.normcase(os.path.abspath(path))
+        return os.path.normcase(os.path.realpath(text)) == os.path.normcase(os.path.realpath(path))
 
     def serves_this_index(cfg) -> bool:
         """Whether an entry is this corpus's server: by the index it opens,
@@ -617,16 +727,13 @@ def emit_vscode_config(root: Path, db_path: Path) -> Path:
 
 
 def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    utf8_console()
 
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--root", default=".", help="corpus root (default: current directory)")
+    ap.add_argument("corpus", nargs="?", help="corpus root, as an argument or as --root")
+    ap.add_argument("--root", help="corpus root (default: current directory)")
     ap.add_argument("--out", help=f"index path (default: <root>/{DEFAULT_DB_NAME})")
     ap.add_argument("--stats-only", action="store_true", help="report what would be indexed, write nothing")
     ap.add_argument(
@@ -641,16 +748,32 @@ def main() -> int:
         help="serve figures but keep their captions and labels out of search "
         "(for measuring what that text adds)",
     )
+    ap.add_argument(
+        "--body-without-breadcrumb",
+        action="store_true",
+        help="index each chunk's text without its first line when that line is its breadcrumb, which "
+        "the index already holds in a column of its own and so counts twice (an experiment: measure "
+        "with eval_search.py --compare before relying on it)",
+    )
+    ap.add_argument(
+        "--ident-index",
+        action="store_true",
+        help="also keep each chunk's identifier-shaped words whole, so a query naming one can favour "
+        "the chunks that hold it (an experiment, as above)",
+    )
     args = ap.parse_args()
 
-    root = Path(args.root).resolve()
+    if args.corpus and args.root:
+        ap.error("give the corpus root once: as an argument or as --root, not both")
+    root = Path(args.corpus or args.root or ".").resolve()
     if not root.is_dir():
         print(f"--root '{root}' is not a folder.", file=sys.stderr)
         return 1
     out_path = Path(args.out).resolve() if args.out else root / DEFAULT_DB_NAME
 
     print(f"Indexing corpus at {root}")
-    code = build(root, out_path, stats_only=args.stats_only, figure_text=not args.no_figure_text)
+    code = build(root, out_path, stats_only=args.stats_only, figure_text=not args.no_figure_text,
+                 body_without_breadcrumb=args.body_without_breadcrumb, ident_index=args.ident_index)
 
     built = not args.stats_only and code != 1 and out_path.exists()
     # A copy already at the root is refreshed by every build: an index and a

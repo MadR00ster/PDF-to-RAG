@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manifest.schema.json",
+  "title": "docs/<slug>/manifest.json",
+  "description": "What a converter writes and the index builders read. `required` is the checker's REQUIRED_FIELDS; every other field is optional, and a manifest may carry fields not listed here. Written by the converters in scripts/ with schema_version 1.",
+  "type": "object",
+  "required": ["slug", "title", "source_pdf", "page_count", "sections"],
+  "additionalProperties": true,
+  "properties": {
+    "source_pdf": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "slug": {"type": "string", "minLength": 1},
+    "doc_id": {"type": "string", "description": "the manual this is an edition of"},
+    "version": {"type": "string", "description": "the tool release it applies to, as its cover prints it"},
+    "version_and_later": {"const": true, "description": "present only when the cover says the document also covers later releases"},
+    "page_count": {"type": "integer", "minimum": 1},
+    "extractor": {"type": "string", "description": "written by convert_docling.py, for readers older than `converter`"},
+    "toc": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["level", "title", "page"],
+        "properties": {
+          "level": {"type": "integer", "minimum": 1},
+          "title": {"type": "string"},
+          "page": {"type": "integer"}
+        }
+      }
+    },
+    "attribution": {
+      "type": "object",
+      "description": "rebuild_reference.py: whether chunks were attributed to entries, and from which TOC level",
+      "required": ["status", "command_level", "chosen_by"],
+      "properties": {
+        "status": {"enum": ["attributed", "declined"]},
+        "command_level": {"type": ["integer", "null"]},
+        "chosen_by": {"enum": ["toc", "option"]}
+      }
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file"],
+        "properties": {
+          "file": {"type": "string", "pattern": "^sections/[^/]+\\.md$"},
+          "heading": {"type": "string"},
+          "level": {"type": "integer", "minimum": 0},
+          "page_start": {"type": ["integer", "null"]},
+          "page_end": {"type": ["integer", "null"]},
+          "command": {"type": ["string", "null"], "description": "the entry this chunk documents (a reference); null where none"},
+          "entity": {"type": ["string", "null"]},
+          "breadcrumb": {"type": "string"},
+          "confidence": {"enum": ["anchored", "page", "none"], "description": "convert_docling.py: how the ancestors were derived"},
+          "chars": {"type": "integer", "minimum": 0, "description": "no longer written: the file is the copy. Old manifests carry it"}
+        }
+      }
+    },
+    "full_md_chars": {"type": "integer", "minimum": 0},
+    "schema_version": {"type": "integer", "minimum": 1},
+    "converter": {
+      "type": "object",
+      "required": ["script", "extractor", "extractor_version", "converted_at", "owns_breadcrumbs"],
+      "properties": {
+        "script": {"type": "string"},
+        "extractor": {"type": "string"},
+        "extractor_version": {"type": "string"},
+        "converted_at": {"type": "string"},
+        "owns_breadcrumbs": {"type": "boolean", "description": "the chunk breadcrumbs came from the TOC chain at conversion; enrich_chunks.py leaves them alone"}
+      }
+    }
+  }
+}

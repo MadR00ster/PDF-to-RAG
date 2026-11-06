@@ -24,6 +24,10 @@ Usage:
 
 Options:
   --dry-run     report what would change; write nothing
+  --list-furniture
+                print every distinct line deleted, or with --dry-run that
+                would be, per manual with a count, most often first. Read it
+                before running on text another tool produced.
   --skip SLUG   exclude a manual (repeatable); use for manuals queued for a
                 full page-accurate reconversion, which redoes this anyway
   --only SLUG   restrict to one manual (repeatable)
@@ -38,7 +42,10 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-BREADCRUMB_SEP = " › "  # single right-pointing angle quote
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import editions  # noqa: E402
+from _common import BREADCRUMB_SEP, strip_emphasis, utf8_console  # noqa: E402
+
 
 FENCE_RE = re.compile(r"^\s*```")
 # pymupdf4llm renders a PDF heading as a markdown heading or as a line that
@@ -54,16 +61,17 @@ CHAPTER_HDR_RE = re.compile(r"^\s*(Chapter|Appendix|Section)\s+\w{1,4}\s*:", re.
 # frequency-detected furniture line to be treated as furniture too.
 ADJACENCY = 3
 
+# A line is the running title when it starts with the title (a footer that
+# adds the release: "Design Compiler User Guide V-2024.06") or is most of it
+# (one the layout cut short). A line that only begins the title -- "Design
+# Compiler" alone, the product name prose uses -- is content. This is the
+# share of the title such a line has to cover.
+TITLE_SHARE = 0.6
 
-def strip_emphasis(line: str) -> str:
-    s = line.strip()
-    s = re.sub(r"^#{1,6}\s*", "", s).strip()
-    for _ in range(3):
-        s2 = re.sub(r"^(\*\*|__|\*|_|`)(.*?)\1$", r"\2", s.strip())
-        if s2 == s:
-            break
-        s = s2
-    return s.strip()
+# What follows the title in a running footer is a release, a page number or
+# a date. Three lower-case words in a row are a sentence that happens to start
+# with the title, and are kept.
+PROSE_RUN_RE = re.compile(r"\b[a-z]+\s+[a-z]+\s+[a-z]+\b")
 
 
 def iter_lines_outside_code(text: str):
@@ -112,7 +120,7 @@ def eligible_furniture_candidate(raw: str, core: str) -> bool:
     return True
 
 
-def detect_furniture(section_texts: list[str], min_count: int, title: str) -> set[str]:
+def detect_furniture(section_texts: list[str], title: str) -> set[str]:
     """Frequency-detect the manual's running header/footer text, restricted
     to shape-eligible lines (see eligible_furniture_candidate).
 
@@ -133,24 +141,31 @@ def detect_furniture(section_texts: list[str], min_count: int, title: str) -> se
         counts.update(seen_here)
 
     # Precision over recall, deliberately. An earlier version also treated
-    # "any line repeated >= min_count times" as furniture, which deleted
+    # "any line repeated often enough" as furniture, which deleted
     # genuine prose that reference manuals simply reuse a lot -- "Note the
     # following:" (127x), "where valid values are as follows:" (175x). A
     # missed furniture line costs a few wasted tokens; a deleted content
     # line is unrecoverable without reconverting the PDF. So the only things
     # that qualify are the "Feedback" link and the running title footer.
     furniture = set()
+    head = title_core[:40]
     for line, n in counts.items():
-        norm = re.sub(r"\s+", " ", line).strip().lower()
+        spaced = re.sub(r"\s+", " ", line).strip()
+        norm = spaced.lower()
         is_title_line = title_core and (
-            norm.startswith(title_core[:40]) or title_core.startswith(norm[:40])
+            (norm.startswith(head) and not norm[len(head):len(head) + 1].isalnum()
+             and not PROSE_RUN_RE.search(spaced[len(head):]))
+            or (title_core.startswith(norm[:40]) and len(norm) >= TITLE_SHARE * len(title_core))
         )
         if norm == "feedback" or (is_title_line and n >= 3):
             furniture.add(line)
     return furniture
 
 
-def strip_furniture(text: str, furniture: set[str]) -> tuple[str, int]:
+def strip_furniture(text: str, furniture: set[str],
+                    dropped: list[str] | None = None) -> tuple[str, int]:
+    """The text without its furniture, and how many lines that was. Each line
+    removed is appended to `dropped`, when one is given."""
     lines = text.splitlines()
     drop = [False] * len(lines)
 
@@ -178,6 +193,8 @@ def strip_furniture(text: str, furniture: set[str]) -> tuple[str, int]:
                 if near:
                     drop[i] = True
 
+    if dropped is not None:
+        dropped.extend(ln.strip() for i, ln in enumerate(lines) if drop[i])
     kept = [ln for i, ln in enumerate(lines) if not drop[i]]
     out = "\n".join(kept)
     out = re.sub(r"\n{3,}", "\n\n", out).strip() + "\n"
@@ -325,16 +342,20 @@ def is_existing_breadcrumb(line: str, manual_title: str) -> bool:
 CONVERTER_BREADCRUMB_FIELDS = ("command", "confidence")
 
 
-def converter_owns_breadcrumb(section: dict) -> bool:
+def converter_owns_breadcrumb(section: dict, manifest: dict | None = None) -> bool:
     """True if a page-aware converter wrote this chunk's breadcrumb.
 
     Those are always left alone, and every other breadcrumb is rewritten --
     including this script's own earlier ones, which the TOC walk exists to
-    correct. The provenance is the manifest field, not the breadcrumb's shape:
-    a guard that kept any breadcrumb naming ancestors once protected
-    `Title › command` from a title-only pass, and would now protect every
-    wrong parent the old heading walk wrote.
+    correct. The provenance is a field, not the breadcrumb's shape: a guard
+    that kept any breadcrumb naming ancestors once protected `Title › command`
+    from a title-only pass, and would now protect every wrong parent the old
+    heading walk wrote. The field is the manifest's converter.owns_breadcrumbs;
+    a manifest written before it is read by its sections' own fields.
     """
+    declared = ((manifest or {}).get("converter") or {}).get("owns_breadcrumbs")
+    if isinstance(declared, bool):
+        return declared
     return any(f in section for f in CONVERTER_BREADCRUMB_FIELDS)
 
 
@@ -353,8 +374,7 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
     sections = manifest["sections"]
     texts = [(mdir / s["file"]).read_text(encoding="utf-8") for s in sections]
 
-    min_count = max(10, int(0.05 * len(sections)))
-    furniture = detect_furniture(texts, min_count, manifest["title"])
+    furniture = detect_furniture(texts, manifest["title"])
 
     # Without a bookmark TOC nothing can confirm an ancestor, so every chunk
     # gets the title alone: it still says which document it came from.
@@ -364,27 +384,27 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
 
     changed = 0
     lines_dropped = 0
-    chars_before = sum(len(t) for t in texts)
-    samples: list[str] = []
+    removed: Counter[str] = Counter()
 
     for idx, (s, text) in enumerate(zip(sections, texts)):
-        new, dropped = strip_furniture(text, furniture)
+        gone: list[str] = []
+        new, dropped = strip_furniture(text, furniture, gone)
+        removed.update(gone)
         lines_dropped += dropped
         # Never overwrite a breadcrumb a page-aware converter wrote.
-        keep_existing = converter_owns_breadcrumb(s)
+        keep_existing = converter_owns_breadcrumb(s, manifest)
         if not keep_existing:
             new = apply_breadcrumb(new, crumbs[idx], manifest["title"])
         if new != text:
             changed += 1
             if not dry_run:
                 (mdir / s["file"]).write_text(new, encoding="utf-8")
-            s["chars"] = len(new)
+            # A length a manifest still carries from before chunks stopped
+            # recording one is now wrong, and nothing reads it: the file is the copy.
+            s.pop("chars", None)
         if not keep_existing:
             s["breadcrumb"] = crumbs[idx]
-        if len(samples) < 3 and dropped:
-            samples.append(s["file"])
 
-    chars_after = chars_before - 0
     if not dry_run:
         manifest_path.write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
@@ -398,6 +418,7 @@ def process_manual(mdir: Path, dry_run: bool) -> dict:
         "furniture_patterns": len(furniture),
         "breadcrumbs": crumb_mode,
         "furniture_sample": sorted(furniture, key=len, reverse=True)[:4],
+        "lines_removed": removed,
     }
 
 
@@ -405,34 +426,38 @@ def main() -> None:
     # These documents are full of characters like "™" and "›" that a Windows
     # console's legacy default code page (cp1252, cp950, ...) cannot encode --
     # printing a furniture sample containing one killed --dry-run mid-report.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    utf8_console()
 
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("vendor", type=Path)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--list-furniture", action="store_true",
+                    help="print every distinct line deleted (or, with --dry-run, that would be), "
+                    "per manual, most often first")
     ap.add_argument("--skip", action="append", default=[])
     ap.add_argument("--only", action="append", default=[])
     args = ap.parse_args()
 
-    docs = args.vendor.resolve() / "docs"
-    if not docs.is_dir():
+    root = args.vendor.resolve()
+    collections = editions.collections_under(root)
+    if not collections:
         sys.exit(f"No docs/ under {args.vendor}")
+    for vendor in collections:
+        report_collection(vendor, args)
 
+
+def report_collection(vendor: Path, args) -> None:
     results = []
-    for manifest in sorted(docs.glob("*/manifest.json")):
-        slug = manifest.parent.name
+    for doc_dir in editions.document_dirs(vendor / "docs"):     # backups and interrupted builds are not documents
+        slug = doc_dir.name
         if slug in args.skip or (args.only and slug not in args.only):
             continue
-        results.append(process_manual(manifest.parent, args.dry_run))
+        results.append(process_manual(doc_dir, args.dry_run))
 
     mode = "DRY RUN -- nothing written" if args.dry_run else "applied"
-    print(f"{args.vendor.name} ({mode})\n")
+    print(f"{vendor.name} ({mode})\n")
     print(f"{'chunks':>7} {'changed':>8} {'lines':>7} {'crumbs':>7}  manual")
     for r in results:
         print(
@@ -444,6 +469,12 @@ def main() -> None:
         f"{sum(r['changed'] for r in results)} changed, "
         f"{sum(r['lines_dropped'] for r in results)} furniture lines removed"
     )
+    if args.list_furniture:
+        for r in results:
+            print(f"\n{r['slug']}: {len(r['lines_removed'])} distinct lines "
+                  f"{'would be ' if args.dry_run else ''}deleted")
+            for line, n in sorted(r["lines_removed"].items(), key=lambda kv: (-kv[1], kv[0])):
+                print(f"  {n:6d}x  {line[:100]!r}")
     if args.dry_run:
         print("\nsample furniture patterns detected:")
         for r in results[:4]:

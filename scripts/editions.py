@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import re
 import shutil
@@ -59,10 +60,16 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import slugify as common_slugify, utf8_console  # noqa: E402
+
 SOURCE_DIR = "source"
 INBOX_DIR = "new_docs"
 PINS_FILE = "current_versions.json"
 BACKUP_DIR = ".rebuild-backup"
+# Where a conversion is built before it moves into docs/, under BACKUP_DIR.
+# A slug never starts with a dot, so this cannot be a document's backup.
+STAGING_DIR = ".staging"
 
 # How far into a PDF the release is looked for: the cover and the copyright
 # page behind it. Further in, a version string is as likely to be about
@@ -93,7 +100,7 @@ VERSION_SUFFIX_RE = re.compile(r"-(?:[a-z]-)?20\d\d-\d{1,2}(?:-sp\d+(?:-\d+)?)?$
 
 
 def slugify(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return common_slugify(text)
 
 
 # ------------------------------------------------------------------ layout
@@ -143,25 +150,98 @@ def inbox_pdfs(collection: Path) -> list[Path]:
 
 
 def find_collections(root: Path) -> list[Path]:
-    """`root` itself when it holds docs/, otherwise each subfolder that does."""
-    if (root / "docs").is_dir():
+    """A collection is a folder whose docs/ holds at least one document. `root`
+    itself is the one collection when its own docs/ does, otherwise each
+    subfolder that does is one. The one rule every tool uses: a docs/ folder
+    with nothing in it is not a collection, so it never hides the ones below.
+    A path that is not a folder holds none."""
+    if document_dirs(root / "docs"):
         return [root]
-    return sorted(p for p in root.iterdir() if p.is_dir() and (p / "docs").is_dir())
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.iterdir() if p.is_dir() and document_dirs(p / "docs"))
+
+
+def collections_under(path: Path) -> list[Path]:
+    """The collections a command line path means: those find_collections
+    finds, or, where it finds none, `path` itself when it has a docs/ folder:
+    a collection with nothing converted yet. The one rule every script that
+    takes a collection takes a corpus root by."""
+    return find_collections(path) or ([path] if (path / "docs").is_dir() else [])
+
+
+def skips_name(name: str) -> bool:
+    """A folder under docs/ that is not a document: a backup (.old), an
+    interrupted build (.new), or anything hidden or private. Every script that
+    walks docs/ goes through is_document_dir, so none of them indexes,
+    enriches or samples one of these. check_corpus.py and mcp_server.py keep
+    their own copies of the rule; a test holds the three together."""
+    return name.endswith((".old", ".new")) or name.startswith((".", "_"))
 
 
 def is_document_dir(path: Path) -> bool:
-    name = path.name
-    return (path / "manifest.json").is_file() and not (
-        name.endswith((".old", ".new")) or name.startswith((".", "_")))
+    return (path / "manifest.json").is_file() and not skips_name(path.name)
+
+
+def document_dirs(docs: Path) -> list[Path]:
+    """The documents in one docs/ folder, by folder name."""
+    return sorted(d for d in docs.iterdir() if is_document_dir(d)) if docs.is_dir() else []
+
+
+def staging_dir(out_root: Path, slug: str) -> Path:
+    """An empty folder to build docs/<slug>/ in.
+
+    Under .rebuild-backup/, so outside docs/ where every index builder looks,
+    and in the same collection, so moving it into place is a rename on one
+    filesystem. Cleared first: section files an interrupted run left behind,
+    named for a different chunk count, would otherwise ship with this one.
+    """
+    path = out_root.parent / BACKUP_DIR / STAGING_DIR / slug
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
+    return path
+
+
+def publish(staging: Path, out_dir: Path) -> Path | None:
+    """Move a finished build to docs/<slug>/. A document already there is
+    kept at .rebuild-backup/<slug>/, replacing any earlier backup, and that
+    path is returned."""
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    backup = None
+    if out_dir.exists():
+        backup = out_dir.parent.parent / BACKUP_DIR / out_dir.name
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        if backup.exists():
+            shutil.rmtree(backup)
+        out_dir.rename(backup)
+    staging.rename(out_dir)
+    return backup
+
+
+MANIFEST_SCHEMA_VERSION = 1
+
+
+def converter_record(script: str, extractor: str, package: str, owns_breadcrumbs: bool) -> dict:
+    """The manifest's `converter`: what wrote this document, and with what.
+
+    A page number or a breadcrumb that turns out wrong is traced to the script
+    and library release that produced it, and a corpus of mixed conversions is
+    told apart from one reconverted whole. `owns_breadcrumbs` says the chunk
+    breadcrumbs came from the TOC chain at conversion, so enrich_chunks.py
+    leaves them alone."""
+    try:
+        version = importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return {"script": script, "extractor": extractor, "extractor_version": version,
+            "converted_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "owns_breadcrumbs": owns_breadcrumbs}
 
 
 def load_manifests(collection: Path) -> dict[str, dict]:
     """{folder name: manifest} for every document in the collection."""
     out = {}
-    docs = collection / "docs"
-    for d in sorted(docs.iterdir()) if docs.is_dir() else []:
-        if not is_document_dir(d):
-            continue
+    for d in document_dirs(collection / "docs"):
         try:
             out[d.name] = json.loads((d / "manifest.json").read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
@@ -759,7 +839,7 @@ def cmd_migrate(args) -> int:
 
 def cmd_status(args) -> int:
     root = args.path.resolve()
-    collections = find_collections(root)
+    collections = collections_under(root)
     if not collections:
         sys.exit(f"No docs/ under {root}")
     worst = 0
@@ -799,11 +879,7 @@ def cmd_status(args) -> int:
 
 
 def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    utf8_console()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
 
