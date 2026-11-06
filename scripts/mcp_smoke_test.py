@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -78,7 +79,8 @@ def probes(db: Path) -> dict:
     """Pull real terms out of the index so the checks suit this corpus."""
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    out = {"entity": None, "collection": None, "figure": None, "editions": False, "latest": None}
+    out = {"entity": None, "collection": None, "figure": None, "editions": False, "latest": None,
+           "log_line": None}
     if "doc_id" in {r["name"] for r in con.execute("PRAGMA table_info(documents)")}:
         out["editions"] = True
         # The newest edition of a manual that has several, by its own slug. A
@@ -100,6 +102,15 @@ def probes(db: Path) -> dict:
     row = con.execute("SELECT name FROM entities WHERE 1 = 1" + current + " LIMIT 1").fetchone()
     if row:
         out["entity"] = row["name"]
+    # A message code or DRC rule as a log prints it, for explain_log.
+    for (name,) in con.execute("SELECT name FROM entities WHERE 1 = 1" + current):
+        rule = re.match(r"^(?:DRC\s+)?[Rr]ule\s+([A-Z]{1,3}\d{1,4})$", name)
+        if rule:
+            out["log_line"] = (f"Warning: Rule {rule.group(1)} was violated 2 times.", rule.group(1))
+            break
+        if re.match(r"^[A-Z][A-Z0-9]{1,9}-\d{2,5}$", name):
+            out["log_line"] = (f"Error: something failed ({name})", name)
+            break
     row = con.execute("SELECT DISTINCT collection FROM documents LIMIT 1").fetchone()
     if row:
         out["collection"] = row["collection"]
@@ -166,7 +177,7 @@ def main() -> int:
 
         names = {t["name"] for t in (client.call("tools/list").get("result") or {}).get("tools", [])}
         check("tools/list", {"search_docs", "get_section", "lookup_entity", "list_documents", "get_toc",
-                             "compare_versions", "get_figure", "get_page_image"} <= names,
+                             "compare_versions", "get_figure", "get_page_image", "explain_log"} <= names,
               f"got {sorted(names)}")
 
         print("\nTools:")
@@ -184,6 +195,11 @@ def main() -> int:
             tool("lookup_entity", {"name": p["entity"] + "zzq"}, "did you mean", expect_error=False)
         else:
             print("  SKIP  lookup_entity (this corpus has no reference documents)")
+        tool("explain_log", {"text": "all clean"}, "No message codes")
+        if p["log_line"]:
+            tool("explain_log", {"text": p["log_line"][0]}, f"`{p['log_line'][1]}` · 1 line(s)")
+        else:
+            print("  n/a   explain_log on a code (no reference here lists message codes or DRC rules)")
         if p["figure"]:
             image_tool("get_figure", {"figure_id": p["figure"]})
         else:

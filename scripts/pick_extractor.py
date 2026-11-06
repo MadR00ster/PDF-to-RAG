@@ -51,11 +51,13 @@ DOCLING_SECONDS_PER_PAGE = 1.2   # measured, CPU, no OCR
 
 
 MESSAGE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}-\d{2,5}$")
+# One design rule check per entry ("DRC Rule C1"), as rebuild_reference.py has it.
+RULE_TITLE_RE = re.compile(r"^(?:DRC\s+)?[Rr]ule\s+[A-Z]{1,3}\d{1,4}$")
 
 
 def looks_like_entry(title: str) -> bool:
     t = (title or "").strip()
-    if MESSAGE_CODE_RE.match(t):
+    if MESSAGE_CODE_RE.match(t) or RULE_TITLE_RE.match(t):
         return True
     if not t or " " in t and not t.split()[0].endswith(("_",)):
         # Allow "tessent -shell" style two-token entries, reject prose.

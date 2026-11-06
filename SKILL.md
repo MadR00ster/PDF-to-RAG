@@ -128,7 +128,7 @@ build and test against.
    A release nobody will ask about can stay a PDF: record it in
    `superseded.json` and leave it in `source/`.
 2. **Classify each document.** Prose manual or reference/dictionary (one entry
-   per command, function, part number, error code)? This single call drives
+   per command, function, part number, error code, design rule)? This single call drives
    everything downstream — see "Two document shapes".
    `scripts/pick_extractor.py <pdfs>` decides it from the PDF's own bookmark
    outline in a second or two, and also reports the text layer, bookmark
@@ -649,8 +649,17 @@ nothing and needs only Python on the other machine. Later builds refresh the
 copy, which also keeps the server and the index it reads on the same schema.
 Do not edit the copy. The server reads figures and PDFs from the folder its
 index is in, not from the path the index was built at. Tools: `search_docs`, `get_section`,
-`lookup_entity`, `list_documents`, `get_toc`, `compare_versions`, `get_figure`,
-`get_page_image`.
+`lookup_entity`, `explain_log`, `list_documents`, `get_toc`, `compare_versions`,
+`get_figure`, `get_page_image`.
+
+**A log in, the entries out.** `explain_log` takes pasted tool output, finds
+every message code (`CMD-082`) and every design rule named after the word
+"Rule" (`Warning: Rule S29 ... was violated 32 times`), and returns each one's
+entry, errors first, with what no manual here documents listed rather than
+guessed at. A bare id with no "Rule" before it is not taken: in a log, `D5` is
+as likely a net. A rules manual titles its entries `DRC Rule C1`; that title
+stays the entry's name, and `lookup_entity` and `explain_log` also answer for
+`C1` and `Rule C1`, the way the tool and the engineer say it.
 The index is a **snapshot** —
 rebuild after any conversion or enrichment, or the server keeps answering from
 the corpus as it used to be.

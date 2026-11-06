@@ -17,6 +17,7 @@ Tools:
   search_docs      full-text search across the corpus, BM25-ranked, with citations
   get_section      full text of one chunk, optionally with its neighbours
   lookup_entity    assemble a whole entry from a reference document
+  explain_log      every message code and DRC rule a tool log names, each with its entry
   list_documents   the catalog: slugs, titles, versions, sizes, coverage
   get_toc          table of contents for one document
   compare_versions what differs between two editions of one manual
@@ -69,6 +70,20 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 BM25_WEIGHTS = (10.0, 8.0, 3.0, 1.0, 1.0)
 
 MAX_SECTION_CHARS = 40_000
+# explain_log: the most of one entry it quotes, and the most codes it quotes
+# at all. A log with 30 distinct codes should cost one read, not 30 entries.
+LOG_ENTRY_CHARS = 2_500
+LOG_MAX_ENTRIES = 25
+
+# How a log names what went wrong. A message code is printed as is
+# ("Error: ... (CMD-082)"); a design rule by its id after "Rule"
+# ("Warning: Rule S29 (...) was violated 32 times", "Clock Rule C2: ...").
+LOG_CODE_RE = re.compile(r"(?<![\w-])([A-Z][A-Z0-9]{1,9}-\d{2,5})(?![\w-])")
+LOG_RULE_RE = re.compile(r"\b(?:DRC\s+)?[Rr]ule\s+([A-Z]{1,3}\d{1,4})\b")
+LOG_SEVERITY_RE = re.compile(r"\b(fatal|error|warning|info(?:rmation)?)\b", re.I)
+SEVERITY_ORDER = {"fatal": 0, "error": 1, "warning": 2, "information": 3, None: 4}
+# A rule id, alone or as "Rule C1" / "DRC Rule C1" (lower-cased).
+RULE_ID_RE = re.compile(r"^(?:(?:drc\s+)?rule\s+)?([a-z]{1,3}\d{1,4})$")
 # Names listed per side by compare_versions before it says how many more.
 MAX_LISTED = 300
 
@@ -629,6 +644,74 @@ def tool_get_section(args: dict) -> str:
     )
 
 
+def entity_keys(name: str) -> list[str]:
+    """The `name_lower` values an entry asked for as `name` can be filed under.
+
+    An entry is filed under its TOC title, and a DRC rules manual titles its
+    entries "DRC Rule C1" -- while the tool's log, and the engineer reading
+    it, call that rule "C1" or "Rule C1". The name as given comes first, so
+    an entry really named like a rule id is still found.
+    """
+    low = " ".join(name.lower().split())
+    m = RULE_ID_RE.match(low)
+    if not m:
+        return [low]
+    rule = m.group(1)
+    return [low] + [k for k in (rule, f"rule {rule}", f"drc rule {rule}") if k != low]
+
+
+def entity_scope(collection: str | None, document: str | None) -> tuple[str, list]:
+    """SQL narrowing an entities query to where a lookup looks: this
+    collection, this edition, or else the current edition of each manual."""
+    sql, params = "", []
+    if collection:
+        sql += " AND collection = ?"
+        params.append(collection)
+    if document:
+        sql += " AND slug = ?"
+        params.append(document)
+    else:
+        sql += current_only()
+    return sql, params
+
+
+def find_entities(keys: list[str], collection: str | None, document: str | None) -> list[sqlite3.Row]:
+    scope, params = entity_scope(collection, document)
+    marks = ",".join("?" * len(keys))
+    return CORPUS.db.execute(f"SELECT * FROM entities WHERE name_lower IN ({marks}){scope} ORDER BY slug",
+                             list(keys) + params).fetchall()
+
+
+def entity_pages(hit: sqlite3.Row) -> str:
+    if hit["page_start"] is None:
+        return ""
+    if hit["page_end"] in (None, hit["page_start"]):
+        return f" · p. {hit['page_start']}"
+    return f" · pp. {hit['page_start']}–{hit['page_end']}"
+
+
+def entry_chunks(hit: sqlite3.Row) -> list[sqlite3.Row]:
+    return CORPUS.db.execute(
+        SECTION_SELECT + " WHERE slug = ? AND entity = ? ORDER BY ord", (hit["slug"], hit["name"])
+    ).fetchall()
+
+
+def entry_text(chunks: list[sqlite3.Row], budget: int, rest: str) -> str:
+    """An entry's chunks in order, cut at `budget` characters; `rest` says
+    where to read what was cut."""
+    out = []
+    for c in chunks:
+        body = c["body"]
+        if budget <= 0:
+            out.append(f"…[remaining chunks omitted; {rest}]")
+            break
+        if len(body) > budget:
+            body = body[:budget] + f"\n…[truncated; {rest}]"
+        budget -= len(body)
+        out.append(f"<!-- section_id: {c['id']} · {c['file']} -->\n{body}")
+    return "\n\n".join(out)
+
+
 def tool_lookup_entity(args: dict) -> str:
     name = (args.get("name") or "").strip().strip("`")
     if not name:
@@ -639,44 +722,122 @@ def tool_lookup_entity(args: dict) -> str:
     if args.get("document"):
         document = resolve_document(args["document"], args.get("version"), collection)["slug"]
 
-    where, params = "WHERE name_lower = ?", [name.lower()]
-    if collection:
-        where += " AND collection = ?"
-        params.append(collection)
-    if document:
-        where += " AND slug = ?"
-        params.append(document)
-    else:
-        where += current_only()
-    hits = CORPUS.db.execute(f"SELECT * FROM entities {where} ORDER BY slug", params).fetchall()
+    hits = find_entities(entity_keys(name), collection, document)
     if not hits:
         return suggest_entities(name, collection, document)
 
     out = []
     for hit in hits:
-        chunks = CORPUS.db.execute(
-            SECTION_SELECT + " WHERE slug = ? AND entity = ? ORDER BY ord", (hit["slug"], hit["name"])
-        ).fetchall()
+        chunks = entry_chunks(hit)
         if not chunks:
             continue
-        pages = ""
-        if hit["page_start"] is not None:
-            pages = (
-                f" · p. {hit['page_start']}" if hit["page_end"] in (None, hit["page_start"])
-                else f" · pp. {hit['page_start']}–{hit['page_end']}"
-            )
-        out.append(f"# `{hit['name']}`\n{document_label(hit['slug'])}{pages} · {len(chunks)} chunk(s)\n")
-        budget = MAX_SECTION_CHARS
-        for c in chunks:
-            body = c["body"]
-            if budget <= 0:
-                out.append(f"…[remaining chunks omitted; read {c['file']} for the rest]")
-                break
-            if len(body) > budget:
-                body = body[:budget] + "\n…[truncated]"
-            budget -= len(body)
-            out.append(f"<!-- section_id: {c['id']} · {c['file']} -->\n{body}")
+        out.append(f"# `{hit['name']}`\n{document_label(hit['slug'])}{entity_pages(hit)} · {len(chunks)} chunk(s)\n")
+        out.append(entry_text(chunks, MAX_SECTION_CHARS, f"read {chunks[-1]['file']} for the rest"))
     return "\n\n".join(out) if out else suggest_entities(name, collection, document)
+
+
+class LogItem:
+    """One code or rule a log names: how often, how bad, and where first."""
+
+    def __init__(self, name: str, kind: str):
+        self.name, self.kind = name, kind
+        self.lines = 0
+        self.first_line = 0
+        self.sample = ""
+        self.severity: str | None = None
+
+    def see(self, lineno: int, line: str) -> None:
+        self.lines += 1
+        if not self.first_line:
+            self.first_line, self.sample = lineno, line.strip()[:200]
+        m = LOG_SEVERITY_RE.search(line)
+        if m:
+            sev = m.group(1).lower()
+            sev = "information" if sev.startswith("info") else sev
+            if SEVERITY_ORDER[sev] < SEVERITY_ORDER[self.severity]:
+                self.severity = sev
+
+    def keys(self) -> list[str]:
+        return entity_keys(self.name) if self.kind == "rule" else [self.name.lower()]
+
+
+def scan_log(text: str) -> list[LogItem]:
+    """Every message code and DRC rule a log names, worst and commonest first.
+
+    A rule is only taken after the word "Rule": an id like "D5" on its own is
+    as likely a pin, a net or a column of numbers.
+    """
+    items: dict[tuple[str, str], LogItem] = {}
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        seen = set()
+        for kind, regex in (("code", LOG_CODE_RE), ("rule", LOG_RULE_RE)):
+            for m in regex.finditer(line):
+                k = (kind, m.group(1))
+                if k in seen:
+                    continue
+                seen.add(k)
+                items.setdefault(k, LogItem(m.group(1), kind)).see(lineno, line)
+    return sorted(items.values(), key=lambda i: (SEVERITY_ORDER[i.severity], -i.lines, i.first_line))
+
+
+def tool_explain_log(args: dict) -> str:
+    text = args.get("text") or ""
+    if not text.strip():
+        raise ValueError("`text` is required: paste the log lines, or the whole log.")
+    collection = normalize_collection(args.get("collection"))
+    version_needs_document(args)
+    document = None
+    if args.get("document"):
+        document = resolve_document(args["document"], args.get("version"), collection)["slug"]
+    scope_name = document_label(document) if document else "the current edition of any manual"
+
+    items = scan_log(text)
+    if not items:
+        return ("No message codes (like `CMD-082`) or DRC rules (like `Rule C1`) in this text. "
+                "To look up a message by its words, use search_docs.")
+
+    out, missing, unquoted = [], [], []
+    budget = MAX_SECTION_CHARS
+    for item in items:
+        found = [(h, c) for h in find_entities(item.keys(), collection, document) for c in [entry_chunks(h)] if c]
+        if not found:
+            missing.append(item)
+            continue
+        if len(out) >= LOG_MAX_ENTRIES or budget <= 0:
+            unquoted.append(item)
+            continue
+        sev = f" · {item.severity}" if item.severity else ""
+        block = [f"## `{item.name}` · {item.lines} line(s){sev} · first at line {item.first_line}\n"
+                 f"> {item.sample}"]
+        for hit, chunks in found:
+            body = entry_text(chunks, max(0, min(LOG_ENTRY_CHARS, budget)),
+                              f"lookup_entity name='{hit['name']}' document='{hit['slug']}' for the whole entry")
+            budget -= len(body)
+            block.append(f"### {document_label(hit['slug'])}{entity_pages(hit)}\n\n{body}")
+        out.append("\n\n".join(block))
+
+    documented = len(items) - len(missing)
+    head = (f"{len(items)} distinct code(s) and rule(s) in {len(text.splitlines())} line(s); "
+            f"{documented} documented in {scope_name}.")
+    tail = []
+    if unquoted:
+        tail.append("Also documented, not quoted to keep this short (use lookup_entity): "
+                    + ", ".join(f"`{i.name}` ({i.lines})" for i in unquoted))
+    if missing:
+        # Say where an entry the scope missed does exist; never substitute it.
+        coll_sql, coll_params = (" AND collection = ?", [collection]) if collection else ("", [])
+        where = []
+        for item in missing:
+            keys = item.keys()
+            others = CORPUS.db.execute(
+                f"SELECT DISTINCT slug FROM entities WHERE name_lower IN ({','.join('?' * len(keys))}){coll_sql}"
+                " ORDER BY slug", keys + coll_params).fetchall()
+            note = f" -- an entry in {', '.join(r['slug'] for r in others)}" if others else ""
+            where.append(f"- `{item.name}` ({item.lines} line(s), first at line {item.first_line}){note}")
+        more = f"\n- …and {len(where) - 50} more" if len(where) > 50 else ""
+        tail.append(f"Not an entry in {scope_name}. A code no reference here lists may still be "
+                    "explained in prose; try search_docs.\n" + "\n".join(where[:50]) + more)
+    return "\n\n".join([head] + out + tail)
 
 
 def other_editions_with(name: str, collection: str | None, document: str | None) -> str:
@@ -688,8 +849,10 @@ def other_editions_with(name: str, collection: str | None, document: str | None)
     """
     if not CORPUS.has_editions:
         return ""
-    sql = ("SELECT d.* FROM entities e JOIN documents d ON d.slug = e.slug WHERE e.name_lower = ?")
-    params: list = [name.lower()]
+    keys = entity_keys(name)
+    sql = ("SELECT DISTINCT d.* FROM entities e JOIN documents d ON d.slug = e.slug WHERE e.name_lower IN ("
+           + ",".join("?" * len(keys)) + ")")
+    params: list = list(keys)
     if document:
         doc = CORPUS.document(document)
         sql += " AND d.doc_id = ? AND d.collection = ? AND d.slug != ?"
@@ -1320,12 +1483,33 @@ def build_tools() -> list[dict]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Exact entry name, e.g. 'set_scan_configuration'."},
+                    "name": {"type": "string", "description": "Exact entry name, e.g. 'set_scan_configuration', 'CMD-082', or a DRC rule as 'C1' or 'Rule C1'."},
                     "collection": coll_schema,
                     "document": doc_schema,
                     "version": version_schema,
                 },
                 "required": ["name"],
+            },
+        },
+        {
+            "name": "explain_log",
+            "description": (
+                "Explain a tool's log or transcript in one call: finds every message code "
+                "(e.g. CMD-082) and DRC rule (e.g. 'Rule C1') in the pasted text, counts them, "
+                "puts errors first, and returns each one's reference entry -- what it means and "
+                "what to do next -- with document and page. Use it instead of one lookup_entity "
+                "per code when the user pastes log output. Codes no manual here documents are "
+                "listed, not guessed at."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The log lines, or the whole log, as printed."},
+                    "collection": coll_schema,
+                    "document": doc_schema,
+                    "version": version_schema,
+                },
+                "required": ["text"],
             },
         },
         {
@@ -1418,6 +1602,7 @@ HANDLERS = {
     "search_docs": tool_search_docs,
     "get_section": tool_get_section,
     "lookup_entity": tool_lookup_entity,
+    "explain_log": tool_explain_log,
     "list_documents": tool_list_documents,
     "get_toc": tool_get_toc,
     "compare_versions": tool_compare_versions,

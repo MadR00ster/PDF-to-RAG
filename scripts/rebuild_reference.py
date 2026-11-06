@@ -67,6 +67,10 @@ editions = cm.editions
 IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*(\s+-[a-z0-9_]+)*$", re.I)
 # An error/warning message code ("ADES-002", "CMD-082"): a reference entry too.
 MESSAGE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}-\d{2,5}$")
+# A design rule check ("DRC Rule C1", "Rule S29"): one entry per rule, the way
+# a DRC rules manual is laid out. The entry keeps its TOC title as its name;
+# the server also answers for the bare rule id a tool log prints.
+RULE_TITLE_RE = re.compile(r"^(?:DRC\s+)?[Rr]ule\s+[A-Z]{1,3}\d{1,4}$")
 
 
 def pick_command_level(toc: list) -> int | None:
@@ -88,6 +92,7 @@ def pick_command_level(toc: list) -> int | None:
             # predates this change; tightening it would move which level is
             # picked for manuals that already convert correctly.
             if (IDENTIFIER_RE.match(t) and "_" in t) or " -" in t or MESSAGE_CODE_RE.match(t)
+            or RULE_TITLE_RE.match(t)
         )
         if n > best_n:
             best, best_n = lvl, n

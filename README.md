@@ -50,7 +50,8 @@ API key, no network.
 |---|---|
 | `search_docs` | BM25-ranked sections with document, breadcrumb and page |
 | `get_section` | the full text of one section, optionally with its neighbours |
-| `lookup_entity` | one command, function or error code, reassembled from all its chunks |
+| `lookup_entity` | one command, function, error code or DRC rule, reassembled from all its chunks |
+| `explain_log` | every message code and DRC rule a pasted tool log names, errors first, each with its entry and page |
 | `list_documents` | the catalog, with versions and coverage |
 | `get_toc` | one document's table of contents |
 | `compare_versions` | what two editions of a manual add, remove or word differently |
@@ -75,7 +76,7 @@ python scripts/pick_extractor.py my-corpus/vendor/new_docs/*.pdf
 ```
 
 That reports whether a document is prose or a reference (one entry per command,
-part or error code) and names the converter to use:
+part, error code or design rule) and names the converter to use:
 
 ```bash
 python scripts/convert_manual.py my-corpus/vendor/new_docs/guide.pdf --title "Widget User Guide"
