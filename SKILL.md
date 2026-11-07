@@ -604,6 +604,7 @@ which pymupdf4llm 1.28 requires.
 
 | Script | Use |
 |---|---|
+| `update_corpus.py` | Everything below for the PDFs waiting in `new_docs/`, stopping at each decision; gated on the checker, the smoke test and, with `--questions`, the eval. `--dry-run`, `--titles`. See "Adding one document later". |
 | `convert_manual.py` | One PDF → `docs/<slug>/` with page ranges; prose or reference by `--shape` (default: from the outline). `--dictionary` for bold-delimited entries. |
 | `rebuild_reference.py` | One reference PDF → `docs/<slug>/` with page ranges + entity attribution; the same as `convert_manual.py --shape reference`. `--command-level N` names the TOC level of the entries when it cannot be told. |
 | `build_index.py` | Regenerate `index.json` + `README.md`; reports unaccounted-for PDFs. |
@@ -628,8 +629,50 @@ isn't. Read the module docstrings — each records why it works the way it does.
 
 ## Adding one document later
 
-Put the PDF in the collection's `new_docs/`. Once `pick_extractor.py` has said
-what shape the document is, the rest is a fixed sequence:
+Put the PDF in the collection's `new_docs/`, then read the plan before running
+it:
+
+```bash
+python scripts/update_corpus.py "<corpus>" --dry-run
+python scripts/update_corpus.py "<corpus>" --questions "<eval>/questions.jsonl"
+```
+
+`update_corpus.py` runs the sequence below for every PDF waiting in any
+collection, printing each step as the command it is, and stops where a step
+would have to guess:
+
+- **Routing.** It takes `pick_extractor.py`'s verdict (the same function the
+  pre-flight prints from) and converts only what the verdict settles: a
+  reference whose command level the converter and the pre-flight agree on, and
+  prose, with `convert_docling.py` where Docling is installed or
+  `convert_manual.py` under `--prose-converter convert_manual`. These wait in
+  `new_docs/`, each with the decision it needs:
+  - a mixed document
+  - one with no outline or no text layer
+  - a level the two disagree on
+  - anything `editions.py` refuses
+  - a PDF whose title the PDF does not confirm. The metadata title counts if
+    the first pages print it; failing that, the cover's largest text counts if
+    later pages repeat it as their running title.
+
+  The decisions go in a `--titles` JSON file, keyed by filename.
+- **Nothing is replaced.** It never passes `--replace` and never deletes. A
+  PDF whose `docs/<slug>` exists waits.
+- **Gates.** `check_corpus.py --strict` runs on the new documents. A FAIL stops
+  the run before any index is built; warnings are counted, and `--strict`
+  makes them stop it too. The index is built as a candidate beside the live
+  one and smoke-tested. With `--questions`, it is also scored against the
+  current index. It replaces the current index only if neither hit@5 nor MRR
+  drops (`--accept-regression` overrides).
+- **Resuming.** The new documents are those the index does not hold as they
+  are on disk, so a rerun after a stop carries on. A document finished earlier
+  is checked and indexed, not enriched or re-extracted again.
+
+Report the table it ends with (chunks, % with pages, % with an entity, warnings
+per document), what waits and why, and whether the index was replaced.
+
+By hand, once `pick_extractor.py` has said what shape the document is, the
+sequence is:
 
 ```bash
 python scripts/convert_manual.py "<collection>/new_docs/new.pdf" --title "Widget User's Manual"  # or rebuild_reference.py / convert_docling.py
@@ -664,12 +707,21 @@ To keep an edition as a PDF only, delete `docs/<its slug>/` and add
 `superseded.json` — `build_index.py` then lists it as superseded instead of
 reporting its PDF as unaccounted for.
 
-There is deliberately no wrapper script for this. One existed, and it drifted
-four features behind without anyone noticing: it still sent every document to
+An earlier wrapper, `update.ps1`, was deleted because it drifted four features
+behind without anyone noticing. It still sent every document to
 `convert_manual.py`, including the command references that need
 `rebuild_reference.py`, and it never rebuilt the search index. The first step is
-a judgement call, and the rest changes as this skill grows — both are better
-read than buried.
+a judgement call, and the rest changes as this skill grows; both were better
+read than buried. `update_corpus.py` answers each of those:
+
+- It runs every step as the script itself, never a copy of what the script does.
+- It stops at every judgement call instead of making it.
+- It rebuilds the index, behind the smoke test and the eval.
+- It prints every command before running it, and `--dry-run` shows the whole
+  plan.
+
+A test (test_53i) fails when the sequence above names a script it does not
+run, so a step added here has to be added there too.
 
 `references/failure-modes.md` has the full catalog with measurements. Read it
 when debugging a corpus that already exists, or before changing chunking or
