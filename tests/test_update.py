@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -111,7 +112,12 @@ class UpdateTest(unittest.TestCase):
         self.assertRegex(report, r"Widgets/widget-guide\s+convert_manual \(prose\)\s+\d+\s+100%\s+-")
         self.assertRegex(report, r"Checker: 0 failing, \d+ warning")
         self.assertIn("Smoke test: passed", report)
-        self.assertIn(f"Index: replaced: {db}", report)
+        # As a path, not as text: Windows hands out temp folders in 8.3 short
+        # form (RUNNER~1), and the script prints the resolved name.
+        replaced = re.search(r"^Index: replaced: (.+)$", report, re.M)
+        self.assertIsNotNone(replaced, "the index was not reported replaced")
+        self.assertEqual(os.path.normcase(os.path.realpath(replaced.group(1))),
+                         os.path.normcase(os.path.realpath(db)))
         self.assertRegex(report, r"Widgets/new_docs/gadget\.pdf\n\s+- no title: .*Gadget Guide.*--titles")
 
         # Nothing new: nothing is written, the index included.
