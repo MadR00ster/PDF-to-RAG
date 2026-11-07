@@ -170,6 +170,23 @@ def collections_under(path: Path) -> list[Path]:
     return find_collections(path) or ([path] if (path / "docs").is_dir() else [])
 
 
+def waiting_collections(path: Path) -> list[Path]:
+    """Collections whose first PDFs are waiting: folders with a PDF in
+    new_docs/ that collections_under(path) does not find, because nothing in a
+    docs/ makes them collections until a converter writes one. `path` itself
+    when its own new_docs/ holds a PDF, then the folders directly under it
+    whose new_docs/ does. Both at once is a corpus that cannot be laid out
+    (the first conversion at the root would hide the rest), and is returned as
+    found for the caller to refuse. None below a path that is itself a
+    collection: its subfolders are not collections, as for find_collections."""
+    known = collections_under(path)
+    if known == [path] or not path.is_dir():
+        return []
+    below = sorted(p for p in path.iterdir()
+                   if p.is_dir() and not skips_name(p.name) and p not in known and inbox_pdfs(p))
+    return ([path] if inbox_pdfs(path) else []) + below
+
+
 def skips_name(name: str) -> bool:
     """A folder under docs/ that is not a document: a backup (.old), an
     interrupted build (.new), or anything hidden or private. Every script that

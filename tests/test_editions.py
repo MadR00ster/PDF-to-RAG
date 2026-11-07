@@ -648,6 +648,33 @@ class EditionsTest(unittest.TestCase):
         self.assertIn("Alpha", r.stderr)
         self.assertTrue((root / "Beta" / "docs" / "index.json").is_file(), "the collection after it was not built")
 
+    def test_53h_a_collection_waiting_for_its_first_pdf_is_found(self):
+        """A vendor folder with PDFs in new_docs/ and no docs/ yet is no
+        collection to collections_under, which is right for every tool that
+        reads documents. update_corpus.py has to find it anyway, by the same
+        layout rules: not a hidden folder, nothing below a collection, and
+        nothing twice."""
+        editions = load_script("editions")
+        root = self.tmp / "WaitingRoot"
+        handmade_document(root / "Old", "hand")
+        for folder in ("New", "Empty", ".rebuild-backup", "Old"):
+            (root / folder / "new_docs").mkdir(parents=True)
+        for folder in ("New", ".rebuild-backup", "Old"):
+            write_pdf(root / folder / "new_docs" / "first.pdf", [[("One", 12)]], [])
+        self.assertEqual(editions.collections_under(root), [root / "Old"])
+        self.assertEqual(editions.waiting_collections(root), [root / "New"])
+        self.assertEqual(editions.waiting_collections(root / "New"), [root / "New"])
+        self.assertEqual(editions.waiting_collections(root / "Old"), [], "a collection was found twice")
+        self.assertEqual(editions.waiting_collections(root / "Empty"), [])
+        self.assertEqual(editions.waiting_collections(self.tmp / "No Such Folder"), [])
+        # PDFs at the root and below it at once: both are reported, so the
+        # caller can refuse a layout whose first conversion hides the rest.
+        fresh = self.tmp / "WaitingBoth"
+        for folder in (fresh, fresh / "Synopsys"):
+            (folder / "new_docs").mkdir(parents=True)
+            write_pdf(folder / "new_docs" / "first.pdf", [[("One", 12)]], [])
+        self.assertEqual(editions.waiting_collections(fresh), [fresh, fresh / "Synopsys"])
+
     def test_25c_a_filed_pdf_is_never_overwritten(self):
         """PTUG.PDF is a PDF, and a filed one is never replaced.
 

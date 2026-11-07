@@ -361,12 +361,18 @@ def load_figures(doc_dir: Path) -> list[dict]:
         return []
 
 
+# The files in each document's folder that an index depends on besides the
+# sections. update_corpus.py reads this list to tell which documents an index
+# does not hold as they are on disk.
+DOCUMENT_SOURCES = ("manifest.json", "figures.json")
+
+
 def record_sources(db: sqlite3.Connection, root: Path, documents: list) -> None:
-    """Note every file the index depends on besides the sections: each manifest,
-    each figures.json, and each collection's current_versions.json."""
+    """Note every file the index depends on besides the sections: each of a
+    document's DOCUMENT_SOURCES, and each collection's current_versions.json."""
     files = []
     for _key, _display, manifest_path, _manifest in documents:
-        files += [manifest_path, manifest_path.parent / "figures.json"]
+        files += [manifest_path.parent / name for name in DOCUMENT_SOURCES]
         files.append(manifest_path.parent.parent.parent / editions.PINS_FILE)
     rows = {}
     for path in files:
