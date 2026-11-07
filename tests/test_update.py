@@ -229,6 +229,10 @@ class UpdateTest(unittest.TestCase):
         self.assertFalse((root / "mcp-index.sqlite3").exists())
         self.assertFalse((root / "mcp-index.candidate.sqlite3").exists())
         self.assertNotRegex(out, r"\$ python \S*enrich_chunks\.py", "an enriched document was enriched again")
+        # The report tells a reference that owns no chunk from prose, which owns none by design.
+        self.assertRegex(out, r"/tiny \*\s+rebuild_reference \(reference\)\s+\d+\s+\d+%\s+0%\s",
+                         "a reference with its attribution declined should show 0% owned")
+        self.assertRegex(out, r"/prose \*\s+convert_manual \(prose\)\s+\d+\s+\d+%\s+-\s")
         for slug, files in sections.items():
             self.assertEqual(tree(root / "docs" / slug / "sections"), files, f"{slug}'s sections were rewritten")
 
@@ -317,6 +321,28 @@ class UpdateTest(unittest.TestCase):
         self.assertEqual([i.title for i in intakes if i.pdf.name == "guide.pdf" and i.collection == other],
                          ["Shared Guide"])
 
+        # Two releases of one manual waiting together are checked against
+        # each other, not only against what is filed: one with no version, or
+        # the same release twice, waits with that reason.
+        releases = self.tmp / "t53e" / "Releases"
+        (releases / "new_docs").mkdir(parents=True)
+        titled(releases / "new_docs" / "gadget_2025_1.pdf",
+               lambda p: gadget_fixture(p, "2025.1", ["Unpacking", "Mounting"]), "Gadget Guide")
+        titled(releases / "new_docs" / "gadget_2026_1.pdf", prose_fixture, "Gadget Guide")   # no version on it
+        intakes, _ = uc.plan_intake([releases], {}, "convert_manual", False)
+        held = {i.pdf.name: " ".join(i.held) for i in intakes}
+        self.assertEqual(held["gadget_2025_1.pdf"], "")
+        self.assertRegex(held["gadget_2026_1.pdf"], r"gadget_2025_1\.pdf, waiting beside it, is another edition "
+                                                    r"of gadget, and this one has no version")
+        copies = self.tmp / "t53e" / "Copies"
+        (copies / "new_docs").mkdir(parents=True)
+        for name, sections in (("gadget.pdf", ["Unpacking", "Mounting"]), ("gadget_2026_1.pdf", ["Mounting", "Storage"])):
+            titled(copies / "new_docs" / name, lambda p, s=sections: gadget_fixture(p, "2026.1", s), "Gadget Guide")
+        intakes, _ = uc.plan_intake([copies], {}, "convert_manual", False)
+        held = {i.pdf.name: " ".join(i.held) for i in intakes}
+        self.assertEqual(held["gadget.pdf"], "")
+        self.assertIn("gadget.pdf, waiting beside it, is the same release of gadget (2026.1)", held["gadget_2026_1.pdf"])
+
         bad = self.tmp / "t53e-bad.json"
         for wrong, why in (([], "object keyed"), ({"a.pdf": {"titel": "x"}}, "titel"),
                            ({"a.pdf": {"command_level": "2"}}, "command_level"),
@@ -333,7 +359,8 @@ class UpdateTest(unittest.TestCase):
         """A wrong title does more than mislabel: the converters strip the
         lines that repeat it as page furniture. So the metadata title counts
         when the first pages print it, the cover's largest text when later
-        pages repeat it as their running title, and nothing else does."""
+        pages print it as a line of its own, as a running title, and nothing
+        else does."""
         uc = load_script("update_corpus")
         base = self.tmp / "t53f"
         base.mkdir()
@@ -352,14 +379,22 @@ class UpdateTest(unittest.TestCase):
         cover = [("Widget Field Manual", 24), ("Software Version 2026.1", 11)]
         with pdf("meta.pdf", [cover] + [body] * 4, "Widget Field Manual") as doc:
             self.assertEqual(uc.find_title(doc), ("Widget Field Manual", "the PDF's metadata, printed on its cover"))
-        with pdf("running.pdf", [cover] + [[("Widget Field Manual", 8)] + body] * 4,
+        with pdf("running.pdf", [cover] + [[("Widget Field Manual, v2026.1", 8)] + body] * 4,
                  "Microsoft Word - draft7.docx") as doc:
-            self.assertEqual(uc.find_title(doc), ("Widget Field Manual", "the cover, repeated as the running title"))
+            self.assertEqual(uc.find_title(doc), ("Widget Field Manual", "the cover, repeated as the running title"),
+                             "a running title with its release beside it is still the running title")
         with pdf("neither.pdf", [cover] + [body] * 4, "Microsoft Word - draft7.docx") as doc:
             title, why = uc.find_title(doc)
             self.assertIsNone(title)
             self.assertIn("'Microsoft Word - draft7.docx' is not printed on its first pages", why)
-            self.assertIn("'Widget Field Manual' is not repeated on later pages", why)
+            self.assertIn("'Widget Field Manual' is not a line of its own on later pages", why)
+        # A product name set largest above the real title is in every footer
+        # that names the manual, and is still not its title: it waits.
+        banner = [("Gizmo", 40), ("Gizmo Field Manual", 20), ("Software Version 2026.1", 11)]
+        with pdf("banner.pdf", [banner] + [[("Gizmo Field Manual", 8)] + body] * 4) as doc:
+            title, why = uc.find_title(doc)
+            self.assertIsNone(title, "a banner that is part of the running title was taken for the title")
+            self.assertIn("'Gizmo' is not a line of its own on later pages", why)
         with pdf("marks.pdf", [[("Widget® Field Manual", 24)]] + [body] * 2, "Widget(R) Field Manual") as doc:
             self.assertEqual(uc.find_title(doc)[0], "Widget(R) Field Manual",
                              "a typed (R) should read as the mark the cover prints")
@@ -396,6 +431,106 @@ class UpdateTest(unittest.TestCase):
         for name in uc.PIPELINE:
             self.assertTrue((SCRIPTS / name).is_file(), name)
 
+    def stopped_corpus(self, name: str) -> Path:
+        """A corpus of two collections. Alpha waits on a reference. Beta waits
+        on a prose manual and holds one document converted earlier the way
+        Docling writes it: breadcrumbs its converter owns, and page furniture
+        that only enrich_chunks.py strips."""
+        root = self.tmp / name
+        titled_ref = lambda p: titled(p, lambda q: reference_fixture(q, 25), "Widget Command Reference")  # noqa: E731
+        (root / "Alpha" / "new_docs").mkdir(parents=True)
+        titled_ref(root / "Alpha" / "new_docs" / "widget-commands.pdf")
+        beta = root / "Beta"
+        (beta / "new_docs").mkdir(parents=True)
+        titled(beta / "new_docs" / "gadget.pdf", lambda p: gadget_fixture(p, "2026.1", ["Unpacking", "Mounting"]),
+               "Gadget Guide")
+        shutil.copytree(WS.corpus() / "docs" / "prose", beta / "docs" / "prose")
+        (beta / "source").mkdir()
+        shutil.copy(WS.corpus() / "widget-guide.pdf", beta / "source" / "widget-guide.pdf")
+        manifest_path = beta / "docs" / "prose" / "manifest.json"
+        m = json.loads(manifest_path.read_text(encoding="utf-8"))
+        m["converter"] = {"script": "convert_docling.py", "extractor": "docling", "extractor_version": "2.0",
+                          "converted_at": "2026-01-01T00:00:00", "owns_breadcrumbs": True}
+        manifest_path.write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
+        for section in m["sections"]:
+            path = beta / "docs" / "prose" / section["file"]
+            path.write_text(path.read_text(encoding="utf-8") + "\nFeedback\n", encoding="utf-8")
+        return root
+
+    @staticmethod
+    def documents(root: Path) -> dict[str, str]:
+        """Every file of every document, the manifests without the time they
+        were converted at, which is all two runs of one conversion differ in."""
+        out = {}
+        for path in sorted(root.glob("*/docs/*/**/*")):
+            if not path.is_file():
+                continue
+            text = path.read_bytes()
+            if path.name == "manifest.json":
+                m = json.loads(text)
+                (m.get("converter") or {}).pop("converted_at", None)
+                text = json.dumps(m, sort_keys=True).encode()
+            out[path.relative_to(root).as_posix()] = hashlib.sha256(text).hexdigest()
+        return out
+
+    def test_53j_a_stopped_run_and_its_rerun_end_where_one_run_does(self):
+        """A run that stops after converting leaves documents the index does
+        not hold. The next run finishes them, and ends where one run that
+        never stopped does: every step that document missed, and nothing
+        twice. A document whose converter owns its breadcrumbs carries no
+        mark of enrichment, and still has its furniture stripped."""
+        once = self.stopped_corpus("t53j-once")
+        r = run("update_corpus.py", str(once), *MANUAL)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+        twice = self.stopped_corpus("t53j-twice")
+        # build_index.py stops on Alpha, so Beta's documents are converted
+        # and nothing after that.
+        bad = twice / "Alpha" / "superseded.json"
+        bad.write_text('[{"file": "x.pdf"}]', encoding="utf-8")
+        r = run("update_corpus.py", str(twice), *MANUAL)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, out)
+        self.assertRegex(out, r"STOPPED: build_index\.py failed in Alpha")
+        self.assertTrue((twice / "Beta" / "docs" / "gadget-2026-1").is_dir())
+        self.assertNotRegex(out, r"\$ python \S*enrich_chunks\.py \S*Beta", "the run went on past the stop")
+        bad.unlink()
+        r = run("update_corpus.py", str(twice), *MANUAL)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+        self.assertEqual(self.documents(twice), self.documents(once),
+                         "a run that stopped and its rerun did not end where one run does")
+        self.assertEqual(indexed(twice / "mcp-index.sqlite3"), indexed(once / "mcp-index.sqlite3"))
+        planted = json.loads((WS.corpus() / "docs" / "prose" / "manifest.json").read_text(encoding="utf-8"))
+        for root in (once, twice):
+            m = json.loads((root / "Beta" / "docs" / "prose" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual([s["breadcrumb"] for s in m["sections"]], [s["breadcrumb"] for s in planted["sections"]],
+                             "the converter's own breadcrumbs were rewritten")
+            for s in m["sections"]:
+                body = (root / "Beta" / "docs" / "prose" / s["file"]).read_text(encoding="utf-8")
+                self.assertNotIn("Feedback", body, f"{root.name}: page furniture was left in {s['file']}")
+        # And passing it again changes nothing, which is what makes it safe to
+        # pass every such document the index does not hold.
+        before = tree(twice / "Beta" / "docs")
+        r = run("enrich_chunks.py", str(twice / "Beta"), "--only", "prose", "--only", "gadget-2026-1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(tree(twice / "Beta" / "docs"), before, "a second enrich_chunks.py pass changed files")
+
+    def test_53k_a_failed_build_names_no_candidate_it_did_not_write(self):
+        """A candidate an earlier run refused is kept to be looked at. A later
+        build that fails must not name it as its own."""
+        uc = load_script("update_corpus")
+        root = self.tmp / "t53k"
+        root.mkdir()
+        stale = uc.candidate_path(root / "mcp-index.sqlite3")
+        stale.write_bytes(b"refused by an earlier run")
+        rep = uc.Report(root, root / "mcp-index.sqlite3")
+        uc.build_and_swap(rep, None, False, False)          # nothing to index: the build fails
+        self.assertIsNotNone(rep.stopped)
+        self.assertIn("build_search_db.py failed", rep.index)
+        self.assertNotIn("candidate is at", rep.index, "the report named a candidate this run did not build")
+        self.assertFalse(stale.exists(), "an old candidate was left to be mistaken for this run's")
+
     def test_53g_a_path_that_would_hide_collections_is_refused(self):
         """PDFs waiting at a corpus root would make it one collection and hide
         the others from every tool; one collection of a corpus would be
@@ -408,6 +543,16 @@ class UpdateTest(unittest.TestCase):
         r = run("update_corpus.py", str(root), "--dry-run", *MANUAL)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("every tool would stop seeing Old", r.stderr)
+
+        # The same on a corpus with nothing converted yet: a collection only
+        # waiting below the root is hidden just as surely.
+        fresh = self.tmp / "t53g-fresh"
+        for folder in (fresh, fresh / "Synopsys"):
+            (folder / "new_docs").mkdir(parents=True)
+            shutil.copy(WS.pdf("prose"), folder / "new_docs" / "guide.pdf")
+        r = run("update_corpus.py", str(fresh), "--dry-run", *MANUAL)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("every tool would stop seeing Synopsys", r.stderr)
 
         shutil.rmtree(root / "new_docs")
         (root / "mcp-index.sqlite3").write_bytes(b"")

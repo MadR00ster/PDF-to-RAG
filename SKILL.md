@@ -655,7 +655,9 @@ would have to guess:
   - anything `editions.py` refuses
   - a PDF whose title the PDF does not confirm. The metadata title counts if
     the first pages print it; failing that, the cover's largest text counts if
-    later pages repeat it as their running title.
+    later pages print it as a line of its own, as a running title. A product
+    name set largest on the cover is only part of the footer line that names
+    the manual, so it does not count.
 
   The decisions go in a `--titles` JSON file, keyed by filename.
 - **Nothing is replaced.** It never passes `--replace` and never deletes. A

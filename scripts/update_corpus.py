@@ -42,8 +42,9 @@ says what it needs:
   - prose while Docling is not installed: --prose-converter convert_manual
     converts prose with convert_manual.py instead
   - no title. The PDF's metadata title is taken when its first pages print
-    it; failing that, the cover's largest text when later pages repeat it as
-    their running title. Otherwise it waits for one in --titles.
+    it; failing that, the cover's largest text when later pages print it as
+    a line of its own, the way a running title is. Otherwise it waits for
+    one in --titles.
   - anything editions.py refuses: a release already converted, a file already
     filed, a second edition with no version
   - a docs/<slug> that already exists. Nothing here replaces or deletes a
@@ -98,10 +99,13 @@ import pick_extractor  # noqa: E402
 PY = sys.executable
 
 # A cover's largest text is taken as the title only when at least this share
-# of later pages repeat it, as a running header or footer does. Measured on 36
-# vendor PDFs: 95-100% of sampled pages where the cover text is the title, at
-# most 5% where it is something else (a slide deck's banner, a title run on
-# into "For Use With ...").
+# of later pages print it as a line of its own, as a running header or footer
+# does. Measured on 36 vendor PDFs: as a line of its own (running_share),
+# 95-100% of sampled pages for 29 of the 33 covers whose text is the title
+# and 0% for the other four, whose footers add more to the line; 0% for the
+# three that are not the title (a slide deck's banner, a title run on into
+# "For Use With ..."). Every one of the 36 had its title from the metadata
+# first, or waited.
 RUNNING_TITLE_SHARE = 0.3
 RUNNING_SAMPLE = 40
 
@@ -154,13 +158,34 @@ def cover_text(page) -> str | None:
     return " ".join(text for size, text in spans if size >= top - 0.5) or None
 
 
+# What a running header or footer prints beside a title on its line: a
+# version, a release letter, a page number ("v2026.2", "Version Y-2026.03", "5-138").
+BESIDE_TITLE_RE = re.compile(r"^(?:software|version|release|page|v?\d+|[a-z])$")
+
+
+def core(words: str) -> str:
+    """A line's words without the version and page numbers at either end."""
+    w = words.split()
+    while w and BESIDE_TITLE_RE.match(w[0]):
+        w.pop(0)
+    while w and BESIDE_TITLE_RE.match(w[-1]):
+        w.pop()
+    return " ".join(w)
+
+
 def running_share(doc, words: str) -> float:
-    """The share of a sample of the pages after the first that print `words`."""
+    """The share of a sample of the pages after the first with a line that is
+    `words`, give or take a version or page number beside it. A whole line,
+    not a part of one: a product name set largest on a cover ("PrimeTime")
+    is in every footer that names the manual ("PrimeTime User Guide"), and
+    is still not the title."""
     later = list(range(1, doc.page_count))
-    if not later:
+    target = core(words)
+    if not later or not target:
         return 0.0
     sample = later[::max(1, len(later) // RUNNING_SAMPLE)][:RUNNING_SAMPLE]
-    return sum(1 for i in sample if contains(words, title_words(doc[i].get_text()))) / len(sample)
+    return sum(1 for i in sample
+               if any(core(title_words(line)) == target for line in doc[i].get_text().splitlines())) / len(sample)
 
 
 def find_title(doc) -> tuple[str | None, str]:
@@ -168,7 +193,8 @@ def find_title(doc) -> tuple[str | None, str]:
 
     Two places, each taken only where the PDF itself confirms it: the
     metadata title when the first pages print it, and failing that the
-    cover's largest text when it is the running title of later pages. A
+    cover's largest text when it is the running title of later pages, a line
+    of its own and not only part of one. A
     title that is wrong does more than mislabel: the converters strip the
     lines that repeat it as page furniture."""
     first = title_words("\n".join(doc[i].get_text() for i in range(min(editions.COVER_PAGES, doc.page_count))))
@@ -188,7 +214,8 @@ def find_title(doc) -> tuple[str | None, str]:
     elif implausible(cover):
         why.append(f"its cover's largest text {cover!r} {implausible(cover)}")
     elif running_share(doc, title_words(cover)) < RUNNING_TITLE_SHARE:
-        why.append(f"its cover's largest text {cover!r} is not repeated on later pages as a running title")
+        why.append(f"its cover's largest text {cover!r} is not a line of its own on later pages, as a "
+                   "running title is")
     else:
         return cover, "the cover, repeated as the running title"
     return None, "; ".join(why)
@@ -244,6 +271,8 @@ class Intake:
         self.title: str | None = None
         self.title_from = ""
         self.slug: str | None = None
+        self.doc_id: str | None = None
+        self.version: str | None = None
         self.edition: list[str] = []   # what editions.plan said
         self.held: list[str] = []      # why it waits; empty when it is converted
         self.command: list[str] | None = None
@@ -309,7 +338,7 @@ def plan_pdf(coll: Path, pdf: Path, decision: dict, prose_converter: str | None,
     # search would treat as unrelated manuals) is worse than waiting.
     it.held += [f"editions.py: {line.removeprefix('!!').strip()}" for line in it.edition if line.startswith("!!")]
     if p is not None:
-        it.slug = p.slug
+        it.slug, it.doc_id, it.version = p.slug, p.doc_id, p.version
         if (p.out_root / p.slug).exists():
             it.held.append(f"docs/{p.slug} already exists. Nothing here replaces a document: reconvert it "
                            "by hand with --replace if that is what is meant")
@@ -358,6 +387,34 @@ def prose_choice(it: Intake, p, decision: dict, prose_converter: str | None, doc
     return choice
 
 
+def edition_clash(it: Intake, planned: list[Intake], slugs: set) -> bool:
+    """Hold what editions.plan would refuse had the PDFs waiting beside `it`
+    been filed already, as they will be by the time its converter runs: two
+    editions of one manual where one has no version to order them by, or the
+    same release twice. It sees only what is filed, so without this the plan
+    showed both converting and the second converter then stopped, reported
+    only as a failure. True when `it` was held for it."""
+    held = False
+    for other in planned:
+        if not it.doc_id or other.doc_id != it.doc_id:
+            continue
+        if not it.version or not other.version:
+            for lacking in (x for x in (it, other) if not x.version):
+                lacking.held.append(f"{(other if lacking is it else it).pdf.name}, waiting beside it, is another "
+                                    f"edition of {it.doc_id}, and this one has no version to order the two by. "
+                                    'Set "version" for it in --titles')
+                if lacking is other:
+                    other.command = None
+                    slugs.discard((other.collection, other.slug))
+            held = held or not it.version
+        elif editions.same_release(it.version, other.version):
+            it.held.append(f"{other.pdf.name}, waiting beside it, is the same release of {it.doc_id} "
+                           f"({other.version}). Delete one copy, or set \"doc_id\" or \"version\" for it in "
+                           "--titles if they are different manuals or releases")
+            held = True
+    return held
+
+
 def plan_intake(collections: list[Path], decisions: dict, prose_converter: str | None,
                 docling: bool) -> tuple[list[Intake], list[str]]:
     """Every waiting PDF planned, and the --titles keys that matched none."""
@@ -379,7 +436,8 @@ def plan_intake(collections: list[Path], decisions: dict, prose_converter: str |
         if ambiguous:
             it.held.append(f"--titles names {pdf.name}, which waits in more than one collection: key it as "
                            f'"{key}"')
-        if it.slug and (coll, it.slug) in slugs:
+        clash = edition_clash(it, [i for i in out if i.collection == coll and i.command], slugs)
+        if not clash and it.slug and (coll, it.slug) in slugs:
             it.held.append(f"another PDF waiting here would also become docs/{it.slug}")
         # editions.py compares a PDF with those already filed; two copies
         # waiting at once would be two manuals that answer every search alike.
@@ -419,8 +477,9 @@ def changes_since_index(root: Path, collections: list[Path], db: Path) -> tuple[
     """({collection: [slug, ...]} of the documents the index does not hold as
     they are on disk, [what else has changed that it was built from]).
 
-    The same record the server reads to say an index is stale: each
-    manifest, figures.json and current_versions.json, by content. With no
+    The same record the server reads to say an index is stale: each of a
+    document's build_search_db.DOCUMENT_SOURCES and each collection's
+    current_versions.json, by content. With no
     index every document is new to it; with an index that keeps no record,
     none can be told apart, and it is rebuilt."""
     recorded = recorded_sources(db)
@@ -439,7 +498,7 @@ def changes_since_index(root: Path, collections: list[Path], db: Path) -> tuple[
     seen, other = set(), []
     for coll in collections:
         for doc_dir in editions.document_dirs(coll / "docs"):
-            for name in ("manifest.json", "figures.json"):
+            for name in build_search_db.DOCUMENT_SOURCES:
                 path = doc_dir / name
                 if not path.is_file():
                     continue
@@ -515,9 +574,19 @@ def is_reference(manifest: dict) -> bool:
 
 
 def needs_enrich(manifest: dict) -> bool:
-    """Prose that enrich_chunks.py has not been over: it gives every section a
-    breadcrumb, and a prose converter that writes one writes it on all."""
-    return not is_reference(manifest) and any(not s.get("breadcrumb") for s in manifest.get("sections", []))
+    """Prose enrich_chunks.py may not have been over, so a document left by a
+    run that stopped ends as one converted in a single run does.
+
+    convert_manual.py writes no breadcrumb on prose and enrich_chunks.py
+    writes one on every section, so a section without one means it has not
+    run. A converter that writes its own breadcrumbs (Docling) leaves no such
+    mark, and enrich_chunks.py still strips its page furniture, so that
+    document is always passed again: enrich_chunks.py keeps those
+    breadcrumbs, and a second pass over its own output changes nothing."""
+    if is_reference(manifest):
+        return False
+    owned = (manifest.get("converter") or {}).get("owns_breadcrumbs") is True
+    return owned or any(not s.get("breadcrumb") for s in manifest.get("sections", []))
 
 
 class Report:
@@ -655,6 +724,9 @@ def build_and_swap(rep: Report, questions: Path | None, accept_regression: bool,
         rep.index = f"kept as it was ({why})" + (f"; the candidate is at {cand}" if keep and cand.is_file() else "")
         rep.stop(why)
 
+    # A candidate an earlier run refused is gone before this one is built, so
+    # whatever the report names as the candidate is this run's.
+    cand.unlink(missing_ok=True)
     code, tail = run_step([PY, script("build_search_db.py"), str(root), "--out", str(cand)])
     if code != 0:
         return refuse(f"build_search_db.py failed (exit {code}): {tail[-1] if tail else ''}")
@@ -754,9 +826,11 @@ def print_report(rep: Report) -> None:
         mt = doc.get("metrics", {})
         warn = sum(1 for p in doc["problems"] if p["severity"] == "WARN")
         fail = sum(1 for p in doc["problems"] if p["severity"] == "FAIL")
-        # A prose document owns no chunk by design: "-", as check_corpus.py shows it.
+        # Prose owns no chunk by design, so "-". A reference that owns none is
+        # the worst case for lookup_entity, so 0%, never "-".
+        entity = pct(mt.get("owned") or 0.0) if is_reference(m) else "-"
         rows.append((f"{coll.name}/{slug}{mark}", conv, mt.get("chunks", 0), pct(mt.get("pages")),
-                     pct(mt.get("owned") or None), f"{warn}" + (f" +{fail} FAIL" if fail else "")))
+                     entity, f"{warn}" + (f" +{fail} FAIL" if fail else "")))
     print(f"Documents added: {len(rep.converted)} converted now"
           + (f", {len(rows) - len(rep.converted)} converted earlier (*)" if len(rows) > len(rep.converted) else ""))
     if rows:
@@ -827,10 +901,13 @@ def main() -> int:
 
     known = editions.collections_under(root)
     waiting = editions.waiting_collections(root)
-    if root in waiting and any(c != root for c in known):
+    others = [c for c in known + waiting if c != root]
+    if root in waiting and others:
+        # Whether the others are converted yet or only waiting: the first
+        # document at the root makes it the one collection, and hides them.
         print(f"{root / editions.INBOX_DIR} holds PDFs, and {root.name} holds collections. Converted here they "
               f"would make {root.name} one collection, and every tool would stop seeing "
-              f"{', '.join(c.name for c in known)}. Move them into a collection's {editions.INBOX_DIR}/.",
+              f"{', '.join(c.name for c in others)}. Move them into a collection's {editions.INBOX_DIR}/.",
               file=sys.stderr)
         return 1
     if (known == [root] and not args.db and not db.is_file()
