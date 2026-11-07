@@ -72,6 +72,31 @@ def has_text_layer(doc, sample: int = 10) -> tuple[bool, int]:
     return avg >= 100, avg
 
 
+def assess(doc) -> dict:
+    """The verdict report() prints, as data, for a caller that acts on it
+    (update_corpus.py): `verdict` is "no-text", "no-toc", "prose", "reference"
+    or "mixed"; `converter` is the script named for it, or None where this
+    names none; `picked` is the level rebuild_reference.py would take for a
+    reference or mixed document, beside `level`, the one found here."""
+    toc = doc.get_toc()
+    pages = doc.page_count
+    text_ok, avg_chars = has_text_layer(doc)
+    a = {"toc": toc, "pages": pages, "text_ok": text_ok, "avg_chars": avg_chars, "verdict": None,
+         "why": None, "level": None, "picked": None, "converter": None}
+    if not text_ok:
+        a["verdict"] = "no-text"
+    elif not toc:
+        a["verdict"] = "no-toc"
+    else:
+        a["verdict"], a["why"], a["level"] = detect_shape(toc, pages)
+        if a["verdict"] in ("reference", "mixed"):
+            # rebuild_reference.py picks its own level, by a different test; where
+            # it would take none, or another one, it converts without a word.
+            a["picked"] = pick_command_level(toc)
+        a["converter"] = {"reference": "rebuild_reference.py", "prose": "convert_docling.py"}.get(a["verdict"])
+    return a
+
+
 def report(path: Path, verbose: bool) -> None:
     try:
         doc = fitz.open(path)
@@ -79,9 +104,8 @@ def report(path: Path, verbose: bool) -> None:
         print(f"{path.name}: cannot open ({exc})")
         return
 
-    toc = doc.get_toc()
-    pages = doc.page_count
-    text_ok, avg_chars = has_text_layer(doc)
+    a = assess(doc)
+    toc, pages, text_ok, avg_chars = a["toc"], a["pages"], a["text_ok"], a["avg_chars"]
 
     # Benchmark slices are all named slice.pdf; show the parent when
     # the basename alone would not identify the file.
@@ -91,13 +115,13 @@ def report(path: Path, verbose: bool) -> None:
           f"{len(set(l for l, _, _ in toc)) if toc else 0} levels · "
           f"{'text layer ok' if text_ok else f'NO TEXT LAYER (~{avg_chars} chars/page)'}")
 
-    if not text_ok:
+    if a["verdict"] == "no-text":
         print("  => Scanned or image-only. OCR first; neither extractor produces")
         print("     anything useful until there is a text layer.")
         doc.close()
         return
 
-    if not toc:
+    if a["verdict"] == "no-toc":
         print("  => No bookmark outline. TOC verification is unavailable, so")
         print("     breadcrumbs cannot be confirmed by any path here. Docling still")
         print("     gives page numbers; treat every ancestor as unverified, and")
@@ -105,7 +129,7 @@ def report(path: Path, verbose: bool) -> None:
         doc.close()
         return
 
-    shape, why, level = detect_shape(toc, pages)
+    shape, why, level = a["verdict"], a["why"], a["level"]
     density = len(toc) / max(pages, 1)
     starts = Counter(p for _, _, p in toc)
     multi = sum(1 for _p, c in starts.items() if c >= 2)
@@ -114,9 +138,7 @@ def report(path: Path, verbose: bool) -> None:
     print(f"  shape: {shape:10s} ({why})")
 
     if shape in ("reference", "mixed"):
-        # rebuild_reference.py picks its own level, by a different test; where
-        # it would take none, or another one, it converts without a word.
-        picked = pick_command_level(toc)
+        picked = a["picked"]
         if picked is None:
             print("  !! rebuild_reference.py would attribute nothing here: it takes no TOC "
                   f"level for commands. Pass --command-level {level}.")
