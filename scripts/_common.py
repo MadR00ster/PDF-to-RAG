@@ -25,6 +25,10 @@ BREADCRUMB_SEP = " \u203a "
 IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*(\s+-[a-z0-9_]+)*$", re.I)
 # An error/warning message code ("ADES-002", "CMD-082"): a reference entry too.
 MESSAGE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}-\d{2,5}$")
+# A design rule check ("DRC Rule C1", "Rule S29"): one entry per rule, the way
+# a DRC rules manual is laid out. The entry keeps its TOC title as its name;
+# the server also answers for the bare rule id a tool log prints.
+RULE_TITLE_RE = re.compile(r"^(?:DRC\s+)?[Rr]ule\s+[A-Z]{1,3}\d{1,4}$")
 
 # A title that looks like a command / API entry rather than a prose heading:
 # pick_extractor's test for whether a document is a reference at all.
@@ -54,6 +58,7 @@ def pick_command_level(toc: list) -> int | None:
             # predates this change; tightening it would move which level is
             # picked for manuals that already convert correctly.
             if (IDENTIFIER_RE.match(t) and "_" in t) or " -" in t or MESSAGE_CODE_RE.match(t)
+            or RULE_TITLE_RE.match(t)
         )
         if n > best_n:
             best, best_n = lvl, n
@@ -62,7 +67,7 @@ def pick_command_level(toc: list) -> int | None:
 
 def looks_like_entry(title: str) -> bool:
     t = (title or "").strip()
-    if MESSAGE_CODE_RE.match(t):
+    if MESSAGE_CODE_RE.match(t) or RULE_TITLE_RE.match(t):
         return True
     if not t or " " in t and not t.split()[0].endswith(("_",)):
         # Allow "tessent -shell" style two-token entries, reject prose.
