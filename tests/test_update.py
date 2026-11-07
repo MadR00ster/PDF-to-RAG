@@ -252,6 +252,23 @@ class UpdateTest(unittest.TestCase):
         self.assertEqual(it.command[2:], [str(coll / "new_docs" / "guide.pdf"), "--title", "A Widget Manual",
                                           "--slug", "guide", "--shape", "prose"])
 
+        # A new edition takes its manual's converter, over the default.
+        shelf = self.tmp / "t53e" / "Gadgets Shelf"
+        (shelf / "new_docs").mkdir(parents=True)
+        (shelf / "docs" / "gadget-2025-1").mkdir(parents=True)
+        (shelf / "docs" / "gadget-2025-1" / "manifest.json").write_text(json.dumps(
+            {"slug": "gadget-2025-1", "doc_id": "gadget", "version": "2025.1",
+             "converter": {"script": "convert_manual.py"}}), encoding="utf-8")
+        titled(shelf / "new_docs" / "gadget.pdf", lambda p: gadget_fixture(p, "2026.1", ["Unpacking", "Mounting"]),
+               "Gadget Guide")
+        for docling in (False, True):
+            it = uc.plan_pdf(shelf, shelf / "new_docs" / "gadget.pdf", {}, None, docling)
+            self.assertEqual((it.held, Path(it.command[1]).name, it.command[-2:]),
+                             ([], "convert_manual.py", ["--shape", "prose"]), f"docling={docling}")
+            self.assertIn("converter: convert_manual.py, as for this manual's other editions", it.edition)
+        it = uc.plan_pdf(shelf, shelf / "new_docs" / "gadget.pdf", {"converter": "convert_docling"}, None, True)
+        self.assertEqual(Path(it.command[1]).name, "convert_docling.py", "the PDF's own decision should win")
+
         it = plan("mixed.pdf", mixed_fixture)
         self.assertRegex(" ".join(it.held), r"part prose, part reference")
         it = plan("mixed.pdf", mixed_fixture, {"shape": "prose", "title": "Gadget Book"})

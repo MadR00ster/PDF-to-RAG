@@ -645,7 +645,9 @@ would have to guess:
   pre-flight prints from) and converts only what the verdict settles: a
   reference whose command level the converter and the pre-flight agree on, and
   prose, with `convert_docling.py` where Docling is installed or
-  `convert_manual.py` under `--prose-converter convert_manual`. These wait in
+  `convert_manual.py` under `--prose-converter convert_manual`. A new edition
+  takes the converter its manual's other editions were converted with, as the
+  paragraph on editions below asks. These wait in
   `new_docs/`, each with the decision it needs:
   - a mixed document
   - one with no outline or no text layer

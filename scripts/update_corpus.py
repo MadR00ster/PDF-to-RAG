@@ -13,7 +13,8 @@ hand and nothing happens that the long form would not do:
 
   1. Each PDF in new_docs/: pick_extractor.py's verdict and a title, then
      convert_manual.py --shape prose|reference, or convert_docling.py for
-     prose where Docling is installed.
+     prose where Docling is installed. A new edition of a manual takes the
+     converter its other editions were converted with.
   2. The new documents: enrich_chunks.py (prose only), extract_figures.py,
      ocr_figures.py (skipped, and said, without Tesseract's language data),
      then build_index.py for each collection they are in.
@@ -286,18 +287,6 @@ def plan_pdf(coll: Path, pdf: Path, decision: dict, prose_converter: str | None,
                       f'set "command_level" for it in --titles')
             it.converter = "convert_manual.py"
             extra = ["--shape", "reference"] + (["--command-level", str(level)] if level is not None else [])
-        else:
-            choice = decision.get("converter") or prose_converter or ("convert_docling" if docling else None)
-            if choice is None:
-                it.held.append("pick_extractor.py names convert_docling.py for prose, and Docling is not "
-                               "installed. Install it (pip install docling), or pass --prose-converter "
-                               "convert_manual to convert prose with convert_manual.py: pages on every "
-                               "chunk, without Docling's TOC-anchored breadcrumbs")
-            elif choice == "convert_docling" and not docling:
-                it.held.append("convert_docling.py was asked for, and Docling is not installed (pip install docling)")
-            else:
-                it.converter = f"{choice}.py"
-                extra = ["--shape", "prose"] if choice == "convert_manual" else []
         if decision.get("title"):
             it.title, it.title_from = decision["title"].strip(), "--titles"
         else:
@@ -324,12 +313,49 @@ def plan_pdf(coll: Path, pdf: Path, decision: dict, prose_converter: str | None,
         if (p.out_root / p.slug).exists():
             it.held.append(f"docs/{p.slug} already exists. Nothing here replaces a document: reconvert it "
                            "by hand with --replace if that is what is meant")
+    if it.shape == "prose" and a["verdict"] != "no-text":
+        choice = prose_choice(it, p, decision, prose_converter, docling)
+        if choice:
+            it.converter = f"{choice}.py"
+            extra = ["--shape", "prose"] if choice == "convert_manual" else []
     if not it.held:
         it.command = [PY, str(HERE / it.converter), str(pdf), "--title", it.title, "--slug", it.slug, *extra]
         for key, option in (("version", "--version"), ("doc_id", "--doc-id")):
             if decision.get(key):
                 it.command += [option, decision[key]]
     return it
+
+
+def prose_choice(it: Intake, p, decision: dict, prose_converter: str | None, docling: bool) -> str | None:
+    """Which converter takes a prose PDF, or None with the reason it waits.
+
+    The converter named for this PDF in --titles; else the one every other
+    edition of its manual was converted with, as SKILL.md asks (two editions
+    from different converters make compare_versions measure the converters);
+    else --prose-converter; else Docling where it is installed, which is what
+    pick_extractor.py names for prose."""
+    choice = decision.get("converter")
+    if not choice and p is not None:
+        used = sorted({(m.get("converter") or {}).get("script") or "an unrecorded converter"
+                       for folder, m in editions.load_manifests(p.out_root.parent).items()
+                       if folder != p.slug and m.get("doc_id") == p.doc_id})
+        if len(used) == 1 and used[0] in ("convert_manual.py", "convert_docling.py"):
+            choice = used[0].removesuffix(".py")
+            it.edition.append(f"converter: {used[0]}, as for this manual's other editions")
+        elif used:
+            it.edition.append(f"converter: this manual's other editions were converted with {', '.join(used)}, "
+                              "so this one follows the default")
+    choice = choice or prose_converter or ("convert_docling" if docling else None)
+    if choice is None:
+        it.held.append("pick_extractor.py names convert_docling.py for prose, and Docling is not "
+                       "installed. Install it (pip install docling), or pass --prose-converter "
+                       "convert_manual to convert prose with convert_manual.py: pages on every "
+                       "chunk, without Docling's TOC-anchored breadcrumbs")
+    elif choice == "convert_docling" and not docling:
+        it.held.append("convert_docling.py is the converter for it, and Docling is not installed "
+                       "(pip install docling)")
+        choice = None
+    return choice
 
 
 def plan_intake(collections: list[Path], decisions: dict, prose_converter: str | None,
