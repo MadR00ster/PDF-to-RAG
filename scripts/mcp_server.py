@@ -33,6 +33,7 @@ Tools:
   get_section      full text of one chunk, optionally with its neighbours
   lookup_entity    assemble a whole entry from a reference document
   explain_log      every message code and DRC rule a tool log names, each with its entry
+  check_script     every command and option a Tcl script uses, checked against the reference entries
   list_documents   the catalog: slugs, titles, versions, sizes, coverage
   get_toc          table of contents for one document
   compare_versions what differs between two editions of one manual
@@ -46,6 +47,11 @@ never compete for a question. Any other is read only when a call names it:
 for exactly that release, or an earlier one whose cover says "and later". A
 release no edition covers is refused with the list of those that are here;
 nothing is substituted for it.
+
+Set PDF_TO_RAG_LOG=<file> to append one JSON line per tool call to that file:
+when, which tool, the arguments, the sections returned, how many characters
+and how long. It is off unless set. `triage_log.py` turns what people asked
+into test questions.
 """
 from __future__ import annotations
 
@@ -66,6 +72,7 @@ import time
 import traceback
 import unicodedata
 from collections import Counter
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import NamedTuple
@@ -155,6 +162,80 @@ about into over under between within any all some no not
 def log(msg: str) -> None:
     """Diagnostics go to stderr; stdout carries the protocol and nothing else."""
     print(f"[mcp_server] {msg}", file=sys.stderr, flush=True)
+
+
+# An opt-in record of real use: one JSON object per tool call, appended to the
+# file $PDF_TO_RAG_LOG names. Off unless that is set. It is how to learn what
+# people actually ask and what the server answered, which no test set written
+# by someone who had read the answers can say; triage_log.py reads it.
+#
+# Each line: t (UTC), tool, args (strings cut at CALL_LOG_ARG_CHARS), sections
+# (the section ids the call returned, in order), refs (the same sections as
+# [collection, slug, file], which survive an index rebuild when ids do not),
+# chars (text returned), ms (latency), error, and client when the client said
+# who it was. Nothing is ever written to stdout; a log that cannot be written
+# is dropped with one note on stderr and the server goes on answering.
+CALL_LOG_ENV = "PDF_TO_RAG_LOG"
+CALL_LOG_ARG_CHARS = 2_000
+CALL_LOG: Path | None = None
+CALL_CLIENT: str | None = None
+RETURNED: list[sqlite3.Row] = []        # sections the call in flight has returned
+
+
+def configure_call_log() -> None:
+    global CALL_LOG
+    where = os.environ.get(CALL_LOG_ENV, "").strip()
+    CALL_LOG = Path(where).expanduser().resolve() if where else None
+    if CALL_LOG:
+        log(f"logging tool calls to {CALL_LOG}")
+
+
+def note_returned(row: sqlite3.Row) -> None:
+    """Remember a section the call in flight is returning, for the call log."""
+    if CALL_LOG is not None:
+        RETURNED.append(row)
+
+
+def clip_arg(value):
+    if isinstance(value, str) and len(value) > CALL_LOG_ARG_CHARS:
+        return value[:CALL_LOG_ARG_CHARS] + f"…[{len(value)} chars]"
+    return value
+
+
+def record_call(name: str, args, content: list[dict], is_error: bool, started: float) -> None:
+    """Append one line to the call log. Never raises, never touches stdout."""
+    global CALL_LOG
+    if CALL_LOG is None:
+        return
+    try:
+        ids, refs = [], []
+        for row in RETURNED:
+            if row["id"] not in ids:
+                ids.append(row["id"])
+                refs.append([row["collection"], row["slug"], "sections/" + row["file"].rsplit("/", 1)[-1]])
+        entry = {
+            "t": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "tool": name,
+            "args": {k: clip_arg(v) for k, v in args.items()} if isinstance(args, dict) else {"_": repr(args)[:200]},
+            "sections": ids,
+            "refs": refs,
+            "chars": sum(len(b.get("text", "")) for b in content if b.get("type") == "text"),
+            "ms": round((time.perf_counter() - started) * 1000, 1),
+            "error": is_error,
+        }
+        images = sum(1 for b in content if b.get("type") == "image")
+        if images:
+            entry["images"] = images
+        if CALL_CLIENT:
+            entry["client"] = CALL_CLIENT
+        CALL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(CALL_LOG, "a", encoding="utf-8", errors="replace", newline="\n") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    except Exception as exc:
+        log(f"call log dropped, and no more will be written: {exc}")
+        CALL_LOG = None
+    finally:
+        RETURNED.clear()
 
 
 # How long a check that found the index up to date is trusted before the
@@ -745,6 +826,7 @@ def format_results(rows: list[sqlite3.Row], query: str) -> str:
         )
     out = [f'{len(rows)} result(s) for "{query}":\n']
     for i, r in enumerate(rows, 1):
+        note_returned(r)
         out.append(f"### {i}. {r['heading'] or '(untitled section)'}")
         out.append(cite(r))
         figures = section_figures(r["collection"], r["slug"], r["ord"])
@@ -759,7 +841,8 @@ def format_results(rows: list[sqlite3.Row], query: str) -> str:
 
 
 def format_section(row: sqlite3.Row, body: str) -> str:
-    head = [f"# {row['heading'] or '(untitled section)'}", cite(row), f"file: {row['file']}", ""]
+    note_returned(row)
+    head =[f"# {row['heading'] or '(untitled section)'}", cite(row), f"file: {row['file']}", ""]
     if len(body) > MAX_SECTION_CHARS:
         body = body[:MAX_SECTION_CHARS] + f"\n\n…[truncated at {MAX_SECTION_CHARS:,} characters]"
     figures = section_figures(row["collection"], row["slug"], row["ord"])
@@ -926,6 +1009,7 @@ def entry_text(chunks: list[sqlite3.Row], budget: int, rest: str | None = None) 
         if len(body) > budget:
             body = body[:budget] + (f"\n…[truncated; {rest}]" if rest else "\n…[truncated]")
         budget -= len(body)
+        note_returned(c)
         out.append(f"<!-- section_id: {c['id']} · {c['file']} -->\n{body}")
     return "\n\n".join(out)
 
@@ -1068,15 +1152,12 @@ def tool_explain_log(args: dict) -> str:
     return "\n\n".join([head] + out + tail)
 
 
-def other_editions_with(name: str, collection: str | None, document: str | None) -> str:
-    """Where an entry missing from the edition asked about does exist.
-
-    An entry dropped in a later release, or not yet added in an earlier one,
-    is in the index under another edition. Saying which is the answer to
-    "where did this command go"; a list of similar names is not.
-    """
+def editions_with_entry(name: str, collection: str | None, document: str | None) -> list[sqlite3.Row]:
+    """The documents that have an entry called `name` in an edition other than
+    the one a lookup read: other editions of that manual, or any edition of
+    any manual when no document was named."""
     if not CORPUS.has_editions:
-        return ""
+        return []
     keys = entity_keys(name)
     sql = ("SELECT DISTINCT d.* FROM entities e JOIN documents d ON d.slug = e.slug AND d.collection = e.collection"
            f" WHERE e.name_lower IN ({','.join('?' * len(keys))})")
@@ -1088,7 +1169,17 @@ def other_editions_with(name: str, collection: str | None, document: str | None)
     elif collection:
         sql += " AND d.collection = ?"
         params.append(collection)
-    rows = CORPUS.db.execute(sql + " ORDER BY d.collection, d.doc_id, d.version_sort", params).fetchall()
+    return CORPUS.db.execute(sql + " ORDER BY d.collection, d.doc_id, d.version_sort", params).fetchall()
+
+
+def other_editions_with(name: str, collection: str | None, document: str | None) -> str:
+    """Where an entry missing from the edition asked about does exist.
+
+    An entry dropped in a later release, or not yet added in an earlier one,
+    is in the index under another edition. Saying which is the answer to
+    "where did this command go"; a list of similar names is not.
+    """
+    rows = editions_with_entry(name, collection, document)
     if not rows:
         return ""
     scope = document_label(collection, document) if document else "the current edition of any manual"
@@ -1134,6 +1225,423 @@ def suggest_entities(name: str, collection: str | None, document: str | None = N
         "discussed in prose -- falling back to full-text search:\n\n"
         + format_results(search(name, collection=collection, document=document, limit=8), name)
     )
+
+
+# ----------------------------------------------------------------------
+# check_script: the commands and options of a Tcl script, against the entries
+# the reference documents here have.
+#
+# A Tcl command is a line of words; a word is bare, "quoted" or {braced}, and
+# `[...]` in a bare or quoted word runs another command. A braced word is data
+# unless the command makes it a script (if, foreach, proc, ...) or an
+# expression (which may hold `[...]` too). That is all this reads: it does not
+# run the script, expand variables or know a tool's own syntax, so it checks
+# what the script says, not what it will do.
+
+MAX_SCRIPT_CHARS = 200_000
+CHECK_LISTED = 40                      # findings listed per section before "and N more"
+
+TCL_BUILTINS = frozenset("""
+after append apply array binary break catch cd clock close concat continue dict encoding eof error eval exec exit
+expr fblocked fconfigure fcopy file fileevent flush for foreach format gets glob global if incr info interp join
+lappend lassign lindex linsert list llength lmap load lrange lrepeat lreplace lreverse lsearch lset lsort namespace
+open package pid proc puts pwd read regexp regsub rename return scan seek set socket source split string subst switch
+tell time trace try unset update uplevel upvar variable vwait while
+""".split())
+# Commands whose last word is a script, though they are not Tcl's own.
+TCL_BODY_LAST = frozenset({"foreach", "lmap", "foreach_in_collection", "redirect", "uplevel"})
+TCL_OPTION_RE = re.compile(r"-[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*")
+# Documents that document variables, attributes, messages or rules, not commands.
+NOT_COMMAND_DOC_RE = re.compile(r"variable|attribute|message|error|\brules?\b", re.I)
+
+
+class TclWord(NamedTuple):
+    text: str          # without the quotes or braces around it
+    kind: str          # "bare", "quoted" or "braced"
+    line: int
+
+
+def skip_braced(text: str, i: int) -> int:
+    """The index after the `}` matching the `{` at text[i] (the end, if none)."""
+    depth, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def skip_bracket(text: str, i: int) -> int:
+    """The index after the `]` matching the `[` at text[i] (the end, if none)."""
+    depth, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "{":
+            i = skip_braced(text, i)
+            continue
+        if c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def tcl_word(text: str, i: int, line: int) -> tuple[TclWord, int]:
+    """The word starting at text[i], and the index after it."""
+    n, c = len(text), text[i]
+    if c == "{":
+        end = skip_braced(text, i)
+        closed = end <= n and text[end - 1] == "}" and end > i + 1
+        return TclWord(text[i + 1:end - 1 if closed else end], "braced", line), end
+    if c == '"':
+        j = i + 1
+        while j < n and text[j] != '"':
+            j = skip_bracket(text, j) if text[j] == "[" else j + (2 if text[j] == "\\" else 1)
+        return TclWord(text[i + 1:j], "quoted", line), min(j + 1, n)
+    j = i
+    while j < n and text[j] not in " \t\r\n;":
+        if text[j] == "\\":
+            if text[j + 1:j + 2] == "\n":
+                break                      # a backslash-newline ends the word, like a space
+            j += 2
+        elif text[j] == "[":
+            j = skip_bracket(text, j)
+        else:
+            j += 1
+    return TclWord(text[i:j], "bare", line), j
+
+
+def tcl_parse(text: str, line: int = 1) -> list[list[TclWord]]:
+    """The commands of a script, each as its words. `line` numbers the first line."""
+    commands, words = [], []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and text[i + 1:i + 2] == "\n":
+            i, line = i + 2, line + 1
+        elif c in " \t\r":
+            i += 1
+        elif c in "\n;":
+            if words:
+                commands.append(words)
+                words = []
+            line += c == "\n"
+            i += 1
+        elif c == "#" and not words:       # a comment runs to the end of its line, continuations included
+            while i < n and text[i] != "\n":
+                if text[i] == "\\" and text[i + 1:i + 2] == "\n":
+                    line += 1
+                i += 2 if text[i] == "\\" else 1
+        else:
+            word, end = tcl_word(text, i, line)
+            words.append(word)
+            line += text.count("\n", i, end)
+            i = max(end, i + 1)
+    if words:
+        commands.append(words)
+    return commands
+
+
+def tcl_substitutions(text: str, line: int) -> list[tuple[str, int]]:
+    """The scripts inside `[...]` in a word's text, with the line each starts on."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        if text[i] == "\\":
+            i += 2
+        elif text[i] == "[":
+            end = skip_bracket(text, i)
+            out.append((text[i + 1:end - 1 if text[end - 1:end] == "]" else end],
+                        line + text.count("\n", 0, i)))
+            i = end
+        else:
+            i += 1
+    return out
+
+
+class TclScan:
+    """Every command a script runs, however deep: in if/while/for/foreach/proc/
+    catch/switch bodies and in `[...]`. A command is recorded with the options
+    after its name and the line it is on."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int, list[tuple[str, int]]]] = []
+        self.dynamic: list[int] = []          # lines whose command name is computed
+        self.procs: set[str] = set()
+
+    def script(self, text: str, line: int = 1) -> None:
+        for words in tcl_parse(text, line):
+            self.command(words)
+
+    def subst(self, word: TclWord) -> None:
+        if word.kind != "braced":
+            for inner, ln in tcl_substitutions(word.text, word.line):
+                self.script(inner, ln)
+
+    def expr(self, word: TclWord) -> None:
+        for inner, ln in tcl_substitutions(word.text, word.line):
+            self.script(inner, ln)
+
+    def body(self, word: TclWord) -> None:
+        if word.kind == "braced":
+            self.script(word.text, word.line)
+        else:
+            self.subst(word)
+
+    def command(self, words: list[TclWord]) -> None:
+        head, args = words[0], words[1:]
+        name = head.text.removeprefix("::")
+        if head.kind != "bare" or not name or name[0] in "$[" or "[" in name or "$" in name:
+            self.dynamic.append(head.line)
+            for w in args:
+                self.subst(w)
+            return
+        n = len(args)
+        if name == "if":
+            if args:
+                self.expr(args[0])
+            i = 1
+            while i < n:
+                w = args[i]
+                if w.kind == "bare" and w.text == "elseif":
+                    if i + 1 < n:
+                        self.expr(args[i + 1])
+                    i += 2
+                elif w.kind == "bare" and w.text in ("then", "else"):
+                    i += 1
+                else:
+                    self.body(w)
+                    i += 1
+            return
+        if name == "while":
+            for i, w in enumerate(args):
+                (self.expr if i == 0 else self.body)(w)
+            return
+        if name == "for":
+            for i, w in enumerate(args):
+                (self.expr if i == 1 else self.body)(w)
+            return
+        if name == "proc":
+            if args:
+                self.procs.add(args[0].text)
+            if n >= 3:
+                self.body(args[-1])
+            return
+        if name in ("catch", "time") or (name == "eval" and n == 1):
+            for i, w in enumerate(args):
+                (self.body if i == 0 else self.subst)(w)
+            return
+        if name == "namespace" and args and args[0].text == "eval":
+            for w in args[:-1]:
+                self.subst(w)
+            if n > 1:
+                self.body(args[-1])
+            return
+        if name == "expr":
+            for w in args:
+                self.expr(w)
+            return
+        if name == "try":
+            if args:
+                self.body(args[0])
+            i = 1
+            while i < n:
+                if args[i].text in ("on", "trap") and i + 3 < n:
+                    self.body(args[i + 3])
+                    i += 4
+                elif args[i].text == "finally" and i + 1 < n:
+                    self.body(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            return
+        if name == "switch":
+            i = 0
+            while i < n and args[i].kind == "bare" and args[i].text.startswith("-"):
+                last = args[i].text == "--"
+                i += 2 if args[i].text in ("-matchvar", "-indexvar") else 1
+                if last:
+                    break
+            rest = args[i + 1:]
+            for w in args[:i + 1]:
+                self.subst(w)
+            if len(rest) == 1 and rest[0].kind == "braced":
+                for pair in tcl_parse(rest[0].text, rest[0].line):
+                    for k in range(1, len(pair), 2):
+                        self.body(pair[k])
+            else:
+                for k, w in enumerate(rest):
+                    (self.body if k % 2 else self.subst)(w)
+            return
+        if name in TCL_BODY_LAST and args:
+            for w in args[:-1]:
+                self.subst(w)
+            self.body(args[-1])
+            self.record(name, head.line, args[:-1])
+            return
+        self.record(name, head.line, args)
+        for w in args:
+            self.subst(w)
+
+    def record(self, name: str, line: int, args: list[TclWord]) -> None:
+        """A call to a command Tcl does not provide, with the options it was given."""
+        if name in TCL_BUILTINS:
+            return
+        options = []
+        for w in args:
+            if w.kind == "braced":
+                continue
+            if w.text == "--":
+                break
+            if TCL_OPTION_RE.fullmatch(w.text):
+                options.append((w.text, w.line))
+        self.calls.append((name, line, options))
+
+
+def entry_options(hit: sqlite3.Row) -> frozenset[str]:
+    """The options an entry's text shows: every `-word` in it."""
+    text = "\n".join(MD_ESCAPE_RE.sub(r"\1", c["body"]) for c in entry_chunks(hit))
+    # A trailing `_` is where a PDF broke `-through_list` across lines.
+    return frozenset(o.rstrip("_") for o in TCL_OPTION_RE.findall(text))
+
+
+def plural(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def line_list(lines: list[int], cap: int = 6) -> str:
+    seen = sorted(set(lines))
+    shown = ", ".join(map(str, seen[:cap])) + (", …" if len(seen) > cap else "")
+    return ("line " if len(seen) == 1 else "lines ") + shown
+
+
+def check_script(script: str, collection: str | None, document: str | None) -> str:
+    scan = TclScan()
+    scan.script(script)
+    calls = [(n, ln, opts) for n, ln, opts in scan.calls if n not in scan.procs]
+    scope = document_label(collection, document) if document else "the current edition of each manual"
+    if not calls:
+        skipped = f" ({plural(len(scan.dynamic), 'command')} named by a variable)" if scan.dynamic else ""
+        return ("No tool commands in this script" + skipped + ": only Tcl's own commands and the script's own procs, "
+                "which have no reference entry.")
+
+    by_name: dict[str, list] = {}
+    for name, ln, opts in calls:
+        by_name.setdefault(name, []).append((ln, opts))
+    candidates = None
+    unknown, bad_options, abbreviated, documented, no_options, partial = [], [], [], [], [], []
+    for name, uses in by_name.items():
+        hits = find_entities([name.lower()], collection, document)
+        label = f"`{name}`"
+        titles = [(CORPUS.document(h["collection"], h["slug"]) or {"title": h["slug"]})["title"] for h in hits]
+        if not hits or all(NOT_COMMAND_DOC_RE.search(t) for t in titles):
+            where = ""
+            if hits:
+                where = (" It is an entry only in "
+                         + ", ".join(sorted({document_label(h['collection'], h['slug']) for h in hits}))
+                         + ", which documents variables, messages or rules, not commands.")
+            else:
+                other = editions_with_entry(name, collection, document)
+                if other:
+                    where = " It is an entry in " + ", ".join(document_label(r["collection"], r["slug"]) for r in other) + "."
+                elif len(unknown) < 25:
+                    if candidates is None:
+                        scope_sql = (" AND collection = ?" if collection else "") + (
+                            " AND slug = ?" if document else current_only())
+                        candidates = [r[0] for r in CORPUS.db.execute(
+                            f"SELECT DISTINCT name_lower FROM entities WHERE 1 = 1{scope_sql}",
+                            ([collection] if collection else []) + ([document] if document else []))]
+                    close = difflib.get_close_matches(name.lower(), candidates, n=3, cutoff=0.75)
+                    if close:
+                        where = " Did you mean " + ", ".join(f"`{c}`" for c in close) + "?"
+            unknown.append(f"- {label} ({line_list([ln for ln, _ in uses])}): not an entry in {scope}.{where}")
+            continue
+
+        places = "; ".join(f"{document_label(h['collection'], h['slug'])}{entity_pages(h)}" for h in hits)
+        documented.append(f"- {label} -- {places} ({line_list([ln for ln, _ in uses])})")
+        shown = {(h["collection"], h["slug"]): entry_options(h) for h in hits}
+        known: set[str] = set().union(*shown.values())
+        used = [(o, ln) for _, opts in uses for o, ln in opts]
+        if used and not known:
+            no_options.append(label)
+            continue
+        for opt, ln in sorted(set(used), key=lambda x: (x[1], x[0])):
+            if opt in known:
+                # A command several manuals have is checked against all of them
+                # together; say where it is not, since a script is for one tool.
+                have = [key for key, o in shown.items() if opt in o]
+                if len(have) < len(shown):
+                    partial.append(f"- {label} {opt} (line {ln}): in {', '.join(k[1] for k in have)}, not in "
+                                   + ", ".join(k[1] for k in shown if k not in have))
+                continue
+            longer = sorted(k for k in known if k.startswith(opt))
+            if len(longer) == 1:
+                abbreviated.append(f"- {label} {opt} (line {ln}) is the start of `{longer[0]}`")
+                continue
+            if longer:
+                bad_options.append(f"- {label} {opt} (line {ln}): ambiguous, the start of "
+                                   + ", ".join(f"`{k}`" for k in longer[:6]))
+                continue
+            close = difflib.get_close_matches(opt, known, n=3, cutoff=0.6)
+            hint = " Did you mean " + ", ".join(f"`{c}`" for c in close) + "?" if close else ""
+            bad_options.append(f"- {label} {opt} (line {ln}): not an option its entry shows ({places}).{hint}")
+
+    def section(title: str, rows: list[str]) -> list[str]:
+        if not rows:
+            return []
+        more = [f"- …and {len(rows) - CHECK_LISTED} more"] if len(rows) > CHECK_LISTED else []
+        return ["", f"## {title} ({len(rows)})", *rows[:CHECK_LISTED], *more]
+
+    head = (f"{plural(len(by_name), 'command')} checked, used {plural(len(calls), 'time')}, against {scope}: "
+            f"{len(documented)} documented, {len(unknown)} not.")
+    out = [head, *section("Unknown commands", unknown), *section("Unknown options", bad_options),
+           *section("Options only some manuals show (pass `document` to check against one)", partial),
+           *section("Abbreviated options", abbreviated), *section("Documented", documented)]
+    notes = []
+    if no_options:
+        notes.append("Options not checked, because the entry shows none: " + ", ".join(no_options[:20]))
+    if scan.dynamic:
+        notes.append(f"Not checked: {plural(len(scan.dynamic), 'command')} named by a variable or a substitution "
+                     f"({line_list(scan.dynamic)}).")
+    if scan.procs:
+        notes.append("Not checked: procs the script defines (" + ", ".join(sorted(scan.procs)[:20]) + ").")
+    notes.append("An option is checked against the `-words` in its command's entry, so one named only in another "
+                 "command's example there passes; an abbreviation is accepted by many tools, not all. Variable "
+                 "values and what a tool does with the script are not checked.")
+    return "\n".join(out + [""] + notes)
+
+
+def tool_check_script(args: dict) -> str:
+    script = args.get("script")
+    if not isinstance(script, str) or not script.strip():
+        raise ValueError("`script` is required: the Tcl script, as text.")
+    if len(script) > MAX_SCRIPT_CHARS:
+        raise ValueError(f"The script is {len(script):,} characters; the most checked at once is {MAX_SCRIPT_CHARS:,}. "
+                         "Send it in parts.")
+    collection = normalize_collection(args.get("collection"))
+    version_needs_document(args)
+    document = None
+    if args.get("document"):
+        row = resolve_document(args["document"], args.get("version"), collection)
+        document, collection = row["slug"], row["collection"]
+    return check_script(script, collection, document)
 
 
 def tool_list_documents(args: dict) -> str:
@@ -1647,6 +2155,7 @@ TOOL_TITLES = {
     "get_section": "Read a section",
     "lookup_entity": "Look up an entry",
     "explain_log": "Explain a tool log",
+    "check_script": "Check a Tcl script",
     "list_documents": "List documents",
     "get_toc": "Table of contents",
     "compare_versions": "Compare editions",
@@ -1762,6 +2271,30 @@ def build_tools() -> list[dict]:
             },
         },
         {
+            "name": "check_script",
+            "description": (
+                "Check a Tcl tool script against the reference documents: lists every command and "
+                "option it uses, and reports the commands no reference entry has and the options "
+                "their entries do not show -- with line numbers, document and page, and the edition "
+                "that does have a command this one lacks. Use it when asked to write, review or "
+                "port a script, before trusting a command or option from memory. It reads the "
+                "current edition of each manual unless `document` and `version` name the release "
+                "the script is for; a command several manuals share is checked against all of "
+                "them, so pass `document` when the script is for one tool. It checks names, not "
+                "values or what the tool will do."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "script": {"type": "string", "description": "The Tcl script, as text."},
+                    "collection": coll_schema,
+                    "document": doc_schema,
+                    "version": version_schema,
+                },
+                "required": ["script"],
+            },
+        },
+        {
             "name": "list_documents",
             "description": (
                 "List the documents in the corpus with slugs, titles, versions, sizes and whether "
@@ -1859,6 +2392,7 @@ HANDLERS = {
     "get_section": tool_get_section,
     "lookup_entity": tool_lookup_entity,
     "explain_log": tool_explain_log,
+    "check_script": tool_check_script,
     "list_documents": tool_list_documents,
     "get_toc": tool_get_toc,
     "compare_versions": tool_compare_versions,
@@ -1872,8 +2406,12 @@ class MethodNotFound(Exception):
 
 
 def handle_request(method: str, params: dict) -> dict:
+    global CALL_CLIENT
     if method == "initialize":
         asked = params.get("protocolVersion")
+        client = params.get("clientInfo")
+        if isinstance(client, dict) and isinstance(client.get("name"), str):
+            CALL_CLIENT = client["name"][:80]
         try:
             docs = CORPUS.db.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
             scope = f"{docs} document(s) converted from PDF"
@@ -1911,6 +2449,8 @@ def call_tool(params: dict) -> dict:
     handler = HANDLERS.get(name)
     if handler is None:
         raise MethodNotFound(f"tool '{name}'")
+    RETURNED.clear()
+    started = time.perf_counter()
     try:
         result, is_error = handler(params.get("arguments") or {}), False
     except (CorpusMissing, ValueError) as exc:
@@ -1920,6 +2460,7 @@ def call_tool(params: dict) -> dict:
         result, is_error = f"{name} failed unexpectedly; see the server log for the traceback.", True
     # Text tools return a string; image tools return their content blocks.
     content = result if isinstance(result, list) else [{"type": "text", "text": result}]
+    record_call(name, params.get("arguments"), content, is_error, started)
     return {"content": content, "isError": is_error}
 
 
@@ -2220,6 +2761,7 @@ def main() -> int:
         return 0
 
     CORPUS = Corpus(resolve_db(args.db))
+    configure_call_log()
     if CORPUS.available:
         log(f"serving {CORPUS.db_path} ({CORPUS.db_path.stat().st_size / 1048576:.0f} MB)")
     else:

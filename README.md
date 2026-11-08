@@ -52,6 +52,7 @@ API key, no network.
 | `get_section` | the full text of one section, optionally with its neighbours |
 | `lookup_entity` | one command, function, error code or DRC rule, reassembled from all its chunks |
 | `explain_log` | every message code and DRC rule a pasted tool log names, errors first, each with its entry and page |
+| `check_script` | every command and option a Tcl script uses, checked against the reference entries: unknown ones with line numbers and nearest names, known ones with document and page |
 | `list_documents` | the catalog, with versions and coverage |
 | `get_toc` | one document's table of contents |
 | `compare_versions` | what two editions of a manual add, remove or word differently |
@@ -78,6 +79,16 @@ without one, refuses a browser's cross-origin requests unless `--allow-origin`
 names them, and gives each request thread its own read-only database
 connection. It has no TLS: put a reverse proxy in front. It holds the index
 file open, so restart it after `update_corpus.py` replaces the index.
+
+To find out how it does on what people really ask, start it with
+`PDF_TO_RAG_LOG=<file>` in its environment (the `env` block of `.vscode/mcp.json`
+or `.mcp.json`). It then appends one JSON line per tool call (time, tool,
+arguments, sections returned, characters, latency) and logs nothing otherwise.
+The file holds what was searched for and any log pasted into `explain_log`, so
+keep it private. `triage_log.py` turns the logged searches you mark hit or miss
+into `real` questions for `eval_search.py`; `eval_answers.py` runs questions
+through `claude -p` and grades the answers. See "Real use: log, triage, answer"
+in [SKILL.md](SKILL.md).
 
 ## Quick start
 
@@ -211,6 +222,8 @@ useless fragments.
 | `export_chunks.py` | every chunk as one JSON line, for a vector store or another pipeline |
 | `mcp_server.py`, `mcp_smoke_test.py` | serve the index; test the server end to end |
 | `sample_sections.py`, `eval_search.py` | build a question set; score search against it |
+| `triage_log.py` | turn the server's call log into `real` questions by marking searches hit or miss |
+| `eval_answers.py` | run questions through `claude -p` with the server alone and grade the answers, with tokens used |
 
 ## Measured, on one real corpus
 
