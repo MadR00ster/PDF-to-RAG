@@ -220,10 +220,11 @@ shared, one place to look when it breaks.
 - [ ] Per-call log line (JSONL): time, user or token id, tool, query, characters
       returned, latency. This is also the source of real user questions for the
       eval set.
-      Not done here. The log itself is `PDF_TO_RAG_LOG` (the measure-real-use
-      branch). Over HTTP it still needs the token's id in each line, the
-      client's name from a session, and its per-call state kept per request
-      rather than in module globals.
+      Partly done. The log is `PDF_TO_RAG_LOG`, and its per-call state is now
+      per thread, so concurrent HTTP calls log their own sections. Still
+      missing over HTTP: the token's id in each line, and the client's name,
+      which only the `initialize` request carries and this server keeps no
+      session to remember (an HTTP line has no `client`).
 - [x] Health endpoint reporting index path, document count and coverage.
       Done: `GET /health`, 200 with `status` ok or degraded (partial or stale
       index), 503 with no index.

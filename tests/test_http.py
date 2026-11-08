@@ -277,6 +277,52 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(len(answers), 50)
         self.assertEqual(len(set(answers)), 1, "concurrent requests got different answers")
 
+    def test_59h_the_call_logs_state_is_each_threads_own(self):
+        """Over HTTP every request is a thread. The sections a call has
+        returned, and the client that said hello, belong to that thread: one
+        call finishing must not take another's sections, clear them, or put
+        its own client's name on another's line."""
+        server = load_script("mcp_server")
+        server.CORPUS = server.Corpus(self.db)
+        self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
+        log = self.tmp / "threads.jsonl"
+        server.CALL_LOG = log
+        row = lambda n: {"id": n, "collection": "c", "slug": "s", "file": f"docs/s/sections/{n:04d}-x.md"}  # noqa: E731
+        text = [{"type": "text", "text": "answer"}]
+        a_started, b_finished = threading.Event(), threading.Event()
+        failures: list[str] = []
+
+        def a() -> None:                  # a call that is still running while b's finishes
+            try:
+                server.handle_request("initialize", {"protocolVersion": "2025-06-18",
+                                                     "clientInfo": {"name": "client-a"}})
+                server.note_returned(row(1))
+                a_started.set()
+                b_finished.wait(30)
+                server.record_call("search_docs", {"query": "a"}, text, False, 0.0)
+            except Exception as exc:       # noqa: BLE001
+                failures.append(f"a: {exc!r}")
+
+        def b() -> None:
+            try:
+                a_started.wait(30)
+                server.note_returned(row(2))
+                server.record_call("search_docs", {"query": "b"}, text, False, 0.0)
+                b_finished.set()
+            except Exception as exc:       # noqa: BLE001
+                failures.append(f"b: {exc!r}")
+        threads = [threading.Thread(target=a), threading.Thread(target=b)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        self.assertEqual(failures, [])
+        lines = {json.loads(x)["args"]["query"]: json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()}
+        self.assertEqual(lines["b"]["sections"], [2], "a call was given another call's sections")
+        self.assertEqual(lines["a"]["sections"], [1], "a call lost its sections to another call finishing")
+        self.assertEqual(lines["a"]["client"], "client-a")
+        self.assertNotIn("client", lines["b"], "a call was given the name of a client that never made it")
+
     def test_59g_client_settings_are_printed_without_the_token(self):
         r = subprocess.run([PY, str(SCRIPTS / "mcp_server.py"), "--print-client-config", "https://docs.example.com/mcp",
                             "--name", "eda-docs"], capture_output=True, text=True, encoding="utf-8", errors="replace",

@@ -178,8 +178,19 @@ def log(msg: str) -> None:
 CALL_LOG_ENV = "PDF_TO_RAG_LOG"
 CALL_LOG_ARG_CHARS = 2_000
 CALL_LOG: Path | None = None
-CALL_CLIENT: str | None = None
-RETURNED: list[sqlite3.Row] = []        # sections the call in flight has returned
+# What the call in flight has done, kept for the thread it is on. Over HTTP each
+# request is a thread of its own, so one call must not see another's sections,
+# clear them, or be given the name of a client that never made it (a request
+# that is not the `initialize` has no name to give). On stdio there is one thread.
+CALL_STATE = threading.local()
+
+
+def returned() -> list:
+    """The sections the call in flight on this thread has returned so far."""
+    rows = getattr(CALL_STATE, "rows", None)
+    if rows is None:
+        rows = CALL_STATE.rows = []
+    return rows
 
 
 def configure_call_log() -> None:
@@ -193,7 +204,7 @@ def configure_call_log() -> None:
 def note_returned(row: sqlite3.Row) -> None:
     """Remember a section the call in flight is returning, for the call log."""
     if CALL_LOG is not None:
-        RETURNED.append(row)
+        returned().append(row)
 
 
 def clip_arg(value):
@@ -209,7 +220,7 @@ def record_call(name: str, args, content: list[dict], is_error: bool, started: f
         return
     try:
         ids, refs = [], []
-        for row in RETURNED:
+        for row in returned():
             if row["id"] not in ids:
                 ids.append(row["id"])
                 refs.append([row["collection"], row["slug"], "sections/" + row["file"].rsplit("/", 1)[-1]])
@@ -226,8 +237,9 @@ def record_call(name: str, args, content: list[dict], is_error: bool, started: f
         images = sum(1 for b in content if b.get("type") == "image")
         if images:
             entry["images"] = images
-        if CALL_CLIENT:
-            entry["client"] = CALL_CLIENT
+        client = getattr(CALL_STATE, "client", None)
+        if client:
+            entry["client"] = client
         CALL_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(CALL_LOG, "a", encoding="utf-8", errors="replace", newline="\n") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
@@ -235,7 +247,7 @@ def record_call(name: str, args, content: list[dict], is_error: bool, started: f
         log(f"call log dropped, and no more will be written: {exc}")
         CALL_LOG = None
     finally:
-        RETURNED.clear()
+        returned().clear()
 
 
 # How long a check that found the index up to date is trusted before the
@@ -2406,12 +2418,11 @@ class MethodNotFound(Exception):
 
 
 def handle_request(method: str, params: dict) -> dict:
-    global CALL_CLIENT
     if method == "initialize":
         asked = params.get("protocolVersion")
         client = params.get("clientInfo")
         if isinstance(client, dict) and isinstance(client.get("name"), str):
-            CALL_CLIENT = client["name"][:80]
+            CALL_STATE.client = client["name"][:80]
         try:
             docs = CORPUS.db.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
             scope = f"{docs} document(s) converted from PDF"
@@ -2449,7 +2460,7 @@ def call_tool(params: dict) -> dict:
     handler = HANDLERS.get(name)
     if handler is None:
         raise MethodNotFound(f"tool '{name}'")
-    RETURNED.clear()
+    returned().clear()
     started = time.perf_counter()
     try:
         result, is_error = handler(params.get("arguments") or {}), False
