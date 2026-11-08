@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -530,6 +531,33 @@ class UpdateTest(unittest.TestCase):
         self.assertIn("build_search_db.py failed", rep.index)
         self.assertNotIn("candidate is at", rep.index, "the report named a candidate this run did not build")
         self.assertFalse(stale.exists(), "an old candidate was left to be mistaken for this run's")
+
+    def test_53l_a_locked_old_candidate_stops_the_run_with_a_message(self):
+        """On Windows an old candidate held open (a SQLite browser, say)
+        cannot be deleted. That stops the run in its report, before anything
+        is built, and the report names no candidate this run wrote."""
+        uc = load_script("update_corpus")
+        root = self.tmp / "t53l"
+        root.mkdir()
+        db = root / "mcp-index.sqlite3"
+        stale = uc.candidate_path(db)
+        stale.write_bytes(b"refused by an earlier run")
+
+        def locked(path, *args, **kwargs):
+            raise PermissionError(13, "The process cannot access the file because it is being used by "
+                                      "another process", str(path))
+
+        rep = uc.Report(root, db)
+        with unittest.mock.patch.object(Path, "unlink", locked), \
+                unittest.mock.patch.object(uc, "run_step", side_effect=AssertionError("a step ran")):
+            uc.build_and_swap(rep, None, False, False)
+        self.assertIsNotNone(rep.stopped, "the run went on past a candidate it could not remove")
+        self.assertIn(stale.name, rep.stopped)
+        self.assertIn("being used by another process", rep.stopped)
+        self.assertIn("kept as it was", rep.index)
+        self.assertNotIn("candidate is at", rep.index, "the report named a candidate this run did not build")
+        self.assertEqual(stale.read_bytes(), b"refused by an earlier run")
+        self.assertFalse(db.exists(), "an index appeared from a run that built nothing")
 
     def test_53g_a_path_that_would_hide_collections_is_refused(self):
         """PDFs waiting at a corpus root would make it one collection and hide

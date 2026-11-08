@@ -725,8 +725,15 @@ def build_and_swap(rep: Report, questions: Path | None, accept_regression: bool,
         rep.stop(why)
 
     # A candidate an earlier run refused is gone before this one is built, so
-    # whatever the report names as the candidate is this run's.
-    cand.unlink(missing_ok=True)
+    # whatever the report names as the candidate is this run's. If it cannot
+    # go (on Windows, a SQLite browser holding it open), nothing is built, and
+    # the report names no candidate: the one on disk is the earlier run's.
+    try:
+        cand.unlink(missing_ok=True)
+    except OSError as exc:
+        return refuse(f"{cand.name}, left by an earlier run, could not be removed ({exc}); is a SQLite "
+                      "browser or a server holding it open? Close it, or delete the file, and rerun. "
+                      "Nothing was built and the index was not touched", keep=False)
     code, tail = run_step([PY, script("build_search_db.py"), str(root), "--out", str(cand)])
     if code != 0:
         return refuse(f"build_search_db.py failed (exit {code}): {tail[-1] if tail else ''}")
