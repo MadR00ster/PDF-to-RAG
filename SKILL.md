@@ -617,7 +617,7 @@ which pymupdf4llm 1.28 requires.
 | `ocr_figures.py` | Reads the words in figures that have no text of their own (raster images) into `figures.json`, so search can find them. Needs Tesseract's language data. |
 | `build_search_db.py` | Corpus → one stemmed SQLite FTS5 index, figures and every edition included; marks one edition per manual current. `--emit-vscode-config` also wires up VS Code. `--body-without-breadcrumb` and `--ident-index` are experiments, off by default (retrieval-measurement.md). |
 | `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only; `get_page_image` also needs PyMuPDF. |
-| `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
+| `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. `--url` drives a server already running over HTTP. |
 | `sample_sections.py` | Stratified sample of sections to write test questions from; `--figures` for sections with figures. |
 | `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. `--compare` shows what moved between two saved runs. |
 | `export_chunks.py` | Every chunk as one line of JSONL, with its document, edition, breadcrumb, pages and entry, for a vector store or another pipeline. `--current-only`. |

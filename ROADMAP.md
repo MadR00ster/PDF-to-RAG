@@ -203,25 +203,43 @@ shared, one place to look when it breaks.
 
 ### 1. HTTP transport
 
-- [ ] `--http <host:port>` mode in `mcp_server.py`: MCP Streamable HTTP on one
+- [x] `--http <host:port>` mode in `mcp_server.py`: MCP Streamable HTTP on one
       endpoint, JSON-RPC in, JSON out. stdio remains the default.
-- [ ] Bearer-token check on every request; refuse to bind a non-loopback
+      Done: `POST /mcp`, standard library only (`ThreadingHTTPServer`). It
+      answers each message with JSON, or 202 where none is owed; a GET is
+      refused with 405 (no event stream), and no session is kept. A request
+      from a browser (one with an `Origin`) is refused unless `--allow-origin`
+      names it. There is no TLS: a reverse proxy goes in front.
+- [x] Bearer-token check on every request; refuse to bind a non-loopback
       address without a token.
-- [ ] One read-only SQLite connection per thread. `Corpus` holds a single
+      Done: `$PDF_TO_RAG_TOKEN` and/or the lines of `--token-file` (one token per
+      line, at least 16 characters), compared in constant time, on `/health` too.
+- [x] One read-only SQLite connection per thread. `Corpus` holds a single
       shared connection today.
+      Done. The staleness check runs under a lock, one thread at a time.
 - [ ] Per-call log line (JSONL): time, user or token id, tool, query, characters
       returned, latency. This is also the source of real user questions for the
       eval set.
-- [ ] Health endpoint reporting index path, document count and coverage.
-- [ ] `mcp_smoke_test.py --url` to drive the same checks over HTTP.
-- [ ] Emit client configs: VS Code (`servers`, `"type": "http"`) and Cursor
+      Not done here. The log itself is `PDF_TO_RAG_LOG` (the measure-real-use
+      branch). Over HTTP it still needs the token's id in each line, the
+      client's name from a session, and its per-call state kept per request
+      rather than in module globals.
+- [x] Health endpoint reporting index path, document count and coverage.
+      Done: `GET /health`, 200 with `status` ok or degraded (partial or stale
+      index), 503 with no index.
+- [x] `mcp_smoke_test.py --url` to drive the same checks over HTTP.
+- [x] Emit client configs: VS Code (`servers`, `"type": "http"`) and Cursor
       (`mcpServers`, `url`), each with the auth header.
+      Done: `mcp_server.py --print-client-config URL`. The token is not in
+      either: VS Code asks for it, Cursor reads `$PDF_TO_RAG_TOKEN`.
 - [x] Fix `build_search_db.py`: `documents.slug` is the primary key, so two
       collections sharing a slug crash the build. A multi-vendor corpus hits it.
       Done: documents are keyed by collection and slug, and every server
       lookup names both.
 - [ ] Verify both clients accept the server's responses (handshake, tool list,
       image content from `get_figure`).
+      Not done: the settings `--print-client-config` prints follow the two
+      editors' documentation and have not been tried in either.
 
 ### 2. Passage-level returns (the no-model baseline)
 
