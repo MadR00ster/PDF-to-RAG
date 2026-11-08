@@ -778,8 +778,23 @@ nothing and needs only Python on the other machine. Later builds refresh the
 copy, which also keeps the server and the index it reads on the same schema.
 Do not edit the copy. The server reads figures and PDFs from the folder its
 index is in, not from the path the index was built at. Tools: `search_docs`, `get_section`,
-`lookup_entity`, `explain_log`, `list_documents`, `get_toc`, `compare_versions`,
+`lookup_entity`, `explain_log`, `check_script`, `list_documents`, `get_toc`, `compare_versions`,
 `get_figure`, `get_page_image`.
+
+**A script in, its names checked.** `check_script` reads a Tcl script (comments,
+continuations, quotes, braces, `[...]` and the bodies of `if`, `foreach`,
+`proc`, `catch`, `switch` and the like; not variable values), lists every
+command and option it uses, and checks each against the reference entries of the
+edition in use: a command no entry has is reported with the nearest names, or
+with the edition that does have it; an option its command's entry does not show
+is reported with the nearest ones; an abbreviation is accepted and listed. Each
+finding carries its line, and each documented command its document and pages.
+Three limits are stated in its output: an option is taken from the `-words` in
+the entry's text, so one that appears there only in another command's example
+passes; a command several manuals share is checked against all of them together
+(and an option only some show is listed), so pass `document` when the script is
+for one tool; and a name used as a command that is an entry only in a variables,
+messages or rules reference is not counted as documented.
 
 **A log in, the entries out.** `explain_log` takes pasted tool output, finds
 every message code (`CMD-082`) and every design rule named after the word
