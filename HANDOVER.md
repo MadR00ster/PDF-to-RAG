@@ -107,7 +107,9 @@ text:
   `test_editions.py`.
 - **Test numbers already taken:** 27–30 are reserved for T03–T06 and 34 for
   T08. 31, 31b, 32, 33, 35, 35b and 35c are used by T07 and T09. TODO.md's
-  later tasks name 36–44; keep those.
+  later tasks name 36–44; keep those. 53–53k are `update_corpus.py`'s, in
+  `tests/test_update.py` (53h, on `editions.waiting_collections`, is in
+  `test_editions.py`).
 
 ## Things learned the hard way
 

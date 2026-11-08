@@ -70,8 +70,41 @@ Needs Python 3.10 or later: pymupdf4llm 1.28 requires it.
 pip install -r scripts/requirements.txt
 ```
 
-Put the PDFs in `new_docs/` inside a collection folder inside a corpus folder,
-then for each PDF:
+Put the PDFs in `new_docs/` inside a collection folder inside a corpus folder
+(`my-corpus/vendor/new_docs/`), then:
+
+```bash
+python scripts/update_corpus.py my-corpus --dry-run
+python scripts/update_corpus.py my-corpus --emit-vscode-config
+```
+
+The first command prints the plan and changes nothing. The second converts
+every waiting PDF, checks the new documents, and builds the search index. It
+replaces the old index only if the new one passes the smoke test. Run it again
+whenever new PDFs arrive. With `--questions eval/questions.jsonl` it also
+refuses a new index that scores lower on those questions than the old one
+(`--accept-regression` takes it anyway). Each step is printed as the command it
+runs, and a report on one screen ends the run.
+
+It stops instead of guessing. A PDF it cannot decide about stays in
+`new_docs/`, and the report says what it needs: a title the PDF does not
+confirm, a mixed or unclear document shape, or a prose manual while Docling is
+not installed (`--prose-converter convert_manual` uses the light path). Give
+those decisions in a JSON file passed with `--titles` and run it again:
+
+```json
+{"guide.pdf": "Widget User Guide",
+ "commands.pdf": {"title": "Widget Command Reference", "command_level": 2}}
+```
+
+A failing check stops the run before the index is touched. It never replaces
+or deletes a converted document. `python scripts/update_corpus.py --help` has
+the rest.
+
+### The same, step by step
+
+The command above runs these scripts in this order. Run them yourself to
+watch or redo one step. For each PDF:
 
 ```bash
 python scripts/pick_extractor.py my-corpus/vendor/new_docs/*.pdf
@@ -147,6 +180,7 @@ useless fragments.
 
 | script | use |
 |---|---|
+| `update_corpus.py` | every step below, for whatever waits in `new_docs/`, gated on the checker, the smoke test and the eval |
 | `pick_extractor.py` | inspect a PDF and recommend a converter |
 | `convert_manual.py` | PDF to chunks with page numbers, prose or reference by its outline (pymupdf4llm) |
 | `convert_docling.py` | prose PDF to chunks with page numbers and TOC-anchored breadcrumbs (Docling) |
@@ -199,7 +233,7 @@ python tests/run_each.py                   # every test alone, in its own proces
 ```
 
 Plain `unittest`, one file per area: converters, server, figures, checker,
-editions. The fixture PDFs are generated with a known table of contents, so
+editions, logs, update. The fixture PDFs are generated with a known table of contents, so
 nothing is checked in. Run it before changing a converter.
 GitHub Actions runs it on Linux and Windows, with Python 3.10 and 3.13,
 on every push.
