@@ -190,7 +190,8 @@ def main() -> int:
         listed = (client.call("tools/list").get("result") or {}).get("tools", [])
         names = {t["name"] for t in listed}
         check("tools/list", {"search_docs", "get_section", "lookup_entity", "list_documents", "get_toc",
-                             "compare_versions", "get_figure", "get_page_image", "explain_log"} <= names,
+                             "compare_versions", "get_figure", "get_page_image", "explain_log",
+                             "check_script"} <= names,
               f"got {sorted(names)}")
         check("every tool is declared read-only",
               bool(listed) and all((t.get("annotations") or {}).get("readOnlyHint") is True and t.get("title")
@@ -229,6 +230,10 @@ def main() -> int:
             tool("explain_log", {"text": p["log_line"][0]}, f"`{p['log_line'][1]}` · 1 line(s)")
         else:
             print("  n/a   explain_log on a code (no reference here lists message codes or DRC rules)")
+        # Only Tcl's own commands: nothing to look up, and it must say so.
+        tool("check_script", {"script": "set a 1\nputs $a\n"}, "No tool commands")
+        if p["entity"]:
+            tool("check_script", {"script": f"{p['entity']} -zzz_not_an_option\n"}, "1 command checked")
         if p["figure"]:
             image_tool("get_figure", {"figure_id": p["figure"]})
         else:
