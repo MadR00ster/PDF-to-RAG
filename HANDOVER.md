@@ -103,13 +103,16 @@ text:
   PDFs, use `WS.collection(name, "prose", "ref", ...)`.
 - A test that checks a step runs that step itself, in its own folder.
 - New tests go in the file for their area: `test_converters.py`,
-  `test_server.py`, `test_figures.py`, `test_checker.py` or
-  `test_editions.py`.
+  `test_server.py`, `test_figures.py`, `test_checker.py`,
+  `test_editions.py` or `test_usage.py` (the call log's triage and answer
+  grading).
 - **Test numbers already taken:** 27–30 are reserved for T03–T06 and 34 for
   T08. 31, 31b, 32, 33, 35, 35b and 35c are used by T07 and T09. TODO.md's
   later tasks name 36–44; keep those. 53–53l are `update_corpus.py`'s, in
   `tests/test_update.py` (53h, on `editions.waiting_collections`, is in
-  `test_editions.py`).
+  `test_editions.py`). 54–54b are the server's call log, in `test_server.py`;
+  55–55c are `triage_log.py`'s and 56–56c `eval_answers.py`'s, in
+  `test_usage.py`.
 
 ## Things learned the hard way
 

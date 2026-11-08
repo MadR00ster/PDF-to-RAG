@@ -616,10 +616,12 @@ which pymupdf4llm 1.28 requires.
 | `extract_figures.py` | Crops every figure from the source PDFs into `docs/<slug>/figures/` and ties each to its section. Additive; `--dry-run`, `--jobs N`. |
 | `ocr_figures.py` | Reads the words in figures that have no text of their own (raster images) into `figures.json`, so search can find them. Needs Tesseract's language data. |
 | `build_search_db.py` | Corpus → one stemmed SQLite FTS5 index, figures and every edition included; marks one edition per manual current. `--emit-vscode-config` also wires up VS Code. `--body-without-breadcrumb` and `--ident-index` are experiments, off by default (retrieval-measurement.md). |
-| `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only; `get_page_image` also needs PyMuPDF. |
+| `mcp_server.py` | Serves that index to any MCP client over stdio. Standard library only; `get_page_image` also needs PyMuPDF. With `PDF_TO_RAG_LOG=<file>` set it appends one JSON line per tool call (off otherwise). |
 | `mcp_smoke_test.py` | Drives a real MCP handshake and every tool against a built index. |
 | `sample_sections.py` | Stratified sample of sections to write test questions from; `--figures` for sections with figures. |
 | `eval_search.py` | Scores search against a test set: hit@k and MRR per question kind, and what came back for each miss. `--compare` shows what moved between two saved runs. |
+| `triage_log.py` | Reads the server's call log, shows each search with its results, and turns the ones you mark hit or miss into `real` questions. `--summary`, `--list`. |
+| `eval_answers.py` | Runs questions that have a `gold` answer through `claude -p` with the corpus's server alone, grades each answer (correct, unsupported, declined) and reports tokens. `--dry-run`, `--limit`. |
 | `export_chunks.py` | Every chunk as one line of JSONL, with its document, edition, breadcrumb, pages and entry, for a vector store or another pipeline. `--current-only`. |
 | `remap_answers.py` | Carries a question file's answers across a reconversion by matching the old sections' text to the new ones. |
 
@@ -871,6 +873,41 @@ descriptions — is a guess until it moves a number. Build the number first.
 Questions written by someone who has just read the answer share its words, so
 they flatter lexical search. `paraphrase` measures that bias; `real` questions
 are the only ones free of it, so ask the user for some.
+
+### Real use: log, triage, answer
+
+The questions above test search. Whether the user gets the right answer is a
+second thing, and it can only be measured on what they really ask.
+
+1. **Log.** Start the server with `PDF_TO_RAG_LOG=<file>` in its environment
+   (the `env` block of `.vscode/mcp.json` or `.mcp.json`). Each tool call then
+   appends a line: when, tool, arguments, the sections returned (by id and by
+   collection, slug and file), characters, latency, errors, the client's name.
+   It is off unless set and writes nothing to stdout. The file holds what people
+   searched for, and up to 2,000 characters of any log they pasted into
+   `explain_log`: keep it out of version control and shared folders unless
+   everyone who can read it should see that. `triage_log.py --log <file>
+   --summary` counts it, including searches that returned nothing.
+2. **Triage.** `triage_log.py --log <file> --questions <questions.jsonl> --db
+   <index>` shows each distinct search with its results and asks hit, miss,
+   skip or ignore. A hit names the result that answers it; a miss names the
+   right section by id, by `slug file`, or by searching the index. Each goes
+   into the question file as kind `real`, appended and nothing else touched,
+   so `eval_search.py` gives real questions a row of their own. What the agent
+   typed into `search_docs` is usually keywords: the prompt also asks for the
+   question in the user's words (`ask`) and a short answer (`gold`).
+3. **Answer.** `eval_answers.py --db <index> --questions <file> --limit 1`
+   runs each question that has a `gold` answer through `claude -p` with the
+   corpus's server only (no file tools, no other servers, an empty working
+   folder), then grades the answer with a second call: `correct` (matches the
+   gold answer and cites a section that holds it), `unsupported` (an answer
+   that misses it or cites nothing that holds it) or `declined`. Beside each
+   verdict it records whether a gold section was returned by any tool call, so
+   a wrong answer is told apart from a retrieval miss, and the tokens used,
+   answering and grading apart. It spends tokens on every run: start with
+   `--dry-run` and `--limit 1`. The grader is a model reading a short gold
+   answer, so read the `unsupported` ones before believing them, as with
+   search misses.
 
 ## Platform notes
 
