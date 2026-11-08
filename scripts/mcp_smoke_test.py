@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -36,11 +37,14 @@ failures: list[str] = []
 
 
 class Client:
-    def __init__(self, db: Path, server: Path = SERVER):
+    def __init__(self, db: Path, server: Path = SERVER, env: dict | None = None):
+        # The probes below are not anyone's questions. A call log the user's
+        # shell has switched on must not collect them among the real ones.
+        env = env if env is not None else {k: v for k, v in os.environ.items() if k != "PDF_TO_RAG_LOG"}
         self.proc = subprocess.Popen(
             [sys.executable, str(server), "--db", str(db)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", bufsize=1,
+            text=True, encoding="utf-8", bufsize=1, env=env,
         )
         self.next_id = 0
 
@@ -75,6 +79,8 @@ class Client:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+        for pipe in (self.proc.stdout, self.proc.stderr):
+            pipe.close()
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:

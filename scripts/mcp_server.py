@@ -31,6 +31,11 @@ never compete for a question. Any other is read only when a call names it:
 for exactly that release, or an earlier one whose cover says "and later". A
 release no edition covers is refused with the list of those that are here;
 nothing is substituted for it.
+
+Set PDF_TO_RAG_LOG=<file> to append one JSON line per tool call to that file:
+when, which tool, the arguments, the sections returned, how many characters
+and how long. It is off unless set. `triage_log.py` turns what people asked
+into test questions.
 """
 from __future__ import annotations
 
@@ -47,6 +52,7 @@ import time
 import traceback
 import unicodedata
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
@@ -135,6 +141,80 @@ about into over under between within any all some no not
 def log(msg: str) -> None:
     """Diagnostics go to stderr; stdout carries the protocol and nothing else."""
     print(f"[mcp_server] {msg}", file=sys.stderr, flush=True)
+
+
+# An opt-in record of real use: one JSON object per tool call, appended to the
+# file $PDF_TO_RAG_LOG names. Off unless that is set. It is how to learn what
+# people actually ask and what the server answered, which no test set written
+# by someone who had read the answers can say; triage_log.py reads it.
+#
+# Each line: t (UTC), tool, args (strings cut at CALL_LOG_ARG_CHARS), sections
+# (the section ids the call returned, in order), refs (the same sections as
+# [collection, slug, file], which survive an index rebuild when ids do not),
+# chars (text returned), ms (latency), error, and client when the client said
+# who it was. Nothing is ever written to stdout; a log that cannot be written
+# is dropped with one note on stderr and the server goes on answering.
+CALL_LOG_ENV = "PDF_TO_RAG_LOG"
+CALL_LOG_ARG_CHARS = 2_000
+CALL_LOG: Path | None = None
+CALL_CLIENT: str | None = None
+RETURNED: list[sqlite3.Row] = []        # sections the call in flight has returned
+
+
+def configure_call_log() -> None:
+    global CALL_LOG
+    where = os.environ.get(CALL_LOG_ENV, "").strip()
+    CALL_LOG = Path(where).expanduser().resolve() if where else None
+    if CALL_LOG:
+        log(f"logging tool calls to {CALL_LOG}")
+
+
+def note_returned(row: sqlite3.Row) -> None:
+    """Remember a section the call in flight is returning, for the call log."""
+    if CALL_LOG is not None:
+        RETURNED.append(row)
+
+
+def clip_arg(value):
+    if isinstance(value, str) and len(value) > CALL_LOG_ARG_CHARS:
+        return value[:CALL_LOG_ARG_CHARS] + f"…[{len(value)} chars]"
+    return value
+
+
+def record_call(name: str, args, content: list[dict], is_error: bool, started: float) -> None:
+    """Append one line to the call log. Never raises, never touches stdout."""
+    global CALL_LOG
+    if CALL_LOG is None:
+        return
+    try:
+        ids, refs = [], []
+        for row in RETURNED:
+            if row["id"] not in ids:
+                ids.append(row["id"])
+                refs.append([row["collection"], row["slug"], "sections/" + row["file"].rsplit("/", 1)[-1]])
+        entry = {
+            "t": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "tool": name,
+            "args": {k: clip_arg(v) for k, v in args.items()} if isinstance(args, dict) else {"_": repr(args)[:200]},
+            "sections": ids,
+            "refs": refs,
+            "chars": sum(len(b.get("text", "")) for b in content if b.get("type") == "text"),
+            "ms": round((time.perf_counter() - started) * 1000, 1),
+            "error": is_error,
+        }
+        images = sum(1 for b in content if b.get("type") == "image")
+        if images:
+            entry["images"] = images
+        if CALL_CLIENT:
+            entry["client"] = CALL_CLIENT
+        CALL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(CALL_LOG, "a", encoding="utf-8", errors="replace", newline="\n") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    except Exception as exc:
+        log(f"call log dropped, and no more will be written: {exc}")
+        CALL_LOG = None
+    finally:
+        RETURNED.clear()
 
 
 # How long a check that found the index up to date is trusted before the
@@ -703,6 +783,7 @@ def format_results(rows: list[sqlite3.Row], query: str) -> str:
         )
     out = [f'{len(rows)} result(s) for "{query}":\n']
     for i, r in enumerate(rows, 1):
+        note_returned(r)
         out.append(f"### {i}. {r['heading'] or '(untitled section)'}")
         out.append(cite(r))
         figures = section_figures(r["collection"], r["slug"], r["ord"])
@@ -717,7 +798,8 @@ def format_results(rows: list[sqlite3.Row], query: str) -> str:
 
 
 def format_section(row: sqlite3.Row, body: str) -> str:
-    head = [f"# {row['heading'] or '(untitled section)'}", cite(row), f"file: {row['file']}", ""]
+    note_returned(row)
+    head =[f"# {row['heading'] or '(untitled section)'}", cite(row), f"file: {row['file']}", ""]
     if len(body) > MAX_SECTION_CHARS:
         body = body[:MAX_SECTION_CHARS] + f"\n\n…[truncated at {MAX_SECTION_CHARS:,} characters]"
     figures = section_figures(row["collection"], row["slug"], row["ord"])
@@ -884,6 +966,7 @@ def entry_text(chunks: list[sqlite3.Row], budget: int, rest: str | None = None) 
         if len(body) > budget:
             body = body[:budget] + (f"\n…[truncated; {rest}]" if rest else "\n…[truncated]")
         budget -= len(body)
+        note_returned(c)
         out.append(f"<!-- section_id: {c['id']} · {c['file']} -->\n{body}")
     return "\n\n".join(out)
 
@@ -1830,8 +1913,12 @@ class MethodNotFound(Exception):
 
 
 def handle_request(method: str, params: dict) -> dict:
+    global CALL_CLIENT
     if method == "initialize":
         asked = params.get("protocolVersion")
+        client = params.get("clientInfo")
+        if isinstance(client, dict) and isinstance(client.get("name"), str):
+            CALL_CLIENT = client["name"][:80]
         try:
             docs = CORPUS.db.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
             scope = f"{docs} document(s) converted from PDF"
@@ -1869,6 +1956,8 @@ def call_tool(params: dict) -> dict:
     handler = HANDLERS.get(name)
     if handler is None:
         raise MethodNotFound(f"tool '{name}'")
+    RETURNED.clear()
+    started = time.perf_counter()
     try:
         result, is_error = handler(params.get("arguments") or {}), False
     except (CorpusMissing, ValueError) as exc:
@@ -1878,6 +1967,7 @@ def call_tool(params: dict) -> dict:
         result, is_error = f"{name} failed unexpectedly; see the server log for the traceback.", True
     # Text tools return a string; image tools return their content blocks.
     content = result if isinstance(result, list) else [{"type": "text", "text": result}]
+    record_call(name, params.get("arguments"), content, is_error, started)
     return {"content": content, "isError": is_error}
 
 
@@ -1908,6 +1998,7 @@ def main() -> int:
     args = ap.parse_args()
 
     CORPUS = Corpus(resolve_db(args.db))
+    configure_call_log()
     if CORPUS.available:
         log(f"serving {CORPUS.db_path} ({CORPUS.db_path.stat().st_size / 1048576:.0f} MB)")
     else:
