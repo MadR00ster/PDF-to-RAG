@@ -13,6 +13,21 @@ snapshot, so rebuild it after changing the corpus.
   python scripts/build_search_db.py --root <corpus> --emit-vscode-config
   python scripts/mcp_server.py --db <corpus>/mcp-index.sqlite3
 
+To serve several people from one machine, listen over HTTP instead (MCP
+Streamable HTTP: one endpoint, POST /mcp, a JSON-RPC message in and out):
+
+  python scripts/mcp_server.py --db <index> --http 127.0.0.1:8765
+  PDF_TO_RAG_TOKEN=<token> python scripts/mcp_server.py --db <index> --http 0.0.0.0:8765
+  python scripts/mcp_server.py --print-client-config https://docs.example.com/mcp
+
+Every request must carry `Authorization: Bearer <token>` when a token is set,
+from $PDF_TO_RAG_TOKEN or the lines of --token-file; GET /health reports the
+index. Listening on anything but a loopback address without a token is
+refused. There is no TLS here: put a reverse proxy in front of anything that
+leaves the machine. Each request thread reads the index through a connection
+of its own. After build_search_db.py or update_corpus.py replaces the index,
+restart the server, which holds the old file open until then.
+
 Tools:
   search_docs      full-text search across the corpus, BM25-ranked, with citations
   get_section      full text of one chunk, optionally with its neighbours
@@ -44,16 +59,21 @@ import argparse
 import base64
 import difflib
 import hashlib
+import hmac
+import ipaddress
 import json
 import os
 import re
+import socket
 import sqlite3
 import sys
+import threading
 import time
 import traceback
 import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import NamedTuple
 
@@ -158,8 +178,19 @@ def log(msg: str) -> None:
 CALL_LOG_ENV = "PDF_TO_RAG_LOG"
 CALL_LOG_ARG_CHARS = 2_000
 CALL_LOG: Path | None = None
-CALL_CLIENT: str | None = None
-RETURNED: list[sqlite3.Row] = []        # sections the call in flight has returned
+# What the call in flight has done, kept for the thread it is on. Over HTTP each
+# request is a thread of its own, so one call must not see another's sections,
+# clear them, or be given the name of a client that never made it (a request
+# that is not the `initialize` has no name to give). On stdio there is one thread.
+CALL_STATE = threading.local()
+
+
+def returned() -> list:
+    """The sections the call in flight on this thread has returned so far."""
+    rows = getattr(CALL_STATE, "rows", None)
+    if rows is None:
+        rows = CALL_STATE.rows = []
+    return rows
 
 
 def configure_call_log() -> None:
@@ -173,7 +204,7 @@ def configure_call_log() -> None:
 def note_returned(row: sqlite3.Row) -> None:
     """Remember a section the call in flight is returning, for the call log."""
     if CALL_LOG is not None:
-        RETURNED.append(row)
+        returned().append(row)
 
 
 def clip_arg(value):
@@ -189,7 +220,7 @@ def record_call(name: str, args, content: list[dict], is_error: bool, started: f
         return
     try:
         ids, refs = [], []
-        for row in RETURNED:
+        for row in returned():
             if row["id"] not in ids:
                 ids.append(row["id"])
                 refs.append([row["collection"], row["slug"], "sections/" + row["file"].rsplit("/", 1)[-1]])
@@ -206,8 +237,9 @@ def record_call(name: str, args, content: list[dict], is_error: bool, started: f
         images = sum(1 for b in content if b.get("type") == "image")
         if images:
             entry["images"] = images
-        if CALL_CLIENT:
-            entry["client"] = CALL_CLIENT
+        client = getattr(CALL_STATE, "client", None)
+        if client:
+            entry["client"] = client
         CALL_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(CALL_LOG, "a", encoding="utf-8", errors="replace", newline="\n") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
@@ -215,7 +247,7 @@ def record_call(name: str, args, content: list[dict], is_error: bool, started: f
         log(f"call log dropped, and no more will be written: {exc}")
         CALL_LOG = None
     finally:
-        RETURNED.clear()
+        returned().clear()
 
 
 # How long a check that found the index up to date is trusted before the
@@ -226,7 +258,13 @@ STALE_RECHECK = 30.0
 class Corpus:
     def __init__(self, db_path: Path):
         self.db_path = db_path
-        self._db: sqlite3.Connection | None = None
+        # One read-only connection per thread: stdio is one thread, an HTTP
+        # server is one per request. A connection is never shared, so no two
+        # requests wait on each other's statements. What is worked out once
+        # below (the root, the flags, the document table) is the same for
+        # every thread, so two threads finding it out together is harmless.
+        self._local = threading.local()
+        self._stale_lock = threading.Lock()
         self._root: Path | None = None
         self._has_figures: bool | None = None
         self._has_editions: bool | None = None
@@ -241,16 +279,29 @@ class Corpus:
         return self.db_path.is_file()
 
     @property
+    def _db(self) -> sqlite3.Connection | None:
+        """This thread's connection, if it has opened one."""
+        return getattr(self._local, "db", None)
+
+    @_db.setter
+    def _db(self, conn: sqlite3.Connection | None) -> None:
+        """Setting it to None makes this thread open a fresh connection, which
+        is how a test (or a caller that replaced the index) picks up the new file."""
+        self._local.db = conn
+
+    @property
     def db(self) -> sqlite3.Connection:
-        if self._db is None:
+        conn = self._db
+        if conn is None:
             if not self.available:
                 raise CorpusMissing(self.db_path)
-            self._db = sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
-            self._db.row_factory = sqlite3.Row
-            row = self._db.execute("SELECT value FROM meta WHERE key = 'corpus_name'").fetchone()
+            conn = sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            self._local.db = conn
+            row = conn.execute("SELECT value FROM meta WHERE key = 'corpus_name'").fetchone()
             if row and row["value"]:
                 self.name = row["value"]
-        return self._db
+        return conn
 
     def coverage_warning(self) -> str:
         """What to append to an answer when the index cannot be trusted to
@@ -273,11 +324,14 @@ class Corpus:
         the server lives as long as the editor, and a manual reconverted
         after the first search is the case this warning exists for.
         """
-        now = time.monotonic()
-        if self._stale is None or (not self._stale and now - self._stale_checked >= STALE_RECHECK):
-            self._stale = self._compute_staleness()
-            self._stale_checked = now
-        return self._stale
+        # One thread checks at a time: the check reads and hashes files, and
+        # four requests arriving together should not each do it.
+        with self._stale_lock:
+            now = time.monotonic()
+            if self._stale is None or (not self._stale and now - self._stale_checked >= STALE_RECHECK):
+                self._stale = self._compute_staleness()
+                self._stale_checked = now
+            return self._stale
 
     def _compute_staleness(self) -> str:
         try:
@@ -2364,12 +2418,11 @@ class MethodNotFound(Exception):
 
 
 def handle_request(method: str, params: dict) -> dict:
-    global CALL_CLIENT
     if method == "initialize":
         asked = params.get("protocolVersion")
         client = params.get("clientInfo")
         if isinstance(client, dict) and isinstance(client.get("name"), str):
-            CALL_CLIENT = client["name"][:80]
+            CALL_STATE.client = client["name"][:80]
         try:
             docs = CORPUS.db.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
             scope = f"{docs} document(s) converted from PDF"
@@ -2407,7 +2460,7 @@ def call_tool(params: dict) -> dict:
     handler = HANDLERS.get(name)
     if handler is None:
         raise MethodNotFound(f"tool '{name}'")
-    RETURNED.clear()
+    returned().clear()
     started = time.perf_counter()
     try:
         result, is_error = handler(params.get("arguments") or {}), False
@@ -2442,11 +2495,281 @@ def resolve_db(explicit: str | None) -> Path:
     return Path.cwd().resolve() / "mcp-index.sqlite3"
 
 
+def process_message(msg) -> dict | None:
+    """One decoded JSON-RPC message in; the response to send, or None where
+    there is nothing to send (a notification, or a reply to something we
+    never asked). Stdio and HTTP both end up here, so they answer alike."""
+    if not isinstance(msg, dict):
+        # A batch, a bare string, a number. The next request still has to
+        # be answered, and this one is told why it was not.
+        return {"jsonrpc": "2.0", "id": None, "error": {
+            "code": -32600, "message": "Invalid Request: expected one JSON-RPC object (batches are not supported)"}}
+    req_id, method = msg.get("id"), msg.get("method")
+    if method is None:
+        return None  # a response to something we sent; we send no requests
+    params = msg.get("params")
+    if params is not None and not isinstance(params, dict):
+        if req_id is None:
+            return None
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": "Invalid params: expected an object"}}
+    try:
+        response = {"jsonrpc": "2.0", "id": req_id, "result": handle_request(method, params or {})}
+    except MethodNotFound as exc:
+        response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not found: {exc}"}}
+    except Exception as exc:
+        log(traceback.format_exc())
+        response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32603, "message": str(exc)}}
+    return None if req_id is None else response  # a notification is acknowledged by silence
+
+
+# ----------------------------------------------------------------------
+# HTTP: MCP's Streamable HTTP transport, the part a request/response server
+# needs. One endpoint takes a POSTed JSON-RPC message and answers with JSON, or
+# with 202 and no body where the message needs no answer. It opens no event
+# stream (a GET is refused with 405, which the transport allows) and keeps no
+# session, so any request can go to any thread, or to another process.
+
+HTTP_PATH = "/mcp"
+HEALTH_PATH = "/health"
+HTTP_MAX_BODY = 2 * 1024 * 1024
+TOKEN_ENV = "PDF_TO_RAG_TOKEN"
+MIN_TOKEN_CHARS = 16
+
+
+def load_tokens(token_file: str | None) -> list[str]:
+    """The bearer tokens that are accepted: $PDF_TO_RAG_TOKEN, and one per
+    line of the file (blank lines and `#` comments skipped)."""
+    tokens = []
+    if os.environ.get(TOKEN_ENV, "").strip():
+        tokens.append(os.environ[TOKEN_ENV].strip())
+    if token_file:
+        tokens += [ln.strip() for ln in Path(token_file).read_text(encoding="utf-8").splitlines()
+                   if ln.strip() and not ln.lstrip().startswith("#")]
+    if any(len(t) < MIN_TOKEN_CHARS for t in tokens):
+        raise ValueError(f"a token is shorter than {MIN_TOKEN_CHARS} characters. Make one with: "
+                         "python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+    return tokens
+
+
+def split_host_port(spec: str) -> tuple[str, int]:
+    spec = spec.strip()
+    if spec.isdigit():
+        return "127.0.0.1", int(spec)
+    host, sep, port = spec.rpartition(":")
+    if not sep or not port.isdigit():
+        raise ValueError(f"--http takes HOST:PORT (for example 127.0.0.1:8765), not {spec!r}")
+    return host.strip("[]"), int(port)
+
+
+def is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False        # a name, or "" (every interface): reachable from elsewhere
+
+
+def health() -> tuple[int, dict]:
+    """GET /health: what this server is serving, and whether it can be trusted
+    to cover the corpus. 200 even when the index is partial or stale, because
+    answers carry that warning; 503 only where there is no index at all."""
+    try:
+        db = CORPUS.db
+    except CorpusMissing:
+        return 503, {"status": "no index", "index": str(CORPUS.db_path)}
+    meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
+    partial, stale = CORPUS._partial_warning().strip(), CORPUS.staleness_warning().strip()
+    return 200, {
+        "status": "degraded" if partial or stale else "ok",
+        "server": SERVER_VERSION,
+        "index": str(CORPUS.db_path),
+        "built_at": meta.get("built_at"),
+        "documents": db.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"],
+        "chunks": db.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"],
+        "partial": partial or None,
+        "stale": stale or None,
+    }
+
+
+class McpHandler(BaseHTTPRequestHandler):
+    """One request. `tokens` and `origins` are set on a subclass by serve_http."""
+
+    protocol_version = "HTTP/1.1"
+    server_version = "pdf-to-rag-mcp"
+    timeout = 60            # seconds a client may stall mid-request before its thread is let go
+    tokens: tuple[bytes, ...] = ()
+    origins: frozenset = frozenset()
+
+    def log_message(self, format, *args):           # noqa: A002 -- the base class's name
+        log(f"{self.client_address[0]} {format % args}")
+
+    def drain_body(self) -> None:
+        """Read and drop a request body that is about to be refused unread.
+        Closing a connection with the client's body still in flight resets it
+        (on Windows before the client has read the reply). A body too large to
+        drain is left, and that client gets the reset."""
+        length = self.headers.get("Content-Length", "")
+        if length.isdigit() and 0 < int(length) <= HTTP_MAX_BODY:
+            try:
+                self.rfile.read(int(length))
+            except OSError:
+                pass
+
+    def reply(self, status: int, body=None, headers=(), close: bool = False) -> None:
+        if close:
+            self.drain_body()
+        data = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        if body is not None:
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        for key, value in headers:
+            self.send_header(key, value)
+        if close:
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        self.end_headers()
+        self.wfile.write(data)
+
+    def allowed(self) -> bool:
+        """The bearer token, then the Origin. Answers the request itself if not."""
+        if self.tokens:
+            scheme, _, supplied = self.headers.get("Authorization", "").partition(" ")
+            given = supplied.strip().encode("utf-8", "replace")
+            if scheme.lower() != "bearer" or not any(hmac.compare_digest(given, t) for t in self.tokens):
+                self.reply(401, {"error": "a valid bearer token is required"},
+                           [("WWW-Authenticate", 'Bearer realm="pdf-to-rag"')], close=True)
+                return False
+        # A page in a browser can reach a server on the loopback address, and the
+        # transport asks servers to refuse such a request. Clients that are not
+        # browsers send no Origin.
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in self.origins:
+            self.reply(403, {"error": f"origin {origin} is not allowed (see --allow-origin)"}, close=True)
+            return False
+        return True
+
+    def route(self) -> str:
+        return self.path.split("?", 1)[0]
+
+    def do_GET(self) -> None:
+        if not self.allowed():
+            return
+        if self.route() == HEALTH_PATH:
+            try:
+                status, body = health()
+            except Exception as exc:
+                log(traceback.format_exc())
+                status, body = 500, {"status": "error", "detail": str(exc)}
+            self.reply(status, body)
+        elif self.route() == HTTP_PATH:
+            self.reply(405, {"error": "this server does not open an event stream; POST a message"},
+                       [("Allow", "POST")])
+        else:
+            self.reply(404, {"error": "not found"})
+
+    def do_DELETE(self) -> None:
+        if not self.allowed():
+            return
+        if self.route() == HTTP_PATH:
+            self.reply(405, {"error": "there are no sessions to end"}, [("Allow", "POST")])
+        else:
+            self.reply(404, {"error": "not found"})
+
+    def do_POST(self) -> None:
+        if not self.allowed():
+            return
+        if self.route() != HTTP_PATH:
+            return self.reply(404, {"error": "not found"}, close=True)
+        # Refusals before the body is read close the connection: the body is
+        # still on the wire, and would be read as the start of the next request.
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+            return self.reply(415, {"error": "Content-Type must be application/json"}, close=True)
+        protocol = self.headers.get("MCP-Protocol-Version")
+        if protocol and protocol not in KNOWN_PROTOCOLS:
+            return self.reply(400, {"error": f"unsupported MCP-Protocol-Version {protocol}"}, close=True)
+        length = self.headers.get("Content-Length", "")
+        if not length.isdigit():
+            return self.reply(411, {"error": "Content-Length is required"}, close=True)
+        if int(length) > HTTP_MAX_BODY:
+            return self.reply(413, {"error": f"a message is at most {HTTP_MAX_BODY:,} bytes"}, close=True)
+        try:
+            msg = json.loads(self.rfile.read(int(length)).decode("utf-8"))
+        except ValueError:
+            return self.reply(400, {"jsonrpc": "2.0", "id": None,
+                                    "error": {"code": -32700, "message": "Parse error: not JSON"}})
+        response = process_message(msg)
+        if response is None:
+            self.reply(202)
+        else:
+            self.reply(200 if isinstance(msg, dict) else 400, response)
+
+
+def serve_http(spec: str, tokens: list[str], origins: list[str]) -> int:
+    try:
+        host, port = split_host_port(spec)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    if not tokens and not is_loopback(host):
+        print(f"Refusing to listen on {host or 'every interface'} without a token: anyone who can reach the port "
+              f"could read the documentation. Set ${TOKEN_ENV}, or pass --token-file.", file=sys.stderr)
+        return 2
+    handler = type("Handler", (McpHandler,), {"tokens": tuple(t.encode("utf-8") for t in tokens),
+                                               "origins": frozenset(origins)})
+    server_class = type("Server", (ThreadingHTTPServer,), {
+        "address_family": socket.AF_INET6 if ":" in host else socket.AF_INET, "daemon_threads": True})
+    try:
+        httpd = server_class((host, port), handler)
+    except OSError as exc:
+        print(f"Cannot listen on {spec}: {exc}", file=sys.stderr)
+        return 2
+    bound = httpd.server_address[1]
+    shown = f"[{host}]" if ":" in host else (host or "0.0.0.0")
+    log(f"listening on http://{shown}:{bound}{HTTP_PATH} "
+        + ("(bearer token required)" if tokens else "(NO TOKEN: any process on this machine can read the documentation)"))
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+    return 0
+
+
+def client_configs(url: str, name: str) -> str:
+    """The two editors' settings for a server at `url`. The token is never in
+    them: VS Code asks for it (and hides what is typed); Cursor reads it from
+    the environment."""
+    vscode = {
+        "inputs": [{"type": "promptString", "id": "pdf-to-rag-token", "description": "Bearer token for the "
+                    "documentation server", "password": True}],
+        "servers": {name: {"type": "http", "url": url,
+                           "headers": {"Authorization": "Bearer ${input:pdf-to-rag-token}"}}},
+    }
+    cursor = {"mcpServers": {name: {"url": url, "headers": {"Authorization": f"Bearer ${{env:{TOKEN_ENV}}}"}}}}
+    return (f"# VS Code: .vscode/mcp.json\n{json.dumps(vscode, indent=2)}\n\n"
+            f"# Cursor: .cursor/mcp.json (start Cursor with {TOKEN_ENV} set)\n{json.dumps(cursor, indent=2)}\n")
+
+
 def main() -> int:
     global CORPUS
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", help="path to the index built by build_search_db.py")
+    ap.add_argument("--http", metavar="HOST:PORT", help="listen for MCP over HTTP here instead of reading stdio")
+    ap.add_argument("--token-file", metavar="FILE", help="bearer tokens that are accepted, one per line "
+                    f"(with --http; ${TOKEN_ENV} is accepted as well)")
+    ap.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
+                    help="let browser requests from this Origin through (with --http; none are by default)")
+    ap.add_argument("--print-client-config", metavar="URL",
+                    help="print VS Code and Cursor settings for a server at URL, and exit")
+    ap.add_argument("--name", default="docs", help="the server's name in --print-client-config (default: docs)")
     args = ap.parse_args()
+
+    if args.print_client_config:
+        print(client_configs(args.print_client_config, args.name))
+        return 0
 
     CORPUS = Corpus(resolve_db(args.db))
     configure_call_log()
@@ -2454,6 +2777,14 @@ def main() -> int:
         log(f"serving {CORPUS.db_path} ({CORPUS.db_path.stat().st_size / 1048576:.0f} MB)")
     else:
         log(f"warning: no index at {CORPUS.db_path} -- run build_search_db.py")
+
+    if args.http:
+        try:
+            tokens = load_tokens(args.token_file)
+        except (ValueError, OSError) as exc:
+            print(f"Cannot read the tokens: {exc}", file=sys.stderr)
+            return 2
+        return serve_http(args.http, tokens, args.allow_origin)
 
     stdout = sys.stdout
     while True:
@@ -2470,37 +2801,10 @@ def main() -> int:
         except json.JSONDecodeError:
             log(f"ignoring non-JSON input: {line[:120]!r}")
             continue
-
-        if not isinstance(msg, dict):
-            # A batch, a bare string, a number. The next request still has to
-            # be answered, and this one is told why it was not.
-            stdout.write(json.dumps({"jsonrpc": "2.0", "id": None, "error": {
-                "code": -32600,
-                "message": "Invalid Request: expected one JSON-RPC object (batches are not supported)"}}) + "\n")
+        response = process_message(msg)
+        if response is not None:
+            stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
             stdout.flush()
-            continue
-        req_id, method = msg.get("id"), msg.get("method")
-        if method is None:
-            continue  # a response to something we sent; we send no requests
-        params = msg.get("params")
-        if params is not None and not isinstance(params, dict):
-            if req_id is not None:
-                stdout.write(json.dumps({"jsonrpc": "2.0", "id": req_id, "error": {
-                    "code": -32602, "message": "Invalid params: expected an object"}}) + "\n")
-                stdout.flush()
-            continue
-        try:
-            response = {"jsonrpc": "2.0", "id": req_id, "result": handle_request(method, params or {})}
-        except MethodNotFound as exc:
-            response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not found: {exc}"}}
-        except Exception as exc:
-            log(traceback.format_exc())
-            response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32603, "message": str(exc)}}
-
-        if req_id is None:
-            continue  # notification: acknowledged by silence
-        stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-        stdout.flush()
     return 0
 
 

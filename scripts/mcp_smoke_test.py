@@ -11,6 +11,12 @@ on any corpus the skill produces.
   python scripts/mcp_smoke_test.py --db ... -v     # print each tool's output
   python scripts/mcp_smoke_test.py --db ... --server <corpus>/mcp_server.py
                                                    # the copy beside an index
+  python scripts/mcp_smoke_test.py --db ... --url https://docs.example.com/mcp --token <token>
+                                                   # a server already running over HTTP
+
+With --url the server is not started: the same checks run against it. --db is
+still needed, to take the probe terms from, and must be a copy of the index it
+serves. The token may come from $PDF_TO_RAG_TOKEN instead.
 
 Exit code is 0 only if every check passed, so it can gate a rebuild.
 """
@@ -23,6 +29,8 @@ import re
 import sqlite3
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -81,6 +89,46 @@ class Client:
             self.proc.kill()
         for pipe in (self.proc.stdout, self.proc.stderr):
             pipe.close()
+
+
+class HttpClient:
+    """The same four calls over MCP's HTTP transport, to a server already running."""
+
+    def __init__(self, url: str, token: str | None = None):
+        self.url, self.token, self.next_id = url, token, 0
+
+    def post(self, body: str) -> dict | None:
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = urllib.request.Request(self.url, data=body.encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                status, data = response.status, response.read()
+        except urllib.error.HTTPError as exc:      # a refusal still carries a JSON-RPC error to read
+            status, data = exc.code, exc.read()
+        if status == 202 or not data:
+            return None
+        try:
+            return json.loads(data)
+        except ValueError:
+            raise RuntimeError(f"HTTP {status} from {self.url}: {data[:200]!r}")
+
+    def call(self, method: str, params: dict | None = None) -> dict:
+        self.next_id += 1
+        msg = {"jsonrpc": "2.0", "id": self.next_id, "method": method}
+        if params is not None:
+            msg["params"] = params
+        return self.post(json.dumps(msg)) or {}
+
+    def send_raw(self, line: str) -> dict:
+        return self.post(line) or {}
+
+    def notify(self, method: str) -> None:
+        self.post(json.dumps({"jsonrpc": "2.0", "method": method}))
+
+    def close(self) -> None:
+        pass
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -148,6 +196,8 @@ def main() -> int:
     ap.add_argument("--db", required=True)
     ap.add_argument("--server", type=Path, default=SERVER,
                     help="the server to drive (default: the one beside this script)")
+    ap.add_argument("--url", help="test a server already listening over HTTP (the /mcp address) instead of starting one")
+    ap.add_argument("--token", help="bearer token for --url (default: $PDF_TO_RAG_TOKEN)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -156,9 +206,10 @@ def main() -> int:
         print(f"No index at {db} — build it first.", file=sys.stderr)
         return 1
     p = probes(db)
-    print(f"Testing {args.server} against {db.name}\n")
+    print(f"Testing {args.url or args.server} against {db.name}\n")
 
-    client = Client(db, args.server)
+    client = (HttpClient(args.url, args.token or os.environ.get("PDF_TO_RAG_TOKEN")) if args.url
+              else Client(db, args.server))
 
     def tool(name: str, tool_args: dict, expect: str, expect_error: bool = False) -> None:
         resp = client.call("tools/call", {"name": name, "arguments": tool_args})

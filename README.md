@@ -63,6 +63,23 @@ The server retrieves; the client's model reads and answers. A shared server
 that writes the answer itself is planned, not built: see
 [ROADMAP.md](ROADMAP.md).
 
+**For several people on one machine,** it can listen over HTTP (MCP's
+Streamable HTTP, standard library only) instead of being started by each editor:
+
+```bash
+PDF_TO_RAG_TOKEN=<token> python scripts/mcp_server.py --db my-corpus/mcp-index.sqlite3 --http 0.0.0.0:8765
+python scripts/mcp_server.py --print-client-config https://docs.example.com/mcp   # VS Code and Cursor settings
+python scripts/mcp_smoke_test.py --db my-corpus/mcp-index.sqlite3 --url https://docs.example.com/mcp --token <token>
+```
+
+Every request, `GET /health` included, needs `Authorization: Bearer <token>`
+when a token is set (from `$PDF_TO_RAG_TOKEN`, or one per line of `--token-file`;
+16 characters at least). It refuses to listen beyond the loopback address
+without one, refuses a browser's cross-origin requests unless `--allow-origin`
+names them, and gives each request thread its own read-only database
+connection. It has no TLS: put a reverse proxy in front. It holds the index
+file open, so restart it after `update_corpus.py` replaces the index.
+
 To find out how it does on what people really ask, start it with
 `PDF_TO_RAG_LOG=<file>` in its environment (the `env` block of `.vscode/mcp.json`
 or `.mcp.json`). It then appends one JSON line per tool call (time, tool,
