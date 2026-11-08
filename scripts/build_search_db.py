@@ -29,8 +29,10 @@ rename), so a failed run leaves the previous index in place.
 .vscode/mcp.json with paths relative to the corpus folder. The server is one
 standard-library file, so index and server then travel together: the folder
 can be synced to another machine and served there with nothing but Python,
-and no path in its config names the machine that built it. Later builds
-refresh the copy, so the server always matches the index it reads.
+and no path in its config names the machine that built it. Later builds of an
+index inside the corpus refresh the copy, so the server always matches the
+index it reads; an index written outside the corpus (--out elsewhere) leaves
+it alone.
 
 Layout it expects -- either shape works, and both are auto-detected:
 
@@ -740,7 +742,8 @@ def main() -> int:
     )
     ap.add_argument("corpus", nargs="?", help="corpus root, as an argument or as --root")
     ap.add_argument("--root", help="corpus root (default: current directory)")
-    ap.add_argument("--out", help=f"index path (default: <root>/{DEFAULT_DB_NAME})")
+    ap.add_argument("--out", help=f"index path (default: <root>/{DEFAULT_DB_NAME}). An index outside <root> "
+                                  "leaves the server copy at <root> as it is, unless --emit-vscode-config asks for it")
     ap.add_argument("--stats-only", action="store_true", help="report what would be indexed, write nothing")
     ap.add_argument(
         "--emit-vscode-config",
@@ -782,9 +785,14 @@ def main() -> int:
                  body_without_breadcrumb=args.body_without_breadcrumb, ident_index=args.ident_index)
 
     built = not args.stats_only and code != 1 and out_path.exists()
-    # A copy already at the root is refreshed by every build: an index and a
-    # server from different versions of this repo need not agree on the schema.
-    if built and (args.emit_vscode_config or (root / SERVER_NAME).is_file()):
+    # A copy already at the root is refreshed by every build of an index inside
+    # the corpus: an index and a server from different versions of this repo
+    # need not agree on the schema. An index written outside it (a scratch
+    # build, a candidate scored before it replaces the live one) is not the
+    # one that copy serves, so it is left alone; --emit-vscode-config asks
+    # for the copy wherever the index goes.
+    in_corpus = out_path.is_relative_to(root)
+    if built and (args.emit_vscode_config or (in_corpus and (root / SERVER_NAME).is_file())):
         print(f"\nServer copy -> {install_server(root)}")
     if built and args.emit_vscode_config:
         written = emit_vscode_config(root, out_path)

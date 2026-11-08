@@ -471,6 +471,43 @@ class EditionsTest(unittest.TestCase):
         servers = json.loads(config.read_text(encoding="utf-8"))["servers"]
         self.assertEqual(list(servers), ["my-manuals"], "a second server was added for the same index")
 
+    def test_22d_an_index_built_elsewhere_leaves_the_servers_copy_alone(self):
+        """The copy at the corpus root belongs to the index inside the corpus.
+
+        A build refreshes it because an index and a server from different
+        versions of this repo need not agree on the schema. That reasoning
+        holds only for the index the copy serves. A scratch or candidate
+        index written outside the corpus (to try a build, or to score it
+        before it replaces the live one) used to rewrite the live server
+        copy all the same, leaving a server that no longer matched the index
+        beside it. --emit-vscode-config is still an explicit request for the
+        copy, wherever the index goes.
+        """
+        self.use_gadgets("server-copy-elsewhere")
+        installed = self.root / "mcp_server.py"
+        old = "#!/usr/bin/env python3\n# the server this folder was installed with\n"
+        installed.write_text(old, encoding="utf-8")
+
+        scratch = self.tmp / "ScratchIndexes" / "scratch.sqlite3"
+        r = run("build_search_db.py", "--root", str(self.root), "--out", str(scratch))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(scratch.is_file(), "the scratch index was not built")
+        self.assertEqual(installed.read_text(encoding="utf-8"), old,
+                         "an index built outside the corpus rewrote the corpus's server copy")
+        self.assertNotIn("Server copy", r.stdout, "the build says it replaced a copy it left alone")
+
+        r = run("build_search_db.py", "--root", str(self.root), "--out", str(self.root / "inside.sqlite3"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotEqual(installed.read_text(encoding="utf-8"), old,
+                            "an index built inside the corpus did not refresh the copy that serves it")
+        self.assertIn("Server copy", r.stdout)
+
+        installed.write_text(old, encoding="utf-8")
+        r = run("build_search_db.py", "--root", str(self.root), "--out", str(scratch), "--emit-vscode-config")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotEqual(installed.read_text(encoding="utf-8"), old,
+                            "--emit-vscode-config asked for the copy and did not get it")
+
     def test_24_an_older_corpus_is_stamped_and_migrated(self):
         """A corpus converted before editions existed: PDFs beside docs/, no
         doc_id or version in any manifest. `stamp` adds them and keeps the

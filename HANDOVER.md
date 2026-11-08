@@ -113,9 +113,18 @@ text:
   `test_editions.py`). 54–54b are the server's call log, in `test_server.py`;
   55–55c are `triage_log.py`'s and 56–56c `eval_answers.py`'s, in
   `test_usage.py`. 57–58f are `check_script`'s, in `tests/test_check_script.py`.
-  59–59g are the HTTP transport's, in `tests/test_http.py`.
+  59–59h are the HTTP transport's, in `tests/test_http.py`. 22d, in
+  `test_editions.py`, is the server copy an index built outside the corpus must
+  leave alone.
 
 ## Things learned the hard way
+
+- **A build rewrites the server copy at the corpus root.** Scoring a candidate
+  with `build_search_db.py --root <live corpus> --out <scratch>` used to
+  replace the live `mcp_server.py` while the live index stayed old. Now only an
+  index inside the corpus refreshes the copy (test_22d), or
+  `--emit-vscode-config` asks for it. Without `--out`, the build still
+  replaces the live index; `update_corpus.py` is the gated way to do that.
 
 - **Windows.** CI is the only Windows machine. Folder names with a trailing
   space are invalid there. Names differing only in case are one folder.
