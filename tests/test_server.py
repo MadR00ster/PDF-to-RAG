@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -624,6 +625,101 @@ class ServerTest(unittest.TestCase):
         self.assertIn("ref-a", answer)
         # asked for by name, the second one is read
         self.assertIn("ref-b", server.tool_lookup_entity({"name": LONG_ENTRY, "document": "ref-b"}))
+
+    def served(self, db: Path, log=None):
+        """The server over stdio, with $PDF_TO_RAG_LOG set to `log` or not at all."""
+        smoke = load_script("mcp_smoke_test")
+        env = {k: v for k, v in os.environ.items() if k != "PDF_TO_RAG_LOG"}
+        if log is not None:
+            env["PDF_TO_RAG_LOG"] = str(log)
+        return smoke.Client(db, env=env)
+
+    @staticmethod
+    def answer(reply: dict) -> str:
+        return reply["result"]["content"][0]["text"]
+
+    def test_54_the_call_log_is_opt_in_and_records_each_call(self):
+        """The call log is how real questions are collected, so it has to be
+        off until asked for, say what each call returned, and keep stdout to
+        the protocol: the client reads every line of it as a reply."""
+        db = WS.index()
+        quiet = self.tmp / "unset" / "calls.jsonl"
+        client = self.served(db)
+        try:
+            client.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+            self.assertFalse(client.call("tools/call", {"name": "search_docs", "arguments": {
+                "query": "torque the bolts"}})["result"]["isError"])
+        finally:
+            client.close()
+        self.assertFalse(quiet.parent.exists(), "a log was written without being asked for")
+
+        log = self.tmp / "calls" / "real.jsonl"           # its folder does not exist yet
+        long_text = "x" * 5000
+        client = self.served(db, log)
+        try:
+            client.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                       "clientInfo": {"name": "usage-test", "version": "1"}})
+            client.notify("notifications/initialized")
+            found = self.answer(client.call("tools/call", {"name": "search_docs", "arguments": {
+                "query": "torque the bolts evenly", "limit": 3}}))
+            ids = [int(n) for n in re.findall(r"section_id: (\d+)", found)]
+            self.assertTrue(ids, found)
+            read = self.answer(client.call("tools/call", {"name": "get_section", "arguments": {
+                "section_id": ids[0]}}))
+            entry = self.answer(client.call("tools/call", {"name": "lookup_entity", "arguments": {
+                "name": "set_widget_option_03"}}))
+            bad = client.call("tools/call", {"name": "get_section", "arguments": {}})
+            client.call("tools/call", {"name": "explain_log", "arguments": {"text": long_text}})
+            client.call("tools/call", {"name": "nope", "arguments": {}})        # not a tool: no line
+        finally:
+            client.close()
+
+        lines = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([x["tool"] for x in lines],
+                         ["search_docs", "get_section", "lookup_entity", "get_section", "explain_log"])
+        search, section, lookup, failed, explain = lines
+        self.assertEqual(search["args"], {"query": "torque the bolts evenly", "limit": 3})
+        self.assertEqual(search["sections"], ids, "the search's section ids were not logged in order")
+        self.assertEqual(search["chars"], len(found))
+        self.assertEqual(search["client"], "usage-test")
+        self.assertFalse(search["error"])
+        self.assertIsInstance(search["ms"], (int, float))
+        self.assertTrue(search["t"].endswith("+00:00"), search["t"])
+        # refs name the same sections without depending on this index's ids
+        con = sqlite3.connect(db)
+        try:
+            for sid, ref in zip(search["sections"], search["refs"]):
+                collection, slug, file = con.execute(
+                    "SELECT collection, slug, file FROM chunks WHERE rowid = ?", (sid,)).fetchone()
+                self.assertEqual(ref, [collection, slug, "sections/" + file.rsplit("/", 1)[-1]])
+        finally:
+            con.close()
+        self.assertEqual(section["sections"], [ids[0]])
+        self.assertEqual(section["chars"], len(read))
+        self.assertEqual(lookup["sections"], [int(n) for n in re.findall(r"section_id: (\d+)", entry)])
+        self.assertTrue(lookup["sections"], "an entry's sections were not logged")
+        self.assertTrue(failed["error"])
+        self.assertEqual((failed["sections"], failed["refs"]), ([], []))
+        self.assertTrue(failed["chars"] and bad["result"]["isError"])
+        self.assertEqual(explain["args"]["text"], "x" * 2000 + "…[5000 chars]",
+                         "a long argument was logged whole")
+
+    def test_54b_a_log_that_cannot_be_written_is_dropped_not_fatal(self):
+        db = WS.index()
+        blocked = self.tmp / "blocked"
+        blocked.mkdir()                       # a folder, so the file cannot be opened
+        client = self.served(db, blocked)
+        try:
+            client.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+            for _ in range(2):
+                reply = client.call("tools/call", {"name": "search_docs", "arguments": {"query": "torque the bolts"}})
+                self.assertFalse(reply["result"]["isError"], reply)
+            client.proc.stdin.close()
+            client.proc.wait(timeout=10)
+            err = client.proc.stderr.read()
+        finally:
+            client.close()
+        self.assertEqual(err.count("call log dropped"), 1, "the failure was not said once:\n" + err)
 
 
 if __name__ == "__main__":
