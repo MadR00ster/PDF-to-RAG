@@ -193,7 +193,7 @@ class CheckerTest(unittest.TestCase):
     def test_31b_every_copy_of_the_skip_rule_agrees(self):
         """Which folders under docs/ are not documents is decided in three
         places that must not import one another: editions.py for the
-        scripts, check_corpus.py, and (from T22) the server."""
+        scripts, check_corpus.py, and the server."""
         editions, checker = load_script("editions"), load_script("check_corpus")
         server = load_script("mcp_server")
         for name in ("x.old", "x.new", ".x", "_x", "x", "a.b", "x.older", "x.new.bak", "docs"):

@@ -88,7 +88,7 @@ The file holds what was searched for and any log pasted into `explain_log`, so
 keep it private. `triage_log.py` turns the logged searches you mark hit or miss
 into `real` questions for `eval_search.py`; `eval_answers.py` runs questions
 through `claude -p` and grades the answers. See "Real use: log, triage, answer"
-in [SKILL.md](SKILL.md).
+in [references/evaluation-workflow.md](references/evaluation-workflow.md).
 
 ## Quick start
 
@@ -263,8 +263,9 @@ python tests/run_each.py                   # every test alone, in its own proces
 ```
 
 Plain `unittest`, one file per area: converters, server, figures, checker,
-editions, logs, update. The fixture PDFs are generated with a known table of contents, so
-nothing is checked in. Run it before changing a converter.
+editions, logs, update, `check_script` and HTTP. The fixture PDFs are generated
+with a known table of contents, so nothing is checked in. Run it before
+changing a converter.
 GitHub Actions runs it on Linux and Windows, with Python 3.10 and 3.13,
 on every push.
 

@@ -1,99 +1,80 @@
-# Hand-over: carrying out TODO.md
+# Hand-over: working on this repo
 
-Written 2026-10-07 for the next session. The plan in `TODO.md` has been carried out;
-see "Where things stand". The rest of this file is how the work was done and what it
-learned, which a later change to this code will want.
+For whoever changes this code next. `SKILL.md` and `references/` say what the
+pipeline does and why; this file says how the code is laid out, how to work on
+it, what bit earlier sessions, and what is still open.
 
 ## Where things stand
 
-Updated 2026-10-07, after the session that carried out TODO.md.
+Updated 2026-11-09.
 
-- **Branch:** `claude/wizardly-maxwell-6r2cni`, based on `main` at `0e4dd59`.
-  Opened as a pull request against `main` after a review whose ten findings
-  were fixed in one commit ("Fix what the review of this branch found").
-- **Done:** every task in TODO.md except **T23**, which was decided against.
-  Each is marked done in TODO.md with its checkboxes ticked, one commit apiece,
-  CI green on every push (Linux and Windows, Python 3.10 and 3.13).
-- **Tests:** 74, all passing, with 2 skipped (no Tesseract language data, no
-  Docling). `python tests/run_each.py` passes too: every test alone.
-- **Owed, and why:** TODO.md section 4 lists the measurements that need the
-  user's corpus (search comparisons for T10, T11, T16 and T18, furniture for
-  T08, a prose reconversion for T14, Docling for T05). Each row says "not
-  measured:" with what to run. None was invented. Section 5 lists what turned
-  up along the way, including that Docling itself was never run.
-- **Next:** nothing in the plan. Whatever the user does with section 4's
-  numbers is next: T18's flags and T14's routing advice ("under review" in
-  SKILL.md) wait on them.
+- `main` has every merged pull request (#1–#12). 113 tests, 1 skipped where
+  Tesseract's language data is missing; `python tests/run_each.py` passes too.
+- The October 2026 review (`IMPROVEMENT.md`) and the plan that carried it out
+  (`TODO.md`, tasks T01–T26) are finished and were deleted on 2026-11-09. Read
+  them in git history at `935af75`. What they left open is under "Open work"
+  below; T23 (one `collection.json` per collection) was decided against, and
+  its design is in that history for when a fourth per-collection setting makes
+  it worth it.
+- `ROADMAP.md` is the shared answering server. Its HTTP transport is built;
+  the rest waits on the user.
 
 ## How to work
 
-1. One task, one commit (or a few small ones). The full suite passes before
+1. One change, one commit (or a few small ones). The full suite passes before
    each commit, and `python tests/run_each.py` passes before a push that adds
    tests.
-2. Tick the task's boxes and set its **Status** in TODO.md in the same commit.
-3. Push to the branch, then read the CI run with the GitHub MCP tools
-   (`actions_list` with `list_workflow_runs`, filtered to this branch). A red
-   cell, Windows included, is yours to fix before the next task.
-4. A bug fix comes with a test that fails without it. Show that it fails:
+2. Work on a branch and open a pull request against `main`. CI runs Linux and
+   Windows, Python 3.10 and 3.13. A red cell, Windows included, is yours to fix.
+3. A bug fix comes with a test that fails without it. Show that it fails:
    stash `scripts/` (`git stash push -- scripts`), run the new test, pop.
-5. Never write a measurement you did not take. Steps that need the user's
-   corpus go in TODO.md §4.
-6. Put no model names in commits, code or docs. End commit messages with the
-   attribution lines your session's instructions give.
+4. Never write a measurement you did not take. Steps that need the user's
+   corpus go under "Measurements owed" below.
+5. Put no model names in commits, code or docs.
+6. The user's production corpus runs this repo's server and scripts, never
+   bespoke copies. Changing it needs the user's go-ahead.
 
-## What changed under the plan's feet
-
-TODO.md was written before T01, T07 and T09 landed. Where it quotes code
-those tasks changed, find the current code by meaning, not by the quoted
-text:
-
-- **Documents are (collection, slug) now.** `Corpus.document(collection,
-  slug)`, `document_label(collection, slug, title)`, `section_figures(collection,
-  slug, ord)` and `entry_lines(doc_row, name)` all changed signature.
-  `search()` raises if given a `document` without its `collection`. Any query
-  you add to `mcp_server.py` that narrows by slug must narrow by collection
-  too: T22's staleness check and T26's `lookup_entity` budget both touch this
-  code.
-- **The folder name is the slug.** `build_search_db.load_documents` sets
-  `manifest["slug"]` to the folder name in memory, and warns when the
-  manifest's copy differs. Walk `docs/` with `editions.document_dirs(docs)`,
-  never with `glob("*/manifest.json")`.
-- **Converters write to staging.** All three build in
-  `editions.staging_dir(out_root, slug)`, then call
-  `editions.publish(staging, out_dir)`, then `editions.finish(plan)`. New
-  converter code (T14, T15) must follow the same order and never write into
-  `out_dir` directly.
-- **Rules that exist twice on purpose**, each held together by a test:
-  - The skip rule: `editions.skips_name` and `check_corpus.index_skips`
-    (test_31b). T22 adds the server's copy; add it to test_31b.
-  - The collection key: `build_search_db.slugify` and
-    `check_corpus.collection_key` (test_35c).
-  - The version rule (test_20b).
-- **`duplicate-slug` is gone** from `check_corpus.py`. `collection-clash`
-  replaces it, and `hidden-document` is now a warning.
-
-## Structure after the whole plan
+## Structure
 
 - `scripts/_common.py` holds what several scripts share, standard library only:
   `pick_command_level`, `detect_shape`, `looks_like_entry`, `slugify`,
-  `strip_emphasis`, `BREADCRUMB_SEP`, `utf8_console`. `check_corpus.py` and
-  `mcp_server.py` still import nothing from `scripts/`; their copies of a rule
-  are each held to the shared one by a test (test_31b, test_37, test_47, test_50).
+  `strip_emphasis`, `BREADCRUMB_SEP`, `utf8_console`.
+- **Rules that exist twice on purpose.** `check_corpus.py` and `mcp_server.py`
+  import nothing from `scripts/`: the checker so a converter bug cannot pass
+  itself, the server so it is one standard-library file that ships beside its
+  index. Each copy of a rule is held to the shared one by a test:
+  - the skip rule: `editions.skips_name`, `check_corpus.index_skips` and the
+    server's (test_31b)
+  - the collection key: `build_search_db.slugify` and
+    `check_corpus.collection_key` (test_35c)
+  - the version rule (test_20b), and the rest in test_37, test_47 and test_50.
+- **Documents are (collection, slug).** `Corpus.document(collection, slug)`,
+  `document_label`, `section_figures` and `entry_lines` all take both, and
+  `search()` raises if given a `document` without its `collection`. A query
+  added to `mcp_server.py` that narrows by slug must narrow by collection too.
+- **The folder name is the slug.** `build_search_db.load_documents` sets
+  `manifest["slug"]` from it and warns when the manifest's copy differs. Walk
+  `docs/` with `editions.document_dirs(docs)`, never
+  `glob("*/manifest.json")`.
+- **Converters write to staging.** All three build in
+  `editions.staging_dir(out_root, slug)`, then call
+  `editions.publish(staging, out_dir)`, then `editions.finish(plan)`. New
+  converter code follows the same order and never writes into `out_dir`.
 - `convert_manual.py` is both pymupdf4llm converters: `convert` (prose) and
-  `convert_reference`, chosen by `--shape`. `rebuild_reference.py` is a 64-line
+  `convert_reference`, chosen by `--shape`. `rebuild_reference.py` is a thin
   wrapper that keeps its command line. Both read pages with `page_markdown`,
   strip furniture with `join_pages`, cut with `chunk_spans` and read a chunk's
-  pages with `trim_span` and `page_range`: a chunk is on the page its first word
-  is, not the one its leading newline is on.
+  pages with `trim_span` and `page_range`: a chunk is on the page its first
+  word is, not the one its leading newline is on.
 - Every manifest carries `schema_version` and `converter`
   (`scripts/manifest.schema.json`); no converter writes `chars`.
 - `editions.collections_under(path)` is how every command line turns a path
   into collections, and `editions.find_collections` is the one rule for what a
   collection is.
 - The search experiments (`--body-without-breadcrumb`, `--ident-index`) are
-  flags and off. Changing a default is the user's decision, from section 4.
+  flags, off. Changing a default is the user's decision, on measurements.
 
-## Tests: how the suite is laid out
+## Tests
 
 - `tests/_support.py` has the fixture writers and `WS`, a per-process
   workspace. It builds `corpus()`, `index()`, `fig_corpus()`, `hand_corpus()`
@@ -103,20 +84,19 @@ text:
   PDFs, use `WS.collection(name, "prose", "ref", ...)`.
 - A test that checks a step runs that step itself, in its own folder.
 - New tests go in the file for their area: `test_converters.py`,
-  `test_server.py`, `test_figures.py`, `test_checker.py`,
-  `test_editions.py`, `test_usage.py` (the call log's triage and answer
+  `test_server.py`, `test_figures.py`, `test_checker.py`, `test_editions.py`,
+  `test_update.py`, `test_usage.py` (the call log's triage and answer
   grading), `test_check_script.py` or `test_http.py`.
-- **Test numbers already taken:** 27–30 are reserved for T03–T06 and 34 for
-  T08. 31, 31b, 32, 33, 35, 35b and 35c are used by T07 and T09. TODO.md's
-  later tasks name 36–44; keep those. 53–53l are `update_corpus.py`'s, in
-  `tests/test_update.py` (53h, on `editions.waiting_collections`, is in
-  `test_editions.py`). 54–54b are the server's call log, in `test_server.py`;
-  55–55c are `triage_log.py`'s and 56–56c `eval_answers.py`'s, in
-  `test_usage.py`. 57–58f are `check_script`'s, in `tests/test_check_script.py`.
-  59–59h are the HTTP transport's, in `tests/test_http.py`. 22d, in
-  `test_editions.py`, is the server copy that only the index it serves may
-  refresh; 25g there is `editions.publish` putting the old document back when
-  the new build cannot be moved in.
+- **Test numbers.** Each test's number is unique across files; pick the next
+  free one in the area's range and keep its letter series together: 53–53l
+  `update_corpus.py` (53h, on `editions.waiting_collections`, is in
+  `test_editions.py`); 54–54b the server's call log; 55–55c `triage_log.py`;
+  56–56c `eval_answers.py`; 57–58f `check_script`; 59–59h the HTTP transport.
+  22d is the server copy only the index it serves may refresh; 25g is
+  `editions.publish` putting the old document back.
+- test_53i reads the bash blocks under README's "The same, step by step" and
+  SKILL.md's "Adding one document later": a step named there that
+  `update_corpus.py` does not run fails it.
 
 ## Things learned the hard way
 
@@ -134,29 +114,67 @@ text:
 - **`editions.publish` is two renames.** Between them `docs/<slug>/` does not
   exist; if the second fails (Windows, a file held open), the old document is
   renamed back before the error is raised (test_25g).
-
 - **Windows.** CI is the only Windows machine. Folder names with a trailing
   space are invalid there. Names differing only in case are one folder.
   `tempfile` paths come back in 8.3 short form (`RUNNER~1`), so compare paths
   with `os.path.realpath`, never as text.
 - **Editing with a script.** When a scripted edit replaces text, assert that
   each `old` string matches exactly once. If you rerun such a script, guard
-  against replacements whose new text contains the old: one T07 edit went in
-  twice that way, caught by reading the diff.
+  against replacements whose new text contains the old: one edit went in twice
+  that way, caught by reading the diff.
 - **Prove "nothing else changed" with a diff.** Convert every fixture PDF
   with the code before and after (`git stash push -- scripts` to get the old
-  code) and `diff -r` the `docs/` trees. T07 came out byte-identical that
-  way, and T13, T15 and T24 all ask for the same proof.
+  code) and `diff -r` the `docs/` trees.
 - **pymupdf4llm's whole-document markdown** is its page-chunked markdown
-  joined. That holds by construction in 1.28.2, so T14 relies on it and pins
-  it with a test.
+  joined. That holds by construction in 1.28.2; the prose converter relies on
+  it and a test pins it.
 
-## Not settled, but not yours to wait on
+## Open work
 
-- TODO.md §4 lists measurements on the user's corpus. Fill in what you can;
-  for the rest, write "not measured:" and the reason.
-- When asked, the earlier session suggested to the user that T18 (search
-  experiments behind flags) and T24 (removing duplication) are the weakest
-  value for their risk. The user has not changed the plan, so carry them out
-  as TODO.md says: T18's flags stay off by default, and every T24 merge
-  needs its equivalence test.
+### Measurements owed
+
+Each needs the user's corpus or an optional tool, so none was taken. Never
+fill one in with a number you did not measure.
+
+| change | what to measure | how |
+|---|---|---|
+| Docling chunks use their own heading | Do later chunks still list the title first? Docling's anchored share after the fix | Convert a real manual with `convert_docling.py`; rerun `references/extractor-benchmark.md`'s method. Needs Docling (several GB) |
+| Short lines that begin the title are kept | Lines no longer deleted as furniture | `enrich_chunks.py <collection> --dry-run --list-furniture` with `TITLE_SHARE = 0` (the old rule) and with 0.6, diffed; for references, reconvert one and run `check_corpus.py` |
+| Front matter demoted only by its whole heading | Search change | Rebuild the index (`noise` is stored at build time), `eval_search.py --json` before and after, then `--compare` |
+| Entity named inside a question is boosted | Identifier hit@1, every rank that moved | `eval_search.py --json` on indexes built before and after, `--compare`, read every moved question |
+| Page numbers on the light prose path | Strict check and figure links after reconverting prose | Reconvert two or three prose manuals; `check_corpus.py --strict`, the content check, and `extract_figures.py`'s summary against the old conversion |
+| Reference breadcrumbs from the TOC chain | Search change | `eval_search.py --json` before and after reconverting the references, `--compare` |
+| Search experiment flags | Each flag against the default | Build an index per flag and one without, `eval_search.py --json` each, `--compare`; adopt a flag only if identifier hit@1 rises and no kind falls |
+
+Two decisions wait on these: whether either search flag becomes a default,
+and the prose routing SKILL.md marks "under review" (Docling against
+`convert_manual.py`, now that both carry pages).
+
+### Known issues
+
+Noticed, not fixed. Fix one with a test, and delete its line here.
+
+- `convert_docling.py` has never run on a real document here: it is checked
+  only by importing it and by unit tests of its pure functions. Convert one
+  real document with it and read the output before relying on it.
+- `mcp_server.tool_get_section` strips its file argument with `lstrip("./")`,
+  which removes any run of leading dots and slashes, not just a `./` prefix: a
+  name that begins with a dot loses it.
+- `ocr_figures.py` has no test that runs where Tesseract's language data is
+  missing, which includes CI.
+- The HTTP transport answers 400 to an unknown `MCP-Protocol-Version` header
+  even on `initialize`, where the version is still being negotiated.
+- `eval_answers.py` runs `claude -p` with the user's own Claude Code
+  configuration (CLAUDE.md, memory, plugins, hooks) unless `--bare` is passed,
+  and asks its questions one at a time.
+- Over HTTP, a call-log line has no client name (only `initialize` carries it
+  and no session is kept) and no token id.
+- `build_index.py` and `convert_manual.py` docstrings still say "vendor
+  folder"; a collection need not be a vendor.
+- CI uses `actions/checkout@v4` and `actions/setup-python@v5`, which target
+  Node.js 20; GitHub runs them on Node.js 24 for now. Bump them when
+  convenient.
+- Ten older PDFs in production are not converted (they are the entries in its
+  two `superseded.json` files). Converting them through `update_corpus.py`
+  needs the user to choose the prose converter: `convert_manual` matches the
+  existing editions, Docling adds pages but makes comparisons unfair.

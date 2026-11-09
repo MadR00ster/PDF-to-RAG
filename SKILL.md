@@ -64,67 +64,20 @@ script that writes, check the input against the layout above.** If it differs,
 tell the user what you found and choose an approach with them. Don't force the
 input into this layout, and don't run the pipeline anyway to see what breaks.
 
-Three shapes seen so far:
+`references/unusual-inputs.md` has the three shapes met so far (scattered PDFs,
+a vendor HTML help folder with the PDFs alongside, and a corpus built by
+something else) and what each script damages when the layout differs. Read it
+before touching one. The short version:
 
-- **Scattered PDFs**, in nested folders or with copies of the same file. That is
-  the case the scripts handle, once the PDFs are gathered into one collection
-  folder.
-- **A vendor HTML help folder with the PDFs alongside.** One example is an
-  Oxygen WebHelp output built from DITA:
-  - one folder per manual, split into topic subfolders
-  - every PDF gathered in one `pdf/` folder, named after its manual's folder
-    (`avalon_maskview_ug/` ↔ `pdf/avalon_maskview_ug.pdf`)
-  - `index.html` redirecting to a landing page
-  - a table of contents that exists only as per-node JavaScript fragments
-    (`oxygen-webhelp/app/nav-links/json/tocId-*.js`), though a top-level
-    `sitemap.html` may also hold it
-
-  Asked whether the HTML and PDFs hold the same text, an agent reported that
-  they do: the same manual rendered twice, with the PDF adding only page
-  furniture. That answer came without numbers. The PDFs on hand may also cover
-  only some of the manuals, so some manuals may exist only as HTML. Other
-  vendors ship custom help trees that look like neither.
-- **An existing corpus built by something else**: an earlier version of this
-  skill, the deleted `update.ps1` (which moved PDFs and deleted `docs/<slug>`
-  folders), an HTML-based RAG skill, or hand edits. An agent asked to update one
-  such corpus reported that the layout matched this skill's for none of its
-  documents. `scripts/check_corpus.py` is read-only, so run it first: it says
-  which documents meet the contract and where the rest fall short.
-
-What breaks, and what it damages:
-
-- **Source PDFs are looked for only in `source/` and beside `docs/`.** Each
-  manifest records `source_pdf` as a bare filename, and `build_index.py`,
-  `extract_figures.py`, `ocr_figures.py`, `check_corpus.py` and
-  `get_page_image` all resolve it against those two places. When the PDFs live
-  elsewhere, every document looks unaccounted for, and figures and page images
-  fail.
-- **Converters write to `docs/` in the PDF's collection by default**: the
-  folder the PDF is in, or the one above when that folder is `new_docs/` or
-  `source/`. In a help folder that means inside the vendor's install tree.
-  Pass `--out-root`.
-- **`enrich_chunks.py` rewrites section files and `manifest.json` in place, with
-  no backup.** Its furniture pass deletes `Feedback` lines, lines matching the
-  document's own title that recur in at least 3 sections, and the bare page
-  numbers and `Chapter N:` headers within 3 lines of either. A line that only
-  begins the title is kept: it has to start with the title, or cover at least
-  60% of it. That is right for PDF page headers and footers; on text another
-  tool produced it can still delete a short line that happens to be most of
-  the title. Run `--dry-run --list-furniture` first on anything this skill did
-  not convert, to see every distinct line it would delete, and back the folder
-  up.
-- **`build_index.py` replaces `docs/index.json` and `docs/README.md` outright**,
-  and stops with an error on a manifest missing `title`, `source_pdf`,
-  `page_count` or `sections`.
-- **No script reads HTML.** Treating the HTML as a duplicate is safe only for
-  manuals whose PDF is actually there.
-
-For DITA-built help, the HTML is probably the better source even when the PDF
-exists: exact heading hierarchy, no page furniture, figures already as image
-files, real tables. What it lacks is page numbers, which could be recovered by
-matching each section's text against the PDF's pages. This is unmeasured.
-Adaptive input handling is planned, and waits on a real HTML help folder to
-build and test against.
+- On a corpus that already exists, run `scripts/check_corpus.py` first. It is
+  read-only and says which documents meet the contract.
+- Source PDFs are looked for only in `source/` and beside `docs/`, and the
+  converters write to `docs/` in the PDF's own collection unless given
+  `--out-root`.
+- `enrich_chunks.py` rewrites section files and `manifest.json` in place, with
+  no backup. On anything this skill did not convert, run `--dry-run
+  --list-furniture` first and back the folder up.
+- No script reads HTML.
 
 ## Workflow
 
@@ -243,86 +196,33 @@ regions of the same manual.
 
 ## Editions
 
-A manual released every year is several PDFs saying nearly the same thing.
-Index two of them side by side and every question is answered twice, with
-nothing in the ranking to say which answer is the release the user runs.
-Convert only the newest and nobody can ask about the one they are still on.
+Each converted release of a manual is its own document, an **edition**, so
+search answers from one release instead of every release at once. Two manifest
+fields tie the editions together: `doc_id` names the manual they share (by
+default the slug without its release), and `version` is the tool release the
+document applies to.
 
-So each converted release is its own document, an **edition**, and two manifest
-fields tie them together:
-
-- `doc_id` names the manual every edition shares (`tshell-ref`). It defaults
-  to the slug without its release (`tshell-ref-2026-2`); `--doc-id` sets it.
-- `version` is the tool release the document applies to, as the PDF's cover
-  prints it. `version_and_later` is set when the cover says "and later".
-
-**Read the version from the cover, not the filename.** On one corpus of 44
-PDFs, twelve filenames carried no version, and two named a later release than
-their cover. Those two covers read "Software Version 2023.1 and later": the
-vendor ships the manual unchanged with every release and renames the file. So
-a version is not "which release of the documentation is this" but "which tool
-release does this document apply to", and "and later" is recorded with it
-rather than thrown away.
-
-The converters read the first three pages and record a version only when it is
-unambiguous. When the cover names two, when the filename names an earlier
-release than the cover, or a different one where the cover makes no "and
-later" claim, `version` is left out and the converter says why. Set it with
-`--version` (`2023.1+` for "2023.1 and later"). A manual with one edition does
-not need one; a second edition cannot be ordered without it, and the index
-build stops.
-
-**One edition per manual is current**: the newest, unless
-`<collection>/current_versions.json` pins another by `doc_id`. Search and
-`lookup_entity` read current editions only, so the default result is what it
-was with one release converted. Any other edition is read when a call names
-it: `document` (a slug, or a doc_id) with `version`. Every result names its
-version, and one from a non-current edition says so.
-
-**`version` on a call is the tool release the user is on.** It selects the
-edition for exactly that release. Failing that, it selects the nearest earlier
-edition if that one says "and later": that is the document's own claim to
-cover what follows it, until the next edition. An edition for 2023.1 "and
-later" answers for 2025.2; one for 2026.1 that makes no such claim does not
-answer for 2026.2.
-
-**A release no edition covers is refused, never approximated.** The server
-answers with the editions it does have. An earlier edition that does not claim
-to cover later releases is a different document, and serving it would be a
-guess the caller cannot see. A pin works the same way: it names the release in
-use, and one that no edition covers stops the index build and leaves the
-previous index in place.
-
-**Vendors reuse filenames** (`ptug.pdf` every release). A PDF from `new_docs/`
-whose name is already in `source/` is filed with its version on the end
-(`ptug_Y-2027.03.pdf`), and the manifest records that name. The same file
-dropped in twice is refused: it is not an edition.
-
-**Comparing editions is done by the server, on the whole text.**
-`compare_versions` lists the entries (or, for prose, the headings) added and
-removed between two editions, and with `name` compares one entry line by line.
-Do not compare by reading two lookups: `lookup_entity` returns the first
-40,000 characters of an entry, 29 entries in one reference are longer, and two
-of those that differ near the end look identical that far in. What it reports
-is what the manuals say. That is not a release note: a manual reworded is not
-a tool changed, and a tool can change without its manual. Say which it is.
-
-It reads prose and code differently. In prose, emphasis marks, quote style and
-spacing change with the vendor's template and are ignored. Code spans and
-fenced code are compared exactly as written: `*foo*` in a command is a
-wildcard, not emphasis. A line of code that differs only in spacing or quote
-style is listed as that, on its own, because one name added to an aligned
-block moves every other line in it.
-
-Two things it does not do yet. It compares exact lines, so an edition whose
-page footers survived conversion shows them as differences. And for prose it
-compares headings only; to compare a topic, search each edition.
+- **Read the version from the cover, not the filename.** Vendors ship a manual
+  unchanged with later releases and rename the file. "2023.1 and later" is
+  recorded as `version_and_later`. When the cover is ambiguous the converter
+  leaves `version` out and says why; set it with `--version` (`2023.1+` for
+  "and later"). A second edition without a version stops the index build.
+- **One edition per manual is current**: the newest, unless
+  `<collection>/current_versions.json` pins another by `doc_id`. Search and
+  `lookup_entity` read current editions only. Any other edition is read when a
+  call names it with `document` and `version`.
+- **`version` on a call is the tool release the user is on.** It selects the
+  edition for exactly that release, or else the nearest earlier one that says
+  "and later". **A release no edition covers is refused, never approximated.**
+- **Compare editions with `compare_versions`**, which reads the whole text,
+  never by reading two lookups (`lookup_entity` cuts long entries). What it
+  reports is what the manuals say, not a release note.
 
 `scripts/editions.py status <corpus>` shows every manual, its editions, which
-is current and what is waiting. For a corpus converted before any of this,
-`editions.py stamp <collection>` adds `doc_id` and `version` to the manifests
-(originals kept under `.rebuild-backup/`), and `editions.py migrate` moves the
-PDFs into `source/`.
+is current and what is waiting; `stamp` and `migrate` bring a corpus converted
+before editions up to date. The reasons, the edge cases (reused filenames,
+pins, how prose and code are compared) and the limits are in
+`references/editions.md`.
 
 ## Two document shapes
 
@@ -441,64 +341,21 @@ furniture.
 ## Figures
 
 A manual's diagrams carry what its prose leaves out, and a text extractor turns
-them into label soup — `<!-- Start of picture text -->SoC<br>CPU<br>…` — or into
-nothing at all when the figure is a raster image. Extract them as images and
-let the model look.
+them into label soup or into nothing. Extract them as images and let the model
+look: `scripts/extract_figures.py <collection>` crops every figure into
+`docs/<slug>/figures/` and records page, box, caption and drawn labels in
+`figures.json`, touching nothing the converter wrote. `scripts/ocr_figures.py`
+then reads the words in raster figures so search can find them.
 
-`scripts/extract_figures.py <collection>` reads each source PDF with the layout
-model pymupdf4llm itself uses, crops every figure into `docs/<slug>/figures/`,
-and records page, box, caption and drawn labels in `figures.json`. It touches
-nothing the converter wrote.
+**A figure belongs to a section only on evidence**: its caption appearing in the
+section, else its page where only one section is on it, else the paragraph
+above it (never on a reference rebuilt one chunk per entry). Otherwise it stays
+unattached and is served by page. The server shows a figure with `get_figure`
+and any page with `get_page_image`.
 
-**A figure belongs to a section only on evidence**, and which evidence there is
-depends on what the converter left behind. Its own caption appearing as a line
-of the section is exact: 331 of 331 captioned figures in one Tessent guide, 454
-of 454 in a Synopsys one. Failing that:
-
-- **Its page, where the chunks carry page numbers** (every converter here) and
-  the page belongs to one section. Checked against the
-  caption: 100% agreement on an unshared page, 76.7% where one entry ends and
-  the next begins on it — so a shared page ties nothing.
-- **The paragraph above it**, where the page ties nothing or the chunks carry
-  none: found just after the previous figure's section, or else exactly once in
-  the document. Checked
-  against the caption, that is 96–99% right on documents chunked by heading —
-  and 5.8% on a command reference rebuilt into one chunk per entry, where a bold
-  caption starts its own chunk and strands the paragraph above it in the
-  previous one. So it is never used on a reference rebuilt one chunk per entry.
-
-Otherwise the figure stays unattached and is served by page — a guessed section
-would present a diagram as illustrating text it does not.
-
-Traps, each met on a real corpus:
-
-- A sentence citing a figure ("Figure 59 illustrates …") starts like a caption.
-  A caption follows its number with punctuation or a capitalised title.
-- Synopsys sets "Figure 1" and its title apart with a tab, so a caption box's
-  first line is the bare label; join the next line.
-- The layout model's raw box clips vector drawings at their edges. Grow it the
-  way pymupdf4llm does before cropping.
-- Note icons (~15 pt) and horizontal rules (~3 pt tall) come back as pictures.
-- The model costs ~0.2 s a page, so skip pages with no sizeable image and no
-  drawing in the body — ignoring the panel Synopsys paints behind every page's
-  text area, which otherwise sends every page through.
-- Its ONNX sessions take a thread per core, so parallel jobs fight: one guide
-  took 283 s alone and 1,830 s as one of four jobs. `--jobs` caps each job's
-  share, installed before the model is imported — the sessions are created on
-  import, and importing pymupdf4llm triggers it. Installed after, the cap
-  silently did nothing; installed first, another guide went from 1,552 s to 82 s.
-
-The server shows a figure with `get_figure` and any page with `get_page_image`,
-and `get_section` lists a section's figures by id.
-
-Captions and drawn labels are indexed with their section, and measured they add
-nothing: the caption is already in the section's text, and so, as picture
-soup, are most vector figures' labels. What a raster figure says is invisible to
-search until `scripts/ocr_figures.py` reads it — that took questions answered by
-a figure from 14 of 19 in the top five to 18 of 19, and moved no text question
-out of it. Noisy OCR is enough; search needs only some of the words. With that
-in place, written figure descriptions had one question left to win and were not
-generated — the model looks at the figure itself through `get_figure`.
+`references/figures.md` has the measurements behind each rule and the traps met
+on real corpora (captions that are citations, clipped vector drawings, icons
+returned as pictures, the layout model's threads).
 
 ## The output contract
 
@@ -512,69 +369,15 @@ failures. A new way of converting is fit to replace an existing one when:
 
 That is how a converter gets replaced: on evidence, not because its output
 looks right. `check_corpus.py` shares no code with the converters, so a bug in
-one cannot pass itself.
+one cannot pass itself. It checks that the metadata is right, not just present:
+breadcrumb ancestors against the TOC, owning entities against the TOC and the
+chunk's text, and sampled PDF pages against the chunks that claim them.
+`--strict` rejects documents without pages: they cannot be cited or audited.
 
-A document is its folder: the folder's name is its slug in every tool. The
-manifest's `slug` is a copy, and the checker warns when the two differ.
-
-`scripts/manifest.schema.json` describes the manifest: the fields the builders
-read are required, the rest are optional, and a manifest may carry others.
-Every converter here writes `schema_version` and a `converter` record (the
-script, the extractor and its version, when, and whether it wrote the
-breadcrumbs itself), so a wrong page or label is traced to what produced it and
-`enrich_chunks.py` knows which breadcrumbs to leave alone.
-
-Where a value is stored twice, one copy wins:
-
-- **breadcrumb:** the manifest. The chunk's first line renders it for a reader
-  of the chunk alone, and the converters and `enrich_chunks.py` write both.
-- **slug:** the folder name.
-- **which edition is current:** decided from the manifests and
-  `current_versions.json` when an index is built. `index.json` and the search
-  index are both derived from them, and the checker warns when either is stale.
-- **a section's length:** not stored. Compute it from the file. A manifest from
-  before this still holding `chars` loses it when `enrich_chunks.py` rewrites
-  the section, and `chars-mismatch` reports it until then.
-
-Editions are part of it. A manual with two editions needs a version on each
-that orders them, no two the same, and any pin has to name one of them; each
-of those fails the check because each stops the index build. Two documents
-with one title and different `doc_id`s are warned about: if they are releases
-of one manual, both answer every search.
-
-It checks what the index builders and server read, and whether the metadata
-is right, not just present:
-
-- **Breadcrumb ancestors must be TOC entries that contain one another.** Where
-  a chunk has pages, each ancestor's TOC page span must also overlap them.
-- **An owning entity must be a TOC entry** whose span overlaps the chunk's
-  pages, and whose name appears in the chunk's text.
-- **Sampled PDF pages must find their words in the chunks that claim them.**
-  That tests the page numbers and catches dropped text together.
-- **Page furniture must be gone**, including page-numbered footers.
-
-On its first run the checker found real mislabels, all in chunks that passed
-every earlier test:
-
-- A Docling `anchored` breadcrumb matched a same-titled TOC entry 100 pages
-  away.
-- The heading walk kept a preface as the parent of chapter 1.
-- 3,070 chunks of one reference still carried Tessent's page footer.
-
-It cannot test idempotency. That needs a converter run twice, which the
-test suite in `tests/` does.
-
-Without page numbers it is much weaker:
-
-- The content check compares against the whole document, so it catches only
-  text lost wholesale.
-- Wrong breadcrumbs mostly pass. On the old heading walk, the nesting and
-  order checks flagged 768 chunks. Locating each chunk's page in the PDF showed
-  about 1,700 with a wrong parent: most wrong parents still nest correctly in
-  the TOC.
-
-`--strict` therefore rejects documents without pages, and it should: they
-cannot be cited or audited.
+A document is its folder: the folder's name is its slug in every tool.
+`scripts/manifest.schema.json` describes the manifest. Which copy wins when a
+value is stored twice, what the checker found on its first run, and how much
+weaker it is without page numbers are in `references/output-contract.md`.
 
 ## Verification protocol
 
@@ -640,42 +443,14 @@ python scripts/update_corpus.py "<corpus>" --questions "<eval>/questions.jsonl"
 ```
 
 `update_corpus.py` runs the sequence below for every PDF waiting in any
-collection, printing each step as the command it is, and stops where a step
-would have to guess:
-
-- **Routing.** It takes `pick_extractor.py`'s verdict (the same function the
-  pre-flight prints from) and converts only what the verdict settles: a
-  reference whose command level the converter and the pre-flight agree on, and
-  prose, with `convert_docling.py` where Docling is installed or
-  `convert_manual.py` under `--prose-converter convert_manual`. A new edition
-  takes the converter its manual's other editions were converted with, as the
-  paragraph on editions below asks. These wait in
-  `new_docs/`, each with the decision it needs:
-  - a mixed document
-  - one with no outline or no text layer
-  - a level the two disagree on
-  - anything `editions.py` refuses
-  - a PDF whose title the PDF does not confirm. The metadata title counts if
-    the first pages print it; failing that, the cover's largest text counts if
-    later pages print it as a line of its own, as a running title. A product
-    name set largest on the cover is only part of the footer line that names
-    the manual, so it does not count.
-
-  The decisions go in a `--titles` JSON file, keyed by filename.
-- **Nothing is replaced.** It never passes `--replace` and never deletes. A
-  PDF whose `docs/<slug>` exists waits.
-- **Gates.** `check_corpus.py --strict` runs on the new documents. A FAIL stops
-  the run before any index is built; warnings are counted, and `--strict`
-  makes them stop it too. The index is built as a candidate beside the live
-  one and smoke-tested. With `--questions`, it is also scored against the
-  current index. It replaces the current index only if neither hit@5 nor MRR
-  drops (`--accept-regression` overrides).
-- **Resuming.** The new documents are those the index does not hold as they
-  are on disk, so a rerun after a stop carries on. A document finished earlier
-  is checked and indexed, not enriched or re-extracted again.
-
-Report the table it ends with (chunks, % with pages, % with an entity, warnings
-per document), what waits and why, and whether the index was replaced.
+collection, printing each step as the command it is. It stops where a step
+would have to guess (a mixed document, an unconfirmed title, a command level
+in doubt) and leaves that PDF in `new_docs/` with the decision it needs, which
+goes in a `--titles` JSON file. It never replaces or deletes a converted
+document. A failing check stops it before any index is built, and the new
+index replaces the live one only after the smoke test and, with
+`--questions`, only if neither hit@5 nor MRR drops. Report the table it ends
+with, what waits and why, and whether the index was replaced.
 
 By hand, once `pick_extractor.py` has said what shape the document is, the
 sequence is:
@@ -692,62 +467,13 @@ python scripts/mcp_smoke_test.py --db "<corpus>/mcp-index.sqlite3"
 ```
 
 The last two are the ones people skip: without them the server keeps answering
-from the corpus as it used to be.
+from the corpus as it used to be. None of these needs `--slug`; a slug chosen
+by hand makes a second edition a different manual. A test fails when this
+sequence names a script `update_corpus.py` does not run.
 
-None of these needs `--slug`: the converters name a document after its PDF with
-the release on the end (`widget-ref-2026-1`), which is what makes a second
-edition share the first's `doc_id`. A slug chosen by hand for one often lacked
-that ending, and the two became different manuals that both answered every
-search. Every command above also takes the corpus root in place of `<collection>`
-and runs each collection under it (`--only` and `--skip` apply across them).
-
-Read what the converter prints first: the version it took from the cover, the
-`doc_id`, and whether that makes this a new manual or an edition of one already
-here. A new release of a manual already converted needs nothing more — it
-becomes the current edition when the index is rebuilt, and the older one stays
-answerable by version. Convert it with the same converter as the edition it
-joins, or a comparison between them measures the converters.
-
-To keep an edition as a PDF only, delete `docs/<its slug>/` and add
-`{"file": "old.pdf", "superseded_by": "<current slug>"}` to the collection's
-`superseded.json` — `build_index.py` then lists it as superseded instead of
-reporting its PDF as unaccounted for.
-
-An earlier wrapper, `update.ps1`, was deleted because it drifted four features
-behind without anyone noticing. It still sent every document to
-`convert_manual.py`, including the command references that need
-`rebuild_reference.py`, and it never rebuilt the search index. The first step is
-a judgement call, and the rest changes as this skill grows; both were better
-read than buried. `update_corpus.py` answers each of those:
-
-- It runs every step as the script itself, never a copy of what the script does.
-- It stops at every judgement call instead of making it.
-- It rebuilds the index, behind the smoke test and the eval.
-- It prints every command before running it, and `--dry-run` shows the whole
-  plan.
-
-A test (test_53i) fails when the sequence above names a script it does not
-run, so a step added here has to be added there too.
-
-`references/failure-modes.md` has the full catalog with measurements. Read it
-when debugging a corpus that already exists, or before changing chunking or
-furniture logic.
-
-The suite in `tests/` generates fixture PDFs with a known bookmark TOC and
-runs the pipeline over them: `python -m unittest discover -s tests -v`, or
-`python tests/run_each.py` to run every test alone. It covers the
-things that have actually broken here -- idempotency, never downgrading
-metadata a better-informed pass wrote, declining to attribute entities from too
-little evidence, entity regions ending at chapters, figures tied to a section
-only on evidence, the output contract the index and search builders read, and
-editions: one answering per manual, a missing version refused, a comparison
-that reads past the lookup's cut.
-Run it before changing a converter.
-
-`references/extractor-benchmark.md` measures pymupdf4llm, Docling and a
-TOC-anchored hybrid against seven slices spanning five PDF producers and both
-document shapes. Read it before switching extractors — it reverses the
-conclusion a prose-only comparison suggests.
+`references/updating-a-corpus.md` has the routing rules, the gates, resuming
+after a stop, keeping an old edition as a PDF only, and why the earlier
+`update.ps1` wrapper was deleted.
 
 ## Serving the corpus over MCP
 
@@ -760,174 +486,81 @@ python scripts/build_search_db.py --root <corpus> --emit-vscode-config
 python scripts/mcp_smoke_test.py --db <corpus>/mcp-index.sqlite3
 ```
 
-The first writes one SQLite FTS5 index plus a `.vscode/mcp.json`; the second
-drives a real handshake and every tool. Collections are discovered from disk,
-so nothing is hardcoded per corpus.
-Every tool is declared read-only (`readOnlyHint`, with a title), so a client that
-honours MCP's tool annotations can skip its confirmation prompt. The smoke test
-also sends the server what is not a JSON-RPC object (a batch, a bare string, a
-number) and checks that it answers with an error and carries on: the server is
-one process, and a message that killed it left every later request unanswered.
+The first writes one SQLite FTS5 index plus a `.vscode/mcp.json`, and copies
+`mcp_server.py` beside the index so the corpus folder serves itself on any
+machine with Python. Do not edit that copy; a later build of the index it
+serves refreshes it. The second drives a real handshake and every tool. Tools:
+`search_docs`, `get_section`, `lookup_entity`, `explain_log`, `check_script`,
+`list_documents`, `get_toc`, `compare_versions`, `get_figure`,
+`get_page_image`. With `--http` and a bearer token the server listens over
+MCP's Streamable HTTP for several users (README.md has the commands).
 
-**The corpus folder serves itself.** `--emit-vscode-config` copies
-`mcp_server.py` beside the index and writes every path in `.vscode/mcp.json`
-relative to the workspace folder. A config that names this checkout by path
-works on one machine, and a corpus in a synced folder is opened on several;
-the server is one standard-library file, so shipping it with the index costs
-nothing and needs only Python on the other machine. Later builds of the index
-the copy serves (the default `mcp-index.sqlite3`, or the one `.vscode/mcp.json`
-opens with the copy) refresh it, which also keeps the server and the index it
-reads on the same schema. Any other index (`--out` a scratch or candidate path,
-to try a build or to score it first, beside the live index or not) leaves the
-copy alone; `update_corpus.py` refreshes it only once its candidate has
-replaced the live index.
-Do not edit the copy. The server reads figures and PDFs from the folder its
-index is in, not from the path the index was built at. Tools: `search_docs`, `get_section`,
-`lookup_entity`, `explain_log`, `check_script`, `list_documents`, `get_toc`, `compare_versions`,
-`get_figure`, `get_page_image`.
+The index is a **snapshot**: rebuild after any conversion or enrichment, or
+the server keeps answering from the corpus as it used to be. It is **lexical,
+not embeddings**, because real queries are identifiers and error strings
+(`set_scan_configuration`, `-chain_count`, `K23 DRC`). A partial index or a
+stale one says so on every answer.
 
-**A script in, its names checked.** `check_script` reads a Tcl script (comments,
-continuations, quotes, braces, `[...]` and the bodies of `if`, `foreach`,
-`proc`, `catch`, `switch` and the like; not variable values), lists every
-command and option it uses, and checks each against the reference entries of the
-edition in use: a command no entry has is reported with the nearest names, or
-with the edition that does have it; an option its command's entry does not show
-is reported with the nearest ones; an abbreviation is accepted and listed. Each
-finding carries its line, and each documented command its document and pages.
-Three limits are stated in its output: an option is taken from the `-words` in
-the entry's text, so one that appears there only in another command's example
-passes; a command several manuals share is checked against all of them together
-(and an option only some show is listed), so pass `document` when the script is
-for one tool; and a name used as a command that is an entry only in a variables,
-messages or rules reference is not counted as documented.
-
-**A log in, the entries out.** `explain_log` takes pasted tool output, finds
-every message code (`CMD-082`) and every design rule named after the word
-"Rule" (`Warning: Rule S29 ... was violated 32 times`), and returns each one's
-entry, errors first, with what no manual here documents listed rather than
-guessed at. A bare id with no "Rule" before it is not taken: in a log, `D5` is
-as likely a net. A rules manual titles its entries `DRC Rule C1`; that title
-stays the entry's name, and `lookup_entity` and `explain_log` also answer for
-`C1` and `Rule C1`, the way the tool and the engineer say it.
-The index is a **snapshot** —
-rebuild after any conversion or enrichment, or the server keeps answering from
-the corpus as it used to be.
-
-**Lexical, not embeddings**, because real queries are identifiers and error
-strings: `set_scan_configuration`, `-chain_count`, `K23 DRC`. A vector index
-would add a dependency, a rebuild cost and an API key to blur them.
-
-Retrieval decisions worth carrying to any implementation, each of which came
-from watching bad results or measuring them rather than from theory:
-
-- **Rewrite queries before FTS5 sees them.** `_` and `-` are token separators
-  and stray quotes are a syntax error, so each term becomes a quoted phrase.
-  Combine terms, never words: `"set scan configuration"` must stay one phrase.
-- **Drop stopwords, then rank by OR whenever AND comes up short.** FTS5 ANDs
-  everything and agents ask questions: "how do I define a clock" must not
-  require "how". Falling back only when AND found *nothing* let one weak chunk
-  that happened to hold every word stand in for the answer; falling back
-  whenever AND returns less than a page took hit@5 from 82% to 89%.
-- **Stem.** Questions say "options" and "toggling" where manuals say "option"
-  and "toggle". Porter stemming lifted reworded questions from 55% to 73% hit@5
-  and cost no identifier lookup.
-- **Demote front matter.** A contents page lists every heading in the document,
-  so it outranks the real one — "DRC Rule K23 . . . 151" beating rule K23.
-- **Cap hits per document**, or one large reference fills every result page.
-- **Search one edition per manual.** The cap is per document and editions are
-  separate documents, so it does nothing to stop three releases of one manual
-  taking fifteen places with the same answer. See "Editions".
-
-**A partial index must say so.** This is the failure that looks like a correct
-answer: search returns "no matches" for something the corpus does cover, and
-nothing on screen says the shelf was half empty. The build refuses to exit 0
-and names the unreadable files; the server reports per-document coverage and
-warns on every result until the index is whole.
-
-**So must a stale one.** The same failure arrives a rebuild later: the index
-answers confidently from manifests that have since changed. The build records
-each manifest, `figures.json` and `current_versions.json` by size, time and
-SHA-256, and the server compares them with the disk, again every 30 seconds
-while they still match. A changed file, a document folder or `figures.json`
-the index does not know, or a pins file that appeared adds "Stale index" to every search and `list_documents` answer until
-the index is rebuilt. An index built before this, or copied without its corpus,
-says nothing, since there is nothing to compare.
+`references/serving.md` has what each tool does (`check_script`, `explain_log`),
+the retrieval decisions worth carrying to any implementation (query rewriting,
+OR fallback, stemming, front-matter demotion, per-document caps), and how the
+server detects a partial or stale index.
 
 ## Measuring retrieval
 
 Every retrieval choice — chunk size, stemming, a fallback, embeddings, figure
-descriptions — is a guess until it moves a number. Build the number first.
+descriptions — is a guess until it moves a number. Build the number first:
 
 1. `scripts/sample_sections.py --root <corpus> --n 60` draws a stratified
-   sample: every document gets a share by the square root of its size, and
-   front matter, boilerplate and stubs are left out.
-2. Write one question per sampled section while reading it, into
-   `<corpus>/eval/questions.jsonl` with that section as the answer. Give each a
-   kind: `identifier` (names a command, option or message), `concept` (natural
-   wording), `paraphrase` (deliberately avoids the section's own terms — the
-   gap an embedding index would close), `figure` (answered by a figure; sample
-   with `--figures` and look at the image), and `real` for questions users
-   actually asked.
-3. `scripts/eval_search.py --db <index> --questions … --misses` scores hit@k and
-   MRR per kind through the server's own `search()`.
-4. **Review every miss before believing it.** When what came back answers the
-   question just as well, add it as an answer and say so in the question's
-   note. Two of the first twelve misses on a real corpus were right answers the
-   test did not know about.
-5. Compare configurations on the same questions and read the per-question
-   changes, not just the totals — on 57 questions, one question is 1.75 points.
-   Save each run with `--json`, then `eval_search.py --compare before.json
-   after.json` prints the totals side by side and every question whose rank
-   moved. Each run records the build time of its index and the commit of the
-   code.
-6. **After a reconversion, carry the answers across.** Section files are named
-   by position, so converting a document again renames them and every answer
-   by file reads as a miss. `scripts/remap_answers.py --root <corpus>
-   --questions <file>` compares each lost section's text, kept in
-   `.rebuild-backup/<slug>/`, with the sections now there, and writes a remapped
-   copy (never over the input), reporting what it could not place. An answer
-   can instead be written as `{"doc_id": …, "quote": "a short exact phrase"}`,
-   which `eval_search.py` resolves to the sections holding the phrase and which
-   needs no remap at all.
+   sample of sections.
+2. Write one question per sampled section into
+   `<corpus>/eval/questions.jsonl`, with that section as the answer and a kind:
+   `identifier`, `concept`, `paraphrase`, `figure`, or `real` for questions
+   users actually asked.
+3. `scripts/eval_search.py --db <index> --questions … --misses` scores hit@k
+   and MRR per kind. **Review every miss before believing it**: what came back
+   may answer the question just as well.
+4. Compare configurations with `--json` and `--compare`, and read the
+   per-question changes, not just the totals.
 
-Questions written by someone who has just read the answer share its words, so
-they flatter lexical search. `paraphrase` measures that bias; `real` questions
-are the only ones free of it, so ask the user for some.
+Questions written by someone who has just read the answer flatter lexical
+search; `real` questions are the only ones free of that, so ask the user for
+some. To collect them, start the server with `PDF_TO_RAG_LOG=<file>`;
+`triage_log.py` turns the searches you mark hit or miss into `real` questions,
+and `eval_answers.py` runs questions with a `gold` answer through `claude -p`
+and grades the answers (it spends tokens: start with `--dry-run --limit 1`).
 
-### Real use: log, triage, answer
+`references/evaluation-workflow.md` has the full procedure, including carrying
+answers across a reconversion with `remap_answers.py` and what the call log
+holds. The results on one real corpus are in
+`references/retrieval-measurement.md`.
 
-The questions above test search. Whether the user gets the right answer is a
-second thing, and it can only be measured on what they really ask.
+## References and tests
 
-1. **Log.** Start the server with `PDF_TO_RAG_LOG=<file>` in its environment
-   (the `env` block of `.vscode/mcp.json` or `.mcp.json`). Each tool call then
-   appends a line: when, tool, arguments, the sections returned (by id and by
-   collection, slug and file), characters, latency, errors, the client's name.
-   It is off unless set and writes nothing to stdout. The file holds what people
-   searched for, and up to 2,000 characters of any log they pasted into
-   `explain_log`: keep it out of version control and shared folders unless
-   everyone who can read it should see that. `triage_log.py --log <file>
-   --summary` counts it, including searches that returned nothing.
-2. **Triage.** `triage_log.py --log <file> --questions <questions.jsonl> --db
-   <index>` shows each distinct search with its results and asks hit, miss,
-   skip or ignore. A hit names the result that answers it; a miss names the
-   right section by id, by `slug file`, or by searching the index. Each goes
-   into the question file as kind `real`, appended and nothing else touched,
-   so `eval_search.py` gives real questions a row of their own. What the agent
-   typed into `search_docs` is usually keywords: the prompt also asks for the
-   question in the user's words (`ask`) and a short answer (`gold`).
-3. **Answer.** `eval_answers.py --db <index> --questions <file> --limit 1`
-   runs each question that has a `gold` answer through `claude -p` with the
-   corpus's server only (no file tools, no other servers, an empty working
-   folder), then grades the answer with a second call: `correct` (matches the
-   gold answer and cites a section that holds it), `unsupported` (an answer
-   that misses it or cites nothing that holds it) or `declined`. Beside each
-   verdict it records whether a gold section was returned by any tool call, so
-   a wrong answer is told apart from a retrieval miss, and the tokens used,
-   answering and grading apart. It spends tokens on every run: start with
-   `--dry-run` and `--limit 1`. The grader is a model reading a short gold
-   answer, so read the `unsupported` ones before believing them, as with
-   search misses.
+Read these when the task reaches them; they hold the detail and the
+measurements behind the rules above.
+
+| file | read it when |
+|---|---|
+| `references/unusual-inputs.md` | the input is not a flat folder of PDFs, or a corpus already exists |
+| `references/editions.md` | converting a second release, pinning one, or comparing two |
+| `references/figures.md` | extracting figures or changing how they attach to sections |
+| `references/output-contract.md` | a document came from elsewhere, or the checker's report needs explaining |
+| `references/updating-a-corpus.md` | running `update_corpus.py` on a real corpus, or it stopped |
+| `references/serving.md` | changing the server, the index or a tool |
+| `references/evaluation-workflow.md` | building a question set, or measuring real use |
+| `references/failure-modes.md` | debugging a corpus that already exists, or before changing chunking or furniture logic |
+| `references/extractor-benchmark.md` | before switching extractors: it reverses the conclusion a prose-only comparison suggests |
+| `references/retrieval-measurement.md` | before changing retrieval, or proposing embeddings |
+
+The suite in `tests/` generates fixture PDFs with a known bookmark TOC and
+runs the pipeline over them: `python -m unittest discover -s tests -v`, or
+`python tests/run_each.py` to run every test alone. It covers the things that
+have actually broken here: idempotency, never downgrading metadata a
+better-informed pass wrote, declining to attribute entities from too little
+evidence, entity regions ending at chapters, figures tied to a section only on
+evidence, the output contract, and editions. Run it before changing a
+converter.
 
 ## Platform notes
 

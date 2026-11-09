@@ -678,7 +678,7 @@ class ConverterTest(unittest.TestCase):
 
 
     def test_50_merged_helpers_agree_with_the_copies_they_replaced(self):
-        """T24 removed duplicated code. Each merge is only safe if the old copy
+        """Duplicated code was merged into _common.py. Each merge is only safe if the old copy
         and the new one give the same answer on everything they were fed, so the
         old copies are kept here, as they were, and held to the new ones."""
         common = load_script("_common")
