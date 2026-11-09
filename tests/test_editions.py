@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -472,7 +473,8 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual(list(servers), ["my-manuals"], "a second server was added for the same index")
 
     def test_22d_an_index_built_elsewhere_leaves_the_servers_copy_alone(self):
-        """The copy at the corpus root belongs to the index inside the corpus.
+        """The copy at the corpus root belongs to the index it serves, and
+        only that index's build refreshes it.
 
         A build refreshes it because an index and a server from different
         versions of this repo need not agree on the schema. That reasoning
@@ -496,11 +498,34 @@ class EditionsTest(unittest.TestCase):
                          "an index built outside the corpus rewrote the corpus's server copy")
         self.assertNotIn("Server copy", r.stdout, "the build says it replaced a copy it left alone")
 
+        # Inside the corpus is not enough: update_corpus.py's candidate sits
+        # beside the live index, and refreshing the copy for it left a new
+        # server beside the old index until the swap -- for good, if the run
+        # was interrupted while the candidate was scored.
+        r = run("build_search_db.py", "--root", str(self.root), "--out",
+                str(self.root / "mcp-index.candidate.sqlite3"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(installed.read_text(encoding="utf-8"), old,
+                         "a candidate built beside the live index rewrote the live server copy")
+
+        r = run("build_search_db.py", "--root", str(self.root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotEqual(installed.read_text(encoding="utf-8"), old,
+                            "the index the copy serves was built and the copy was not refreshed")
+        self.assertIn("Server copy", r.stdout)
+
+        # An index of another name is the copy's when the corpus's config
+        # opens it with the copy.
+        installed.write_text(old, encoding="utf-8")
+        (self.root / ".vscode").mkdir(exist_ok=True)
+        (self.root / ".vscode" / "mcp.json").write_text(json.dumps({"servers": {"docs": {
+            "type": "stdio", "command": "python",
+            "args": ["${workspaceFolder}/mcp_server.py", "--db", "${workspaceFolder}/inside.sqlite3"]}}}),
+            encoding="utf-8")
         r = run("build_search_db.py", "--root", str(self.root), "--out", str(self.root / "inside.sqlite3"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotEqual(installed.read_text(encoding="utf-8"), old,
-                            "an index built inside the corpus did not refresh the copy that serves it")
-        self.assertIn("Server copy", r.stdout)
+                            "the index the corpus's config serves was built and the copy was not refreshed")
 
         installed.write_text(old, encoding="utf-8")
         r = run("build_search_db.py", "--root", str(self.root), "--out", str(scratch), "--emit-vscode-config")
@@ -711,6 +736,37 @@ class EditionsTest(unittest.TestCase):
             (folder / "new_docs").mkdir(parents=True)
             write_pdf(folder / "new_docs" / "first.pdf", [[("One", 12)]], [])
         self.assertEqual(editions.waiting_collections(fresh), [fresh, fresh / "Synopsys"])
+
+    def test_25g_a_build_that_cannot_be_moved_in_puts_the_old_document_back(self):
+        """publish() moves docs/<slug>/ aside, then the new build in. Between
+        the two the document does not exist, and on Windows the second rename
+        fails easily (a scanner or a sync client holding a file). It used to
+        leave docs/<slug>/ gone, so the next index dropped the manual."""
+        editions = load_script("editions")
+        coll = self.tmp / "PublishFails" / "Tools"
+        out_dir = coll / "docs" / "guide"
+        out_dir.mkdir(parents=True)
+        (out_dir / "manifest.json").write_text('{"old": true}\n', encoding="utf-8")
+        staging = editions.staging_dir(coll / "docs", "guide")
+        (staging / "manifest.json").write_text('{"new": true}\n', encoding="utf-8")
+
+        real_rename = Path.rename
+
+        def rename(self_, target):
+            if Path(self_) == staging:
+                raise PermissionError(5, "Access is denied", str(self_))
+            return real_rename(self_, target)
+        with unittest.mock.patch.object(Path, "rename", rename):
+            with self.assertRaises(PermissionError):
+                editions.publish(staging, out_dir)
+        self.assertEqual((out_dir / "manifest.json").read_text(encoding="utf-8"), '{"old": true}\n',
+                         "the document that was there is not back in docs/")
+        self.assertTrue((staging / "manifest.json").is_file(), "the new build was lost")
+
+        # And with nothing in the way, the new build goes in and the old one is kept.
+        backup = editions.publish(staging, out_dir)
+        self.assertEqual((out_dir / "manifest.json").read_text(encoding="utf-8"), '{"new": true}\n')
+        self.assertEqual((backup / "manifest.json").read_text(encoding="utf-8"), '{"old": true}\n')
 
     def test_25c_a_filed_pdf_is_never_overwritten(self):
         """PTUG.PDF is a PDF, and a filed one is never replaced.

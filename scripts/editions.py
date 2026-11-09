@@ -223,7 +223,14 @@ def staging_dir(out_root: Path, slug: str) -> Path:
 def publish(staging: Path, out_dir: Path) -> Path | None:
     """Move a finished build to docs/<slug>/. A document already there is
     kept at .rebuild-backup/<slug>/, replacing any earlier backup, and that
-    path is returned."""
+    path is returned.
+
+    If the build cannot be moved in, the document that was there is moved
+    back before the error is raised. Between the two renames docs/<slug>/ does
+    not exist, and on Windows the second one fails easily (a virus scanner or
+    a sync client holding a file in the staging folder): left there, the
+    manual would drop out of the next index without a word, its figures only
+    in the backup."""
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     backup = None
     if out_dir.exists():
@@ -232,7 +239,12 @@ def publish(staging: Path, out_dir: Path) -> Path | None:
         if backup.exists():
             shutil.rmtree(backup)
         out_dir.rename(backup)
-    staging.rename(out_dir)
+    try:
+        staging.rename(out_dir)
+    except OSError:
+        if backup is not None and not out_dir.exists():
+            backup.rename(out_dir)
+        raise
     return backup
 
 

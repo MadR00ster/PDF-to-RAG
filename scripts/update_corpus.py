@@ -713,14 +713,12 @@ def build_and_swap(rep: Report, questions: Path | None, accept_regression: bool,
     """Step 4: a candidate index, its smoke test and eval, and the swap."""
     root, db = rep.root, rep.db
     cand = candidate_path(db)
-    # A build refreshes the server copy at the corpus root. If the candidate
-    # is refused, the copy goes back to the one that matches the old index.
-    server_copy = root / build_search_db.SERVER_NAME
-    saved = server_copy.read_bytes() if server_copy.is_file() else None
+    # The candidate's build leaves the server copy at the corpus root alone:
+    # that copy serves the live index, not the candidate. It is refreshed only
+    # once the candidate has replaced the live index, below, so a run refused
+    # or interrupted at any step leaves the copy matching the index beside it.
 
     def refuse(why: str, keep: bool = True) -> None:
-        if saved is not None:
-            server_copy.write_bytes(saved)
         rep.index = f"kept as it was ({why})" + (f"; the candidate is at {cand}" if keep and cand.is_file() else "")
         rep.stop(why)
 
@@ -782,6 +780,8 @@ def build_and_swap(rep: Report, questions: Path | None, accept_regression: bool,
     if emit_vscode_config:
         build_search_db.install_server(root)
         rep.notes.append(f"VS Code config -> {build_search_db.emit_vscode_config(root, db)}")
+    elif (root / build_search_db.SERVER_NAME).is_file() and build_search_db.copy_serves(root, db):
+        rep.notes.append(f"Server copy -> {build_search_db.install_server(root)}")
 
 
 # ---------------------------------------------------------------- report

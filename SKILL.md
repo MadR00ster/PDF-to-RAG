@@ -774,10 +774,13 @@ one process, and a message that killed it left every later request unanswered.
 relative to the workspace folder. A config that names this checkout by path
 works on one machine, and a corpus in a synced folder is opened on several;
 the server is one standard-library file, so shipping it with the index costs
-nothing and needs only Python on the other machine. Later builds of an index
-inside the corpus refresh the copy, which also keeps the server and the index
-it reads on the same schema; an index built outside the corpus (`--out`
-elsewhere, to try a build or to score it first) leaves the copy alone.
+nothing and needs only Python on the other machine. Later builds of the index
+the copy serves (the default `mcp-index.sqlite3`, or the one `.vscode/mcp.json`
+opens with the copy) refresh it, which also keeps the server and the index it
+reads on the same schema. Any other index (`--out` a scratch or candidate path,
+to try a build or to score it first, beside the live index or not) leaves the
+copy alone; `update_corpus.py` refreshes it only once its candidate has
+replaced the live index.
 Do not edit the copy. The server reads figures and PDFs from the folder its
 index is in, not from the path the index was built at. Tools: `search_docs`, `get_section`,
 `lookup_entity`, `explain_log`, `check_script`, `list_documents`, `get_toc`, `compare_versions`,
