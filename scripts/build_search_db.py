@@ -29,10 +29,10 @@ rename), so a failed run leaves the previous index in place.
 .vscode/mcp.json with paths relative to the corpus folder. The server is one
 standard-library file, so index and server then travel together: the folder
 can be synced to another machine and served there with nothing but Python,
-and no path in its config names the machine that built it. Later builds of an
-index inside the corpus refresh the copy, so the server always matches the
-index it reads; an index written outside the corpus (--out elsewhere) leaves
-it alone.
+and no path in its config names the machine that built it. Later builds of the
+index the copy serves (the default one, or the one .vscode/mcp.json names)
+refresh the copy, so the server always matches the index it reads; any other
+index (--out a scratch or candidate path) leaves it alone.
 
 Layout it expects -- either shape works, and both are auto-detected:
 
@@ -671,6 +671,40 @@ def install_server(root: Path) -> Path:
     return target
 
 
+def same_file_path(arg: str, path: Path, root: Path) -> bool:
+    """Whether a config's path argument and `path` name one file. Resolved,
+    not just made absolute: the root here is resolved, while an entry written
+    by hand or by another tool may reach the same folder through a symlink, a
+    junction or a Windows 8.3 short name (C:\\Users\\RUNNER~1), and comparing
+    those as text added a second server for one index."""
+    text = str(arg).replace("${workspaceFolder}", str(root))
+    return os.path.normcase(os.path.realpath(text)) == os.path.normcase(os.path.realpath(path))
+
+
+def copy_serves(root: Path, db_path: Path) -> bool:
+    """Whether the server copy at `root` is the one that serves the index at
+    `db_path`: the default index beside it, which the copy opens when given no
+    --db, or an index the corpus's .vscode/mcp.json opens with that copy.
+
+    Only that index's build may refresh the copy. A candidate written beside
+    the live index (update_corpus.py), or a scratch build anywhere else, is
+    not served by it: refreshing the copy for one left a new server beside an
+    old index until the candidate was swapped in or refused, and for good when
+    the run was interrupted in between."""
+    if same_file_path(str(root / DEFAULT_DB_NAME), db_path, root):
+        return True
+    try:
+        servers = json.loads((root / ".vscode" / "mcp.json").read_text(encoding="utf-8-sig")).get("servers") or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    for cfg in servers.values() if isinstance(servers, dict) else ():
+        args = [str(a) for a in (cfg.get("args") or [] if isinstance(cfg, dict) else [])]
+        if ("--db" in args[:-1] and same_file_path(args[args.index("--db") + 1], db_path, root)
+                and any(same_file_path(a, root / SERVER_NAME, root) for a in args)):
+            return True
+    return False
+
+
 def emit_vscode_config(root: Path, db_path: Path) -> Path:
     """Write .vscode/mcp.json so VS Code picks the corpus up on folder open.
 
@@ -697,13 +731,7 @@ def emit_vscode_config(root: Path, db_path: Path) -> Path:
         db_arg = str(db_path)             # --out put the index outside the corpus
 
     def same_path(arg: str, path: Path) -> bool:
-        """Whether two spellings name one file. Resolved, not just made
-        absolute: the root here is resolved, while an entry written by hand
-        or by another tool may reach the same folder through a symlink, a
-        junction or a Windows 8.3 short name (C:\\Users\\RUNNER~1), and
-        comparing those as text added a second server for one index."""
-        text = str(arg).replace("${workspaceFolder}", str(root))
-        return os.path.normcase(os.path.realpath(text)) == os.path.normcase(os.path.realpath(path))
+        return same_file_path(arg, path, root)
 
     def serves_this_index(cfg) -> bool:
         """Whether an entry is this corpus's server: by the index it opens,
@@ -742,8 +770,9 @@ def main() -> int:
     )
     ap.add_argument("corpus", nargs="?", help="corpus root, as an argument or as --root")
     ap.add_argument("--root", help="corpus root (default: current directory)")
-    ap.add_argument("--out", help=f"index path (default: <root>/{DEFAULT_DB_NAME}). An index outside <root> "
-                                  "leaves the server copy at <root> as it is, unless --emit-vscode-config asks for it")
+    ap.add_argument("--out", help=f"index path (default: <root>/{DEFAULT_DB_NAME}). An index the server copy "
+                                  "at <root> does not serve leaves that copy as it is, unless --emit-vscode-config "
+                                  "asks for it")
     ap.add_argument("--stats-only", action="store_true", help="report what would be indexed, write nothing")
     ap.add_argument(
         "--emit-vscode-config",
@@ -785,14 +814,12 @@ def main() -> int:
                  body_without_breadcrumb=args.body_without_breadcrumb, ident_index=args.ident_index)
 
     built = not args.stats_only and code != 1 and out_path.exists()
-    # A copy already at the root is refreshed by every build of an index inside
-    # the corpus: an index and a server from different versions of this repo
-    # need not agree on the schema. An index written outside it (a scratch
-    # build, a candidate scored before it replaces the live one) is not the
-    # one that copy serves, so it is left alone; --emit-vscode-config asks
-    # for the copy wherever the index goes.
-    in_corpus = out_path.is_relative_to(root)
-    if built and (args.emit_vscode_config or (in_corpus and (root / SERVER_NAME).is_file())):
+    # A copy already at the root is refreshed by a build of the index it
+    # serves: an index and a server from different versions of this repo need
+    # not agree on the schema. Any other index (a scratch build, a candidate
+    # scored before it replaces the live one) leaves it alone, inside the
+    # corpus or not; --emit-vscode-config asks for the copy wherever the index goes.
+    if built and (args.emit_vscode_config or ((root / SERVER_NAME).is_file() and copy_serves(root, out_path))):
         print(f"\nServer copy -> {install_server(root)}")
     if built and args.emit_vscode_config:
         written = emit_vscode_config(root, out_path)

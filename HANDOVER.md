@@ -114,17 +114,26 @@ text:
   55–55c are `triage_log.py`'s and 56–56c `eval_answers.py`'s, in
   `test_usage.py`. 57–58f are `check_script`'s, in `tests/test_check_script.py`.
   59–59h are the HTTP transport's, in `tests/test_http.py`. 22d, in
-  `test_editions.py`, is the server copy an index built outside the corpus must
-  leave alone.
+  `test_editions.py`, is the server copy that only the index it serves may
+  refresh; 25g there is `editions.publish` putting the old document back when
+  the new build cannot be moved in.
 
 ## Things learned the hard way
 
 - **A build rewrites the server copy at the corpus root.** Scoring a candidate
   with `build_search_db.py --root <live corpus> --out <scratch>` used to
-  replace the live `mcp_server.py` while the live index stayed old. Now only an
-  index inside the corpus refreshes the copy (test_22d), or
-  `--emit-vscode-config` asks for it. Without `--out`, the build still
-  replaces the live index; `update_corpus.py` is the gated way to do that.
+  replace the live `mcp_server.py` while the live index stayed old. "Inside
+  the corpus" was not enough either: `update_corpus.py`'s candidate sits beside
+  the live index, so the copy was new for the whole smoke test and eval, and
+  stayed new if the run was interrupted. Now only a build of the index the copy
+  serves refreshes it (`build_search_db.copy_serves`: the default index, or the
+  one `.vscode/mcp.json` opens with the copy; test_22d), or
+  `--emit-vscode-config` asks for it; `update_corpus.py` refreshes it after the
+  swap. Without `--out`, the build still replaces the live index;
+  `update_corpus.py` is the gated way to do that.
+- **`editions.publish` is two renames.** Between them `docs/<slug>/` does not
+  exist; if the second fails (Windows, a file held open), the old document is
+  renamed back before the error is raised (test_25g).
 
 - **Windows.** CI is the only Windows machine. Folder names with a trailing
   space are invalid there. Names differing only in case are one folder.
