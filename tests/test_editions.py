@@ -81,7 +81,6 @@ class EditionsTest(unittest.TestCase):
         self.assertIn("2025.1", first[0].get_text(), "the first release's PDF was overwritten")
         first.close()
 
-        import shutil
         shutil.copy(source / "gadget.pdf", inbox / "again.pdf")
         r = run("convert_manual.py", str(inbox / "again.pdf"), "--title", "Gadget Guide")
         self.assertNotEqual(r.returncode, 0, "a PDF already filed was converted a second time")
@@ -396,7 +395,6 @@ class EditionsTest(unittest.TestCase):
         the folder can be moved or synced and still be served.
         """
         self.use_gadgets("serve-anywhere")
-        import shutil
         config = self.root / ".vscode" / "mcp.json"
         config.parent.mkdir(exist_ok=True)
         # This corpus, registered earlier by absolute path under someone's own
@@ -668,7 +666,6 @@ class EditionsTest(unittest.TestCase):
         the one before it is marked current, and every default answer comes
         from an older release with nothing to say so.
         """
-        import shutil
         root = self.tmp / "BrokenManifest"
         handmade_document(root, "hand-1")
         shutil.copytree(root / "docs" / "hand-1", root / "docs" / "hand-2")
@@ -839,7 +836,6 @@ class EditionsTest(unittest.TestCase):
         collapsed in it, lines without a letter were dropped, and a chunk
         that began inside a fence was read as prose.
         """
-        import shutil
         root = self.tmp / "CodeEntry"
         handmade_document(root, "hand-1")
         shutil.copytree(root / "docs" / "hand-1", root / "docs" / "hand-2")
@@ -883,7 +879,6 @@ class EditionsTest(unittest.TestCase):
         no entity rows, and an entry compared against it used to be reported
         as removed.
         """
-        import shutil
         root = self.tmp / "Unattributed"
         handmade_document(root, "hand-1")
         shutil.copytree(root / "docs" / "hand-1", root / "docs" / "hand-2")

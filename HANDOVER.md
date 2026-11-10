@@ -6,9 +6,9 @@ it, what bit earlier sessions, and what is still open.
 
 ## Where things stand
 
-Updated 2026-11-09.
+Updated 2026-11-10.
 
-- `main` has every merged pull request (#1–#12). 113 tests, 1 skipped where
+- `main` has every merged pull request (#1–#13). 129 tests, 1 skipped where
   Tesseract's language data is missing; `python tests/run_each.py` passes too.
 - The October 2026 review (`IMPROVEMENT.md`) and the plan that carried it out
   (`TODO.md`, tasks T01–T26) are finished and were deleted on 2026-11-09. Read
@@ -23,7 +23,10 @@ Updated 2026-11-09.
 
 1. One change, one commit (or a few small ones). The full suite passes before
    each commit, and `python tests/run_each.py` passes before a push that adds
-   tests.
+   tests. The suite takes about 8 minutes serially; `python tests/run_parallel.py`
+   runs the test files two at a time (about 7 minutes on a 32-core Windows
+   machine, slower than serial on a 2-core CI runner; its docstring has the
+   numbers).
 2. Work on a branch and open a pull request against `main`. CI runs Linux and
    Windows, Python 3.10 and 3.13. A red cell, Windows included, is yours to fix.
 3. A bug fix comes with a test that fails without it. Show that it fails:
@@ -88,10 +91,11 @@ Updated 2026-11-09.
   `test_update.py`, `test_usage.py` (the call log's triage and answer
   grading), `test_check_script.py` or `test_http.py`.
 - **Test numbers.** Each test's number is unique across files; pick the next
-  free one in the area's range and keep its letter series together: 53–53l
+  free one in the area's range and keep its letter series together: 53–53m
   `update_corpus.py` (53h, on `editions.waiting_collections`, is in
   `test_editions.py`); 54–54b the server's call log; 55–55c `triage_log.py`;
-  56–56c `eval_answers.py`; 57–58f `check_script`; 59–59h the HTTP transport.
+  56–56c `eval_answers.py`; 57–58f `check_script`; 59–59j the HTTP transport;
+  60–60l `get_section`'s passages and `eval_search.py --cost`.
   22d is the server copy only the index it serves may refresh; 25g is
   `editions.publish` putting the old document back.
 - test_53i reads the bash blocks under README's "The same, step by step" and
@@ -157,23 +161,16 @@ Noticed, not fixed. Fix one with a test, and delete its line here.
 - `convert_docling.py` has never run on a real document here: it is checked
   only by importing it and by unit tests of its pure functions. Convert one
   real document with it and read the output before relying on it.
-- `mcp_server.tool_get_section` strips its file argument with `lstrip("./")`,
-  which removes any run of leading dots and slashes, not just a `./` prefix: a
-  name that begins with a dot loses it.
+- Run with `python -W default`, the suite prints about 18 `ResourceWarning: unclosed
+  database` lines: a test (or the code it drives) opens a SQLite connection and
+  leaves it to the garbage collector.
 - `ocr_figures.py` has no test that runs where Tesseract's language data is
   missing, which includes CI.
-- The HTTP transport answers 400 to an unknown `MCP-Protocol-Version` header
-  even on `initialize`, where the version is still being negotiated.
 - `eval_answers.py` runs `claude -p` with the user's own Claude Code
   configuration (CLAUDE.md, memory, plugins, hooks) unless `--bare` is passed,
   and asks its questions one at a time.
 - Over HTTP, a call-log line has no client name (only `initialize` carries it
-  and no session is kept) and no token id.
-- `build_index.py` and `convert_manual.py` docstrings still say "vendor
-  folder"; a collection need not be a vendor.
-- CI uses `actions/checkout@v4` and `actions/setup-python@v5`, which target
-  Node.js 20; GitHub runs them on Node.js 24 for now. Bump them when
-  convenient.
+  and no session is kept); it has a `token_id` instead.
 - Ten older PDFs in production are not converted (they are the entries in its
   two `superseded.json` files). Converting them through `update_corpus.py`
   needs the user to choose the prose converter: `convert_manual` matches the

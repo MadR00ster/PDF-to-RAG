@@ -26,7 +26,7 @@ it documents. --shape says which; by default it is decided from the PDF's
 bookmark outline, as pick_extractor.py does, and a document that is part of each
 is refused. `rebuild_reference.py` runs the same reference conversion.
 
-After converting, refresh the vendor folder's docs/index.json + docs/README.md:
+After converting, refresh the collection's docs/index.json + docs/README.md:
   python scripts/build_index.py "Tessent Manual"
 
 Requires: pymupdf4llm (pulls in pymupdf). See scripts/requirements.txt.

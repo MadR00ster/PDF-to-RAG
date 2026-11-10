@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Regenerate a vendor folder's docs/index.json and docs/README.md from the
+Regenerate a collection's docs/index.json and docs/README.md from the
 docs/<slug>/manifest.json files actually on disk, plus that folder's
 superseded.json (hand-maintained list of {"file": <old pdf>, "superseded_by":
 <slug>}) for editions kept as PDFs only.

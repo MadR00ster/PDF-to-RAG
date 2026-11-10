@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
@@ -124,15 +123,17 @@ class TriageTest(unittest.TestCase):
              "sections": [7], "refs": [["c", "doc", "sections/001-x.md"]], "chars": 900, "ms": 20.0,
              "error": False, "client": "a"},
             {"t": "2026-11-08T09:02:00.000+00:00", "tool": "get_section", "args": {"section_id": 7},
-             "sections": [7], "refs": [["c", "doc", "sections/001-x.md"]], "chars": 3000, "ms": 8.0, "error": False},
+             "sections": [7], "refs": [["c", "doc", "sections/001-x.md"]], "chars": 3000, "ms": 8.0, "error": False,
+             "token_id": "1a2b3c4d"},
             {"t": "2026-11-08T09:03:00.000+00:00", "tool": "get_section", "args": {},
-             "sections": [], "refs": [], "chars": 40, "ms": 1.0, "error": True},
+             "sections": [], "refs": [], "chars": 40, "ms": 1.0, "error": True, "token_id": "1a2b3c4d"},
         ]
         log.write_text("\n".join(json.dumps(x) for x in lines) + '\n{"t": "2026-11-08T09:04', encoding="utf-8")
         r = triage("--log", str(log), "--summary")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("4 call(s)", r.stdout)
         self.assertIn("1 unreadable line(s)", r.stdout)
+        self.assertIn("tokens: 1a2b3c4d 2", r.stdout)
         self.assertRegex(r.stdout, r"get_section\s+2\s+1\s")
         self.assertIn("2 distinct", r.stdout)
         self.assertIn("1 returned nothing", r.stdout)

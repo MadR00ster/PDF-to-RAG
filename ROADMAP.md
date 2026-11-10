@@ -219,14 +219,17 @@ shared, one place to look when it breaks.
 - [x] One read-only SQLite connection per thread. `Corpus` holds a single
       shared connection today.
       Done. The staleness check runs under a lock, one thread at a time.
-- [ ] Per-call log line (JSONL): time, user or token id, tool, query, characters
+- [x] Per-call log line (JSONL): time, user or token id, tool, query, characters
       returned, latency. This is also the source of real user questions for the
       eval set.
-      Partly done. The log is `PDF_TO_RAG_LOG`, and its per-call state is now
-      per thread, so concurrent HTTP calls log their own sections. Still
-      missing over HTTP: the token's id in each line, and the client's name,
-      which only the `initialize` request carries and this server keeps no
-      session to remember (an HTTP line has no `client`).
+      Done, except the client's name over HTTP. The log is `PDF_TO_RAG_LOG`,
+      its per-call state is per thread, so concurrent HTTP calls log their own
+      sections, and each HTTP line carries `token_id`: the first eight hex
+      characters of the SHA-256 of the bearer token (stable, and no way back to
+      the token). A token per person therefore tells people apart. The client's
+      name only the `initialize` request carries, and remembering it needs a
+      session this server deliberately does not keep, so an HTTP line has no
+      `client`. Revisit only if a way appears that keeps the server stateless.
 - [x] Health endpoint reporting index path, document count and coverage.
       Done: `GET /health`, 200 with `status` ok or degraded (partial or stale
       index), 503 with no index.
@@ -246,12 +249,29 @@ shared, one place to look when it breaks.
 
 ### 2. Passage-level returns (the no-model baseline)
 
-- [ ] `get_section` takes an optional `query` and returns only the passages
+- [x] `get_section` takes an optional `query` and returns only the passages
       that match it, with enough surrounding text to be read alone.
-- [ ] Token accounting in `eval_search.py`: characters a client receives to
+      Done: a section is split at blank lines (a fenced block stays whole),
+      and each list becomes one block: its lead-in, the items, the paragraphs
+      between items and one paragraph after the last, when that is at most
+      2,000 characters. Short blocks join the next, and a passage never ends on
+      a heading or a lead-in. The blocks that hold the query's words are scored
+      (a word every block holds counts for nothing, an identifier for three
+      times a plain word), and the best come back up to 4,000 characters with
+      the block either side while there is room. A gap of at most 900
+      characters between two chosen blocks is returned, not marked; longer gaps
+      are marked, in section order, with the way to the whole section named. A
+      section that fits, one where nothing matches, and one where the passages
+      would be more than three quarters of it come back whole.
+- [x] Token accounting in `eval_search.py`: characters a client receives to
       reach the answer, per question.
-- [ ] Record the baseline before and after. `ask_docs` has to beat this, not
+      Done: `--cost`. It counts the results page, the answer section whole and
+      as passages, and the page plus every section read down to the answer.
+- [x] Record the baseline before and after. `ask_docs` has to beat this, not
       the current whole-section numbers.
+      Done, in `references/retrieval-measurement.md` ("What a client reads").
+      Median characters to reach the answer, page plus the answer's section:
+      10,222 whole, 9,618 as passages. `ask_docs` has to beat the second.
 
 ### 3. `ask_docs`
 

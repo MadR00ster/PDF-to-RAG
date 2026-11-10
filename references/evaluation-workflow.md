@@ -50,7 +50,9 @@ second thing, and it can only be measured on what they really ask.
 1. **Log.** Start the server with `PDF_TO_RAG_LOG=<file>` in its environment
    (the `env` block of `.vscode/mcp.json` or `.mcp.json`). Each tool call then
    appends a line: when, tool, arguments, the sections returned (by id and by
-   collection, slug and file), characters, latency, errors, the client's name.
+   collection, slug and file), characters, latency, errors, the client's name (over stdio) and, over HTTP, a
+   `token_id`: the first eight hex characters of the SHA-256 of the bearer
+   token, so one token's calls can be told from another's.
    It is off unless set and writes nothing to stdout. The file holds what people
    searched for, and up to 2,000 characters of any log they pasted into
    `explain_log`: keep it out of version control and shared folders unless

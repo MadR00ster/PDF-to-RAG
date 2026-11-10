@@ -50,7 +50,10 @@ nothing is substituted for it.
 
 Set PDF_TO_RAG_LOG=<file> to append one JSON line per tool call to that file:
 when, which tool, the arguments, the sections returned, how many characters
-and how long. It is off unless set. `triage_log.py` turns what people asked
+and how long. Over HTTP each line also carries `token_id`, the first eight hex
+characters of the SHA-256 of the bearer token the call came with: it tells one
+token's calls from another's and cannot be turned back into the token. It is
+off unless set. `triage_log.py` turns what people asked
 into test questions.
 """
 from __future__ import annotations
@@ -62,6 +65,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
@@ -173,7 +177,8 @@ def log(msg: str) -> None:
 # (the section ids the call returned, in order), refs (the same sections as
 # [collection, slug, file], which survive an index rebuild when ids do not),
 # chars (text returned), ms (latency), error, and client when the client said
-# who it was. Nothing is ever written to stdout; a log that cannot be written
+# who it was, and token_id over HTTP when a token is required (see token_id()).
+# Nothing is ever written to stdout; a log that cannot be written
 # is dropped with one note on stderr and the server goes on answering.
 CALL_LOG_ENV = "PDF_TO_RAG_LOG"
 CALL_LOG_ARG_CHARS = 2_000
@@ -183,6 +188,12 @@ CALL_LOG: Path | None = None
 # clear them, or be given the name of a client that never made it (a request
 # that is not the `initialize` has no name to give). On stdio there is one thread.
 CALL_STATE = threading.local()
+
+
+def token_id(token: bytes) -> str:
+    """A label for a bearer token that is safe to write down: the first eight
+    hex characters of its SHA-256. Stable, short, and no way back to the token."""
+    return hashlib.sha256(token).hexdigest()[:8]
 
 
 def returned() -> list:
@@ -240,6 +251,9 @@ def record_call(name: str, args, content: list[dict], is_error: bool, started: f
         client = getattr(CALL_STATE, "client", None)
         if client:
             entry["client"] = client
+        who = getattr(CALL_STATE, "token_id", None)
+        if who:
+            entry["token_id"] = who
         CALL_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(CALL_LOG, "a", encoding="utf-8", errors="replace", newline="\n") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
@@ -488,6 +502,11 @@ class CorpusMissing(Exception):
         )
 
 
+# The open index, set before any tool runs. It is only annotated here, with no
+# value, so a tool that runs before it is set fails loudly. pyflakes takes a
+# name bound this way for undefined inside a nested function (a false report:
+# the name is looked up when the function runs), so the three uses in
+# compare_entry and compare_listing carry `# noqa: F821`.
 CORPUS: Corpus
 
 
@@ -926,6 +945,195 @@ def like_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# get_section with a `query` returns the passages of a section that match it,
+# not all of it. A block is what lies between blank lines (a fenced code block
+# is one block), and a list with its lead-in is one block too (group_lists).
+# Blocks shorter than PASSAGE_MIN_CHARS are joined to the one after them, and a
+# passage never ends on a heading or a lead-in, so what introduces something
+# travels with it; a block is never cut inside. The best passages come back up
+# to PASSAGE_BUDGET, and a gap between two of them of at most PASSAGE_GAP is
+# returned too, so a list or a procedure has no hole in the middle. A section
+# that already fits in PASSAGE_BUDGET is returned whole.
+PASSAGE_MIN_CHARS = 300
+PASSAGE_BUDGET = 4_000
+PASSAGE_WORTH = 0.75     # narrow only if the passages are at most this share of the section
+PASSAGE_LIST_MAX = 2_000    # a list with its lead-in is one passage if it is no longer than this
+PASSAGE_GAP = 900           # a gap between two chosen passages this short is returned, not marked
+
+LIST_ITEM_RE = re.compile(r"\s*(?:[-*•]|\d+[.)])\s")
+
+
+def split_blocks(body: str) -> list[str]:
+    blocks, current, fenced = [], [], False
+    for line in body.split("\n"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        if not line.strip() and not fenced:
+            if current:
+                blocks.append("\n".join(current))
+                current = []
+        else:
+            current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def block_kind(block: str) -> str:
+    """item (a bullet or numbered step), heading, code, lead (a paragraph that
+    ends in a colon, so introduces what follows) or text."""
+    first = block.lstrip().split("\n", 1)[0]
+    if first.startswith("```"):
+        return "code"
+    if first.startswith("#"):
+        return "heading"
+    if LIST_ITEM_RE.match(first):
+        return "item"
+    return "lead" if block.rstrip().endswith(":") else "text"
+
+
+def group_lists(blocks: list[str]) -> list[list[str]]:
+    """`blocks` as units, each list one unit together with the line that
+    introduces it. The converter puts a blank line between every bullet and
+    keeps no indentation, so a list is many small blocks with the paragraphs
+    that explain its items between them: a run of items, the blocks (up to two
+    at a time, never a heading) between items, and one explanation after the
+    last. A list longer than PASSAGE_LIST_MAX stays as it was; narrowing has to
+    cut somewhere inside it."""
+    kinds = [block_kind(b) for b in blocks]
+    out, i, n = [], 0, len(blocks)
+    while i < n:
+        first = i + 1 if kinds[i] == "lead" and i + 1 < n and kinds[i + 1] == "item" else i
+        if kinds[first] != "item":
+            out.append([blocks[i]])
+            i += 1
+            continue
+        last, t = first, first + 1
+        while t < n:
+            if kinds[t] == "item":
+                last, t = t, t + 1
+                continue
+            between = 0
+            while t + between < n and kinds[t + between] not in ("item", "heading") and between < 3:
+                between += 1
+            if between < 3 and t + between < n and kinds[t + between] == "item":
+                t += between
+                continue
+            break
+        end = last + 1 if last + 1 < n and kinds[last + 1] == "text" else last
+        region = blocks[i:end + 1]
+        if sum(map(len, region)) + 2 * (len(region) - 1) <= PASSAGE_LIST_MAX:
+            out.append(region)
+        else:
+            out.extend([b] for b in region)
+        i = end + 1
+    return out
+
+
+def split_passages(body: str) -> list[str]:
+    blocks = split_blocks(body)
+    units = group_lists(blocks) if PASSAGE_LIST_MAX else [[b] for b in blocks]
+    passages, pending = [], ""
+    for unit in units:
+        pending = "\n\n".join([pending, *unit] if pending else unit)
+        # A passage never ends on a heading or a lead-in: what it introduces goes with it.
+        if len(pending) >= PASSAGE_MIN_CHARS and block_kind(unit[-1]) not in ("heading", "lead"):
+            passages.append(pending)
+            pending = ""
+    if pending:
+        if passages:
+            passages[-1] += "\n\n" + pending
+        else:
+            passages.append(pending)
+    return passages
+
+
+def light_stem(word: str) -> str:
+    """Enough of a stemmer for `clock` to meet `clocks` and `clocked`. The index
+    stems with Porter; a passage is matched against the query with this."""
+    for suffix in ("ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[:-len(suffix)]
+    return word
+
+
+def query_terms(query: str) -> list[tuple[str, bool]]:
+    """What a passage is matched on: the query's words without the stopwords
+    (unless nothing else is left), each with whether it names an identifier."""
+    tokens = query_tokens(query)
+    content = [(tok, ident) for tok, ident in tokens if ident or tok not in STOPWORDS]
+    return content or tokens
+
+
+def passage_scores(passages: list[str], query: str) -> list[float]:
+    """How well each passage answers `query`: the query's terms it holds, a term
+    counting for less the more passages hold it (a word every passage has says
+    nothing about which one answers), an identifier for three times as much."""
+    terms = query_terms(query)
+    lowered = [p.lower() for p in passages]
+    words = [{light_stem(w) for w in re.findall(r"[a-z0-9_-]+", text)} for text in lowered]
+    scores = [0.0] * len(passages)
+    for tok, ident in terms:
+        if ident or not tok.isalnum():
+            who = {i for i, text in enumerate(lowered) if tok in text}
+        else:
+            stem = light_stem(tok)
+            who = {i for i, w in enumerate(words) if stem in w}
+        if len(who) == len(passages) > 1:
+            continue                    # every passage holds it, so it picks none
+        for i in who:
+            scores[i] += (3.0 if ident else 1.0) * math.log(1 + len(passages) / len(who))
+    return scores
+
+
+def matching_passages(body: str, query: str) -> str | None:
+    """The part of `body` that answers `query`, or None when there is nothing to
+    narrow: the body fits already, or no passage holds a word of the query.
+
+    The best passages first, up to PASSAGE_BUDGET characters, then the block
+    either side of each while there is room, then any gap of at most PASSAGE_GAP
+    characters between two of them; in the order they have in the section, with
+    the other gaps said. A list or a short gap can take the answer a little past
+    PASSAGE_BUDGET."""
+    if len(body) <= PASSAGE_BUDGET:
+        return None
+    passages = split_passages(body)
+    scores = passage_scores(passages, query)
+    ranked = [i for i in sorted(range(len(passages)), key=lambda i: (-scores[i], i)) if scores[i] > 0]
+    if not ranked:
+        return None
+    chosen, used = set(), 0
+    for i in ranked:                    # the passages that match
+        if chosen and used + len(passages[i]) > PASSAGE_BUDGET:
+            continue
+        chosen.add(i)
+        used += len(passages[i])
+    for i in sorted(chosen, key=lambda i: (-scores[i], i)):     # what is around them
+        for near in (i - 1, i + 1):
+            if 0 <= near < len(passages) and near not in chosen and used + len(passages[near]) <= PASSAGE_BUDGET:
+                chosen.add(near)
+                used += len(passages[near])
+    order = sorted(chosen)              # a short gap is cheaper to return than to explain
+    for before, after in zip(order, order[1:]):
+        gap = sum(len(passages[j]) for j in range(before + 1, after))
+        if 0 < gap <= PASSAGE_GAP:
+            chosen.update(range(before + 1, after))
+            used += gap
+    if used > PASSAGE_WORTH * sum(map(len, passages)):
+        return None                     # a small saving is not worth the risk of leaving the answer out
+    out, last = [], -1
+    for i in sorted(chosen):
+        if i != last + 1:
+            out.append(f"[… {sum(len(passages[j]) for j in range(last + 1, i)):,} characters omitted …]")
+        out.append(passages[i])
+        last = i
+    if last + 1 < len(passages):
+        out.append(f"[… {sum(len(passages[j]) for j in range(last + 1, len(passages))):,} characters omitted …]")
+    out.append(f"Passages matching `{query}`: {used:,} of {sum(map(len, passages)):,} characters. "
+               "Call get_section without `query` for the whole section.")
+    return "\n\n".join(out)
+
+
 def tool_get_section(args: dict) -> str:
     section_id, file_arg = args.get("section_id"), args.get("file")
     if section_id is not None:
@@ -933,7 +1141,7 @@ def tool_get_section(args: dict) -> str:
         if not row:
             raise ValueError(f"No section with section_id {section_id}.")
     elif file_arg:
-        needle = str(file_arg).replace("\\", "/").lstrip("./")
+        needle = str(file_arg).replace("\\", "/").lstrip("/").removeprefix("./")
         # Editions of a manual share their section filenames, so a path
         # without the edition's folder matches one in each. The exact path
         # first, then the current edition -- not whichever was indexed first,
@@ -950,15 +1158,21 @@ def tool_get_section(args: dict) -> str:
     else:
         raise ValueError("Pass either `section_id` (from search results) or `file`.")
 
+    query = str(args.get("query") or "").strip()
+
+    def shown(r: sqlite3.Row) -> str:
+        part = matching_passages(r["body"], query) if query else None
+        return format_section(r, r["body"] if part is None else part)
+
     context = clamp_int(args.get("context"), 0, 0, 3)
     if not context:
-        return format_section(row, row["body"])
+        return shown(row)
     neighbours = CORPUS.db.execute(
         SECTION_SELECT + " WHERE slug = ? AND collection = ? AND ord BETWEEN ? AND ? ORDER BY ord",
         (row["slug"], row["collection"], row["ord"] - context, row["ord"] + context),
     ).fetchall()
     return "\n\n".join(
-        f"---{'  <-- requested section' if n['id'] == row['id'] else ''}\n" + format_section(n, n["body"])
+        f"---{'  <-- requested section' if n['id'] == row['id'] else ''}\n" + shown(n)
         for n in neighbours
     )
 
@@ -1991,11 +2205,11 @@ def listed(items: list[str], budget: int, what: str) -> list[str]:
 
 def compare_entry(old: sqlite3.Row, new: sqlite3.Row, name: str) -> str:
     def entity(doc: sqlite3.Row):
-        return CORPUS.db.execute("SELECT name FROM entities WHERE slug = ? AND collection = ? AND name_lower = ?",
+        return CORPUS.db.execute("SELECT name FROM entities WHERE slug = ? AND collection = ? AND name_lower = ?",  # noqa: F821
                                  (doc["slug"], doc["collection"], name.lower())).fetchone()
 
     def has_entities(doc: sqlite3.Row) -> bool:
-        return bool(CORPUS.db.execute("SELECT 1 FROM entities WHERE slug = ? AND collection = ? LIMIT 1",
+        return bool(CORPUS.db.execute("SELECT 1 FROM entities WHERE slug = ? AND collection = ? LIMIT 1",  # noqa: F821
                                       (doc["slug"], doc["collection"])).fetchone())
 
     in_old, in_new = entity(old), entity(new)
@@ -2075,7 +2289,7 @@ def compare_listing(old: sqlite3.Row, new: sqlite3.Row) -> str:
            document_label(new["collection"], new["slug"]), ""]
 
     def names(doc: sqlite3.Row) -> tuple[Counter, dict[str, str]]:
-        shown = {r["name_lower"]: r["name"] for r in CORPUS.db.execute(
+        shown = {r["name_lower"]: r["name"] for r in CORPUS.db.execute(  # noqa: F821
             "SELECT name, name_lower FROM entities WHERE slug = ? AND collection = ?", (doc["slug"], doc["collection"]))}
         return Counter(shown.keys()), shown
 
@@ -2230,7 +2444,10 @@ def build_tools() -> list[dict]:
                 "Return the full markdown of one section chunk, by section_id from a search "
                 "result or by file path. Use it when the snippet is not enough. `context` also "
                 "returns neighbouring sections, which is how you read a procedure that "
-                "continues past one chunk. It also lists the section's figures by figure_id."
+                "continues past one chunk. It also lists the section's figures by figure_id. "
+                "A long section costs many tokens: pass `query` (your question, or the words you "
+                "are looking for) to get only the passages that match it, usually 4,000 to 6,000 "
+                "characters, with the gaps marked."
             ),
             "inputSchema": {
                 "type": "object",
@@ -2238,6 +2455,7 @@ def build_tools() -> list[dict]:
                     "section_id": {"type": "integer", "description": "section_id from a search result."},
                     "file": {"type": "string", "description": "Path as shown in a search result."},
                     "context": {"type": "integer", "description": "Also return this many sections either side, 0-3 (default 0)."},
+                    "query": {"type": "string", "description": "Return only the passages of a long section that match these words."},
                 },
             },
         },
@@ -2599,6 +2817,7 @@ class McpHandler(BaseHTTPRequestHandler):
     server_version = "pdf-to-rag-mcp"
     timeout = 60            # seconds a client may stall mid-request before its thread is let go
     tokens: tuple[bytes, ...] = ()
+    token_ids: tuple[str, ...] = ()           # token_id() of each in `tokens`, in order
     origins: frozenset = frozenset()
 
     def log_message(self, format, *args):           # noqa: A002 -- the base class's name
@@ -2634,13 +2853,21 @@ class McpHandler(BaseHTTPRequestHandler):
 
     def allowed(self) -> bool:
         """The bearer token, then the Origin. Answers the request itself if not."""
+        # A connection can carry several requests on one thread, so who made
+        # this one is set every time, and is nobody when no token is required.
+        CALL_STATE.token_id = None
         if self.tokens:
             scheme, _, supplied = self.headers.get("Authorization", "").partition(" ")
             given = supplied.strip().encode("utf-8", "replace")
-            if scheme.lower() != "bearer" or not any(hmac.compare_digest(given, t) for t in self.tokens):
+            who = None
+            for token, label in zip(self.tokens, self.token_ids):
+                if hmac.compare_digest(given, token):
+                    who = label
+            if scheme.lower() != "bearer" or who is None:
                 self.reply(401, {"error": "a valid bearer token is required"},
                            [("WWW-Authenticate", 'Bearer realm="pdf-to-rag"')], close=True)
                 return False
+            CALL_STATE.token_id = who
         # A page in a browser can reach a server on the loopback address, and the
         # transport asks servers to refuse such a request. Clients that are not
         # browsers send no Origin.
@@ -2686,9 +2913,6 @@ class McpHandler(BaseHTTPRequestHandler):
         # still on the wire, and would be read as the start of the next request.
         if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
             return self.reply(415, {"error": "Content-Type must be application/json"}, close=True)
-        protocol = self.headers.get("MCP-Protocol-Version")
-        if protocol and protocol not in KNOWN_PROTOCOLS:
-            return self.reply(400, {"error": f"unsupported MCP-Protocol-Version {protocol}"}, close=True)
         length = self.headers.get("Content-Length", "")
         if not length.isdigit():
             return self.reply(411, {"error": "Content-Length is required"}, close=True)
@@ -2699,6 +2923,12 @@ class McpHandler(BaseHTTPRequestHandler):
         except ValueError:
             return self.reply(400, {"jsonrpc": "2.0", "id": None,
                                     "error": {"code": -32700, "message": "Parse error: not JSON"}})
+        # The header is checked once the message is read: `initialize` is where
+        # the version is negotiated, and its reply names the one this server speaks.
+        protocol = self.headers.get("MCP-Protocol-Version")
+        negotiating = isinstance(msg, dict) and msg.get("method") == "initialize"
+        if protocol and protocol not in KNOWN_PROTOCOLS and not negotiating:
+            return self.reply(400, {"error": f"unsupported MCP-Protocol-Version {protocol}"})
         response = process_message(msg)
         if response is None:
             self.reply(202)
@@ -2717,6 +2947,7 @@ def serve_http(spec: str, tokens: list[str], origins: list[str]) -> int:
               f"could read the documentation. Set ${TOKEN_ENV}, or pass --token-file.", file=sys.stderr)
         return 2
     handler = type("Handler", (McpHandler,), {"tokens": tuple(t.encode("utf-8") for t in tokens),
+                                               "token_ids": tuple(token_id(t.encode("utf-8")) for t in tokens),
                                                "origins": frozenset(origins)})
     server_class = type("Server", (ThreadingHTTPServer,), {
         "address_family": socket.AF_INET6 if ":" in host else socket.AF_INET, "daemon_threads": True})

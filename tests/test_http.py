@@ -149,6 +149,47 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(conn.getresponse().status, 413)
         conn.close()
 
+    def test_59i_initialize_is_answered_whatever_version_header_it_carries(self):
+        """The version is negotiated in initialize's reply, so a client that
+        names one this server does not know still gets that reply (and the
+        version the server speaks), where every later call is refused."""
+        server = self.start(env={"PDF_TO_RAG_TOKEN": TOKEN})
+        status, _, body = server.request(
+            "POST", body={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                          "params": {"protocolVersion": "1999-01-01", "capabilities": {}}},
+            headers={"MCP-Protocol-Version": "1999-01-01"})
+        self.assertEqual(status, 200)
+        self.assertIn(body["result"]["protocolVersion"], load_script("mcp_server").KNOWN_PROTOCOLS)
+        status, _, _ = server.request("POST", body={"jsonrpc": "2.0", "id": 2, "method": "ping"},
+                                      headers={"MCP-Protocol-Version": "1999-01-01"})
+        self.assertEqual(status, 400)
+
+    def test_59j_a_logged_call_names_its_token_without_giving_it_away(self):
+        """Over HTTP the call log can tell whose call it was: each line carries
+        a short hash of the bearer token it came with, never the token."""
+        import hashlib
+        tokens = self.tmp / "tokens59j.txt"
+        tokens.write_text(OTHER + chr(10), encoding="utf-8")
+        log = self.tmp / "tokens59j.jsonl"
+        server = self.start("--token-file", str(tokens), env={"PDF_TO_RAG_TOKEN": TOKEN, "PDF_TO_RAG_LOG": str(log)})
+        ask = {"name": "search_docs", "arguments": {"query": "torque the bolts"}}
+        for token in (TOKEN, OTHER, TOKEN):
+            self.assertEqual(server.rpc("tools/call", ask, token=token)[0], 200)
+        lines = [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines()]
+        expect = lambda token: hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]  # noqa: E731
+        self.assertEqual([ln["token_id"] for ln in lines], [expect(TOKEN), expect(OTHER), expect(TOKEN)])
+        self.assertNotEqual(expect(TOKEN), expect(OTHER))
+        text = log.read_text(encoding="utf-8")
+        self.assertNotIn(TOKEN, text)
+        self.assertNotIn(OTHER, text)
+
+        # With no token required there is nobody to name.
+        open_log = self.tmp / "open59j.jsonl"
+        open_server = self.start(env={"PDF_TO_RAG_LOG": str(open_log)})
+        self.assertEqual(open_server.rpc("tools/call", ask, token=None)[0], 200)
+        (line,) = [json.loads(ln) for ln in open_log.read_text(encoding="utf-8").splitlines()]
+        self.assertNotIn("token_id", line)
+
     def test_59b_health_reports_the_index(self):
         server = self.start()
         status, _, body = server.request("GET", "/health", token=None)
