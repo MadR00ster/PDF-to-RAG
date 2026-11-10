@@ -546,15 +546,15 @@ def run_step(cmd: list[str]) -> tuple[int, list[str]]:
     Returns its exit status and its last lines."""
     print(f"\n$ {shown(cmd)}", flush=True)
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                            encoding="utf-8", errors="replace", env=env)
     tail: deque[str] = deque(maxlen=20)
-    for line in proc.stdout:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        if line.strip():
-            tail.append(line.rstrip())
-    return proc.wait(), list(tail)
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                          encoding="utf-8", errors="replace", env=env) as proc:
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            if line.strip():
+                tail.append(line.rstrip())
+    return proc.returncode, list(tail)
 
 
 def script(name: str) -> str:

@@ -259,7 +259,7 @@ def main() -> int:
             if r["rank"] and r["rank"] <= 5:
                 continue
             print(f"\n[{r['id']}] ({r['kind']}) {q['question']}")
-            print(f"   wanted: " + "; ".join(f"{a['slug']} · {a['file']}" for a in q["answers"]))
+            print("   wanted: " + "; ".join(f"{a['slug']} · {a['file']}" for a in q["answers"]))
             print(f"   rank:   {r['rank'] or '-'}")
             for t in r["top"]:
                 print(f"   got:    {t}")

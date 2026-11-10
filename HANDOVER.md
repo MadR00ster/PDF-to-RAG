@@ -88,10 +88,10 @@ Updated 2026-11-09.
   `test_update.py`, `test_usage.py` (the call log's triage and answer
   grading), `test_check_script.py` or `test_http.py`.
 - **Test numbers.** Each test's number is unique across files; pick the next
-  free one in the area's range and keep its letter series together: 53–53l
+  free one in the area's range and keep its letter series together: 53–53m
   `update_corpus.py` (53h, on `editions.waiting_collections`, is in
   `test_editions.py`); 54–54b the server's call log; 55–55c `triage_log.py`;
-  56–56c `eval_answers.py`; 57–58f `check_script`; 59–59h the HTTP transport.
+  56–56c `eval_answers.py`; 57–58f `check_script`; 59–59i the HTTP transport.
   22d is the server copy only the index it serves may refresh; 25g is
   `editions.publish` putting the old document back.
 - test_53i reads the bash blocks under README's "The same, step by step" and
@@ -157,23 +157,16 @@ Noticed, not fixed. Fix one with a test, and delete its line here.
 - `convert_docling.py` has never run on a real document here: it is checked
   only by importing it and by unit tests of its pure functions. Convert one
   real document with it and read the output before relying on it.
-- `mcp_server.tool_get_section` strips its file argument with `lstrip("./")`,
-  which removes any run of leading dots and slashes, not just a `./` prefix: a
-  name that begins with a dot loses it.
+- Run with `python -W default`, the suite prints about 18 `ResourceWarning: unclosed
+  database` lines: a test (or the code it drives) opens a SQLite connection and
+  leaves it to the garbage collector.
 - `ocr_figures.py` has no test that runs where Tesseract's language data is
   missing, which includes CI.
-- The HTTP transport answers 400 to an unknown `MCP-Protocol-Version` header
-  even on `initialize`, where the version is still being negotiated.
 - `eval_answers.py` runs `claude -p` with the user's own Claude Code
   configuration (CLAUDE.md, memory, plugins, hooks) unless `--bare` is passed,
   and asks its questions one at a time.
 - Over HTTP, a call-log line has no client name (only `initialize` carries it
   and no session is kept) and no token id.
-- `build_index.py` and `convert_manual.py` docstrings still say "vendor
-  folder"; a collection need not be a vendor.
-- CI uses `actions/checkout@v4` and `actions/setup-python@v5`, which target
-  Node.js 20; GitHub runs them on Node.js 24 for now. Bump them when
-  convenient.
 - Ten older PDFs in production are not converted (they are the entries in its
   two `superseded.json` files). Converting them through `update_corpus.py`
   needs the user to choose the prose converter: `convert_manual` matches the

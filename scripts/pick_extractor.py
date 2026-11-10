@@ -159,8 +159,8 @@ def report(path: Path, verbose: bool) -> None:
 
     if shape == "reference":
         print("  => rebuild_reference.py")
-        print(f"     Measured 99-100% entity attribution; anything derived from a")
-        print(f"     structure model's headings managed 16-62% on the same documents.")
+        print("     Measured 99-100% entity attribution; anything derived from a")
+        print("     structure model's headings managed 16-62% on the same documents.")
     else:
         a_band, a_note = anchoring_band(density)
         f_band, f_note = fallback_band(multi_share)

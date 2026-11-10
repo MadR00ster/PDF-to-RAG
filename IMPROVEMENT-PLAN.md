@@ -18,25 +18,6 @@ The code is in good shape. What is missing is evidence from real use:
 So measuring comes before building. The code phases below are small and can
 run first only because they need nothing from the user.
 
-## Phase A: small fixes (one pull request)
-
-No decision needed. Each bug fix comes with a test that fails without it.
-
-| # | what | where |
-|---|---|---|
-| A1 | `run_step` never closes the child's stdout; the suite prints a `ResourceWarning` | `scripts/update_corpus.py`, `run_step` |
-| A2 | `lstrip("./")` strips every leading dot and slash from `file`, so a name that begins with a dot loses it. Remove a `./` prefix only | `scripts/mcp_server.py`, `tool_get_section` |
-| A3 | HTTP answers 400 to an unknown `MCP-Protocol-Version` header even on `initialize`. Let `initialize` through; it already negotiates the version in its reply | `scripts/mcp_server.py`, `McpHandler.do_POST` |
-| A4 | 14 unused or redefined imports (`pyflakes scripts tests`). Clear them, then add the check to CI so it stays clear | `scripts/rebuild_reference.py`, four test files, `.github/workflows/tests.yml` |
-| A5 | CI actions target Node.js 20. Bump `actions/checkout` and `actions/setup-python` to their current majors | `.github/workflows/tests.yml` |
-| A6 | Docstrings say "vendor folder" where they mean a collection | `scripts/build_index.py`, `scripts/convert_manual.py` |
-
-A2, A3, A5 and A6 are lines in HANDOVER's "Known issues": delete each line
-with its fix.
-
-Done when: the suite and `tests/run_each.py` pass, `pyflakes` prints nothing,
-CI is green on all four cells.
-
 ## Phase B: a faster test loop (one pull request)
 
 HANDOVER asks for the full suite before every commit, and it takes about 7

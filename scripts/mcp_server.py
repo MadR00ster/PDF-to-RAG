@@ -933,7 +933,7 @@ def tool_get_section(args: dict) -> str:
         if not row:
             raise ValueError(f"No section with section_id {section_id}.")
     elif file_arg:
-        needle = str(file_arg).replace("\\", "/").lstrip("./")
+        needle = str(file_arg).replace("\\", "/").lstrip("/").removeprefix("./")
         # Editions of a manual share their section filenames, so a path
         # without the edition's folder matches one in each. The exact path
         # first, then the current edition -- not whichever was indexed first,
@@ -1990,12 +1990,14 @@ def listed(items: list[str], budget: int, what: str) -> list[str]:
 
 
 def compare_entry(old: sqlite3.Row, new: sqlite3.Row, name: str) -> str:
+    corpus = CORPUS    # a closure cannot see a name that is only annotated above
+
     def entity(doc: sqlite3.Row):
-        return CORPUS.db.execute("SELECT name FROM entities WHERE slug = ? AND collection = ? AND name_lower = ?",
+        return corpus.db.execute("SELECT name FROM entities WHERE slug = ? AND collection = ? AND name_lower = ?",
                                  (doc["slug"], doc["collection"], name.lower())).fetchone()
 
     def has_entities(doc: sqlite3.Row) -> bool:
-        return bool(CORPUS.db.execute("SELECT 1 FROM entities WHERE slug = ? AND collection = ? LIMIT 1",
+        return bool(corpus.db.execute("SELECT 1 FROM entities WHERE slug = ? AND collection = ? LIMIT 1",
                                       (doc["slug"], doc["collection"])).fetchone())
 
     in_old, in_new = entity(old), entity(new)
@@ -2073,9 +2075,10 @@ def compare_listing(old: sqlite3.Row, new: sqlite3.Row) -> str:
     v_old, v_new = edition_name(old), edition_name(new)
     out = [f"# `{new['doc_id']}`: {v_old} → {v_new}", document_label(old["collection"], old["slug"]),
            document_label(new["collection"], new["slug"]), ""]
+    corpus = CORPUS    # a closure cannot see a name that is only annotated above
 
     def names(doc: sqlite3.Row) -> tuple[Counter, dict[str, str]]:
-        shown = {r["name_lower"]: r["name"] for r in CORPUS.db.execute(
+        shown = {r["name_lower"]: r["name"] for r in corpus.db.execute(
             "SELECT name, name_lower FROM entities WHERE slug = ? AND collection = ?", (doc["slug"], doc["collection"]))}
         return Counter(shown.keys()), shown
 
@@ -2686,9 +2689,6 @@ class McpHandler(BaseHTTPRequestHandler):
         # still on the wire, and would be read as the start of the next request.
         if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
             return self.reply(415, {"error": "Content-Type must be application/json"}, close=True)
-        protocol = self.headers.get("MCP-Protocol-Version")
-        if protocol and protocol not in KNOWN_PROTOCOLS:
-            return self.reply(400, {"error": f"unsupported MCP-Protocol-Version {protocol}"}, close=True)
         length = self.headers.get("Content-Length", "")
         if not length.isdigit():
             return self.reply(411, {"error": "Content-Length is required"}, close=True)
@@ -2699,6 +2699,12 @@ class McpHandler(BaseHTTPRequestHandler):
         except ValueError:
             return self.reply(400, {"jsonrpc": "2.0", "id": None,
                                     "error": {"code": -32700, "message": "Parse error: not JSON"}})
+        # The header is checked once the message is read: `initialize` is where
+        # the version is negotiated, and its reply names the one this server speaks.
+        protocol = self.headers.get("MCP-Protocol-Version")
+        negotiating = isinstance(msg, dict) and msg.get("method") == "initialize"
+        if protocol and protocol not in KNOWN_PROTOCOLS and not negotiating:
+            return self.reply(400, {"error": f"unsupported MCP-Protocol-Version {protocol}"})
         response = process_message(msg)
         if response is None:
             self.reply(202)

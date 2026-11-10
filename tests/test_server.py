@@ -604,6 +604,29 @@ class ServerTest(unittest.TestCase):
             self.assertIn("No section matching", str(raised.exception))
         self.assertEqual(server.like_escape(r"a_b%c\d"), r"a\_b\%c\\d")
 
+    def test_43b_only_a_dot_slash_prefix_is_dropped_from_a_file_name(self):
+        """The request was stripped with lstrip("./"), which removes any run of
+        dots and slashes, so a section file whose name begins with a dot could
+        not be asked for by that name."""
+        root = self.tmp / "Dotted"
+        doc = root / "docs" / "one"
+        (doc / "sections").mkdir(parents=True)
+        text = "*One › Setting*" + chr(10) * 2 + "## Setting" + chr(10) * 2 + "The dotted option sets a value." + chr(10)
+        (doc / "sections" / ".0001-dotted.md").write_text(text, encoding="utf-8")
+        (doc / "full.md").write_text(text, encoding="utf-8")
+        (doc / "manifest.json").write_text(json.dumps({
+            "slug": "one", "title": "One", "source_pdf": "one.pdf", "page_count": 1,
+            "sections": [{"file": "sections/.0001-dotted.md", "heading": "Setting", "level": 2,
+                          "breadcrumb": "One › Setting"}]}), encoding="utf-8")
+        db = self.tmp / "dotted.sqlite3"
+        r = run("build_search_db.py", "--root", str(root), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        server = load_script("mcp_server")
+        server.CORPUS = server.Corpus(db)
+        self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
+        for asked in (".0001-dotted.md", "./.0001-dotted.md", "sections/.0001-dotted.md", "./sections/.0001-dotted.md"):
+            self.assertIn("dotted option", server.tool_get_section({"file": asked}), asked)
+
     def test_44_lookup_budget_covers_the_whole_response(self):
         """The 40,000-character budget was reset for each document that has the
         entry, so an entry in two documents came back at twice the size."""

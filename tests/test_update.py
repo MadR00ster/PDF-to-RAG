@@ -559,6 +559,19 @@ class UpdateTest(unittest.TestCase):
         self.assertEqual(stale.read_bytes(), b"refused by an earlier run")
         self.assertFalse(db.exists(), "an index appeared from a run that built nothing")
 
+    def test_53m_run_step_leaves_no_pipe_open(self):
+        """The child's stdout was read to the end but never closed, so the
+        suite printed a ResourceWarning each time a step ran."""
+        import gc
+        import warnings
+        uc = load_script("update_corpus")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            status, tail = uc.run_step([sys.executable, "-c", "print('hello')"])
+            gc.collect()
+        self.assertEqual((status, tail), (0, ["hello"]))
+        self.assertEqual([str(w.message) for w in caught if issubclass(w.category, ResourceWarning)], [])
+
     def test_53g_a_path_that_would_hide_collections_is_refused(self):
         """PDFs waiting at a corpus root would make it one collection and hide
         the others from every tool; one collection of a corpus would be

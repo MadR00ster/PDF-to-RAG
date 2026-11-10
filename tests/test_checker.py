@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _support import SCRIPTS, WS, run, handmade_document, words, load_script, schema_errors  # noqa: E402
+from _support import SCRIPTS, WS, run, handmade_document, load_script, schema_errors  # noqa: E402
 
 
 class CheckerTest(unittest.TestCase):
