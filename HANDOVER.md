@@ -24,8 +24,9 @@ Updated 2026-11-10.
 1. One change, one commit (or a few small ones). The full suite passes before
    each commit, and `python tests/run_each.py` passes before a push that adds
    tests. The suite takes about 8 minutes serially; `python tests/run_parallel.py`
-   runs the test files two at a time (about 7 on the machine it was timed on;
-   its docstring has the numbers and why wider is slower).
+   runs the test files two at a time (about 7 minutes on a 32-core Windows
+   machine, slower than serial on a 2-core CI runner; its docstring has the
+   numbers).
 2. Work on a branch and open a pull request against `main`. CI runs Linux and
    Windows, Python 3.10 and 3.13. A red cell, Windows included, is yours to fix.
 3. A bug fix comes with a test that fails without it. Show that it fails:

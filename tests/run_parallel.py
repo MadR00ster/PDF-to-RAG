@@ -12,7 +12,9 @@ Windows machine it was timed on (32 logical cores), the suite took 506 s
 serially and 436 s with two workers; with four it took 696 s and with ten 751 s,
 because the conversions that fill most tests slow each other down when many run
 at once. `test_converters.py` alone takes about 330 s, so no width gets below
-that. Time it on your own machine before raising `-j`.
+that. On a GitHub Actions Linux runner (two cores) it passed but was slower
+than the serial run, 404 s against 340 s, so CI does not use it. Time it on
+your own machine before raising `-j`.
 
   python tests/run_parallel.py            # two files at a time
   python tests/run_parallel.py -j 4       # at most four at once

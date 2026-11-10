@@ -21,7 +21,3 @@ jobs:
       # PYTHONUTF8 is deliberately not set: the scripts' handling of a
       # Windows console's legacy code page is part of what this checks.
       - run: python -m unittest discover -s tests -v
-      # The same tests, a file per process: it has to pass on Linux too, and
-      # its wall time is in this log.
-      - if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
-        run: python tests/run_parallel.py
