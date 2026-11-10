@@ -93,6 +93,60 @@ into `real` questions for `eval_search.py`; `eval_answers.py` runs questions
 through `claude -p` and grades the answers. See "Real use: log, triage, answer"
 in [references/evaluation-workflow.md](references/evaluation-workflow.md).
 
+### Connecting a corpus to Claude chat
+
+**The Claude desktop app** starts the server itself, over stdio, as VS Code
+does. Choose Settings > Developer > Edit Config. It opens
+`%APPDATA%\Claude\claude_desktop_config.json`. Add the corpus's copied
+`mcp_server.py` under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "my-corpus": {
+      "command": "python",
+      "args": ["C:\\corpora\\my-corpus\\mcp_server.py",
+               "--db", "C:\\corpora\\my-corpus\\mcp-index.sqlite3"],
+      "env": {"PDF_TO_RAG_LOG": "C:\\corpora\\calls.jsonl"}
+    }
+  }
+}
+```
+
+- Every path is absolute. The app does not expand `${workspaceFolder}`, which
+  is a VS Code variable.
+- `env` is optional; `PDF_TO_RAG_LOG` is the call log described above.
+- If `python` is not on the PATH the app sees, give the full path to
+  `python.exe` as the `command`.
+- Quit the app completely, the tray icon included, and open it again. The
+  server then appears under the `+` menu at the bottom of the chat box
+  (Connectors). If it does not, `%APPDATA%\Claude\logs\mcp-server-my-corpus.log`
+  holds its error output.
+
+**claude.ai in the browser** cannot use that entry: Anthropic's help article
+says servers configured in `claude_desktop_config.json` are not available on
+claude.ai. It needs a custom connector, which is a remote server. Claude
+reaches the server from Anthropic's cloud, not from your machine, so it must
+be on the public internet over HTTPS (Streamable HTTP) and let Anthropic's IP
+ranges in. A server reachable only on a company network or VPN will not
+connect. That is `mcp_server.py --http` behind a TLS reverse proxy (the
+sketch is in [ROADMAP.md](ROADMAP.md)). Custom connectors are on every plan;
+on Team and Enterprise only an owner can add one.
+
+For sign-in, a connector offers OAuth, no sign-in, or request headers. This
+server has no OAuth, and "no sign-in" would leave it open to anyone with the
+URL, so request headers are the fit: add `Authorization` with the value
+`Bearer <token>` typed in full, as in `PDF_TO_RAG_TOKEN`. Anthropic marks
+request headers a beta available to a limited set of organizations; if the
+dialog has no such section, your organization does not have it. Settings
+cannot be edited after a connector is added; remove it and add it again.
+
+Not confirmed: that a given organization has request headers, and that
+`mcp_server.py --http` completes claude.ai's connection. Nothing here has been
+tried against claude.ai. Check Anthropic's current
+[custom connector](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
+article before relying on it.
+
 ## Quick start
 
 Needs Python 3.10 or later: pymupdf4llm 1.28 requires it.

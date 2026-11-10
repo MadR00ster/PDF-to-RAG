@@ -149,6 +149,7 @@ fill one in with a number you did not measure.
 | Entity named inside a question is boosted | Identifier hit@1, every rank that moved | `eval_search.py --json` on indexes built before and after, `--compare`, read every moved question |
 | Page numbers on the light prose path | Strict check and figure links after reconverting prose | Reconvert two or three prose manuals; `check_corpus.py --strict`, the content check, and `extract_figures.py`'s summary against the old conversion |
 | Reference breadcrumbs from the TOC chain | Search change | `eval_search.py --json` before and after reconverting the references, `--compare` |
+| README's "Connecting a corpus to Claude chat" | Whether claude.ai accepts `mcp_server.py --http` with an `Authorization` request header and completes the handshake; whether the desktop-app entry lists the tools. Both were written from Anthropic's docs, not tried | Needs a public HTTPS URL and an organization that has request headers (beta); for the desktop app, a Windows machine with Claude installed |
 | Search experiment flags | Each flag against the default | Build an index per flag and one without, `eval_search.py --json` each, `--compare`; adopt a flag only if identifier hit@1 rises and no kind falls |
 
 Two decisions wait on these: whether either search flag becomes a default,
