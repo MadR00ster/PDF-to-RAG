@@ -249,12 +249,25 @@ shared, one place to look when it breaks.
 
 ### 2. Passage-level returns (the no-model baseline)
 
-- [ ] `get_section` takes an optional `query` and returns only the passages
+- [x] `get_section` takes an optional `query` and returns only the passages
       that match it, with enough surrounding text to be read alone.
-- [ ] Token accounting in `eval_search.py`: characters a client receives to
+      Done: a section is split at blank lines (a fenced block stays whole,
+      short blocks join the next), the blocks that hold the query's words are
+      scored (a word every block holds counts for nothing, an identifier for
+      three times a plain word), and the best come back up to 4,000 characters
+      with the block either side while there is room, in section order, the
+      gaps marked and the way to the whole section named. A section that fits,
+      one where nothing matches, and one where the passages would be more than
+      three quarters of it come back whole.
+- [x] Token accounting in `eval_search.py`: characters a client receives to
       reach the answer, per question.
-- [ ] Record the baseline before and after. `ask_docs` has to beat this, not
+      Done: `--cost`. It counts the results page, the answer section whole and
+      as passages, and the page plus every section read down to the answer.
+- [x] Record the baseline before and after. `ask_docs` has to beat this, not
       the current whole-section numbers.
+      Done, in `references/retrieval-measurement.md` ("What a client reads").
+      Median characters to reach the answer, page plus the answer's section:
+      10,222 whole, 9,485 as passages. `ask_docs` has to beat the second.
 
 ### 3. `ask_docs`
 

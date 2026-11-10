@@ -49,7 +49,7 @@ API key, no network.
 | tool | returns |
 |---|---|
 | `search_docs` | BM25-ranked sections with document, breadcrumb and page |
-| `get_section` | the full text of one section, optionally with its neighbours |
+| `get_section` | the full text of one section, optionally with its neighbours; with `query`, only the passages of a long section that match it |
 | `lookup_entity` | one command, function, error code or DRC rule, reassembled from all its chunks |
 | `explain_log` | every message code and DRC rule a pasted tool log names, errors first, each with its entry and page |
 | `check_script` | every command and option a Tcl script uses, checked against the reference entries: unknown ones with line numbers and nearest names, known ones with document and page |

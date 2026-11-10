@@ -65,20 +65,6 @@ decision: report the numbers and stop.
 The prose-converter result also unblocks the ten unconverted older PDFs, which
 wait on that choice.
 
-## Phase F: passage-level `get_section` (ROADMAP step 2)
-
-Build this before `ask_docs`. It needs no model and no host, and it is the
-baseline `ask_docs` has to beat.
-
-- F1. `get_section` takes an optional `query` and returns only the passages
-  that match it, with enough around each to be read alone.
-- F2. `eval_search.py` counts the characters a client receives to reach the
-  answer, per question.
-- F3. Record the baseline before and after.
-
-`ask_docs` and the Gaudi deployment stay deferred until D5's log shows how
-many questions are really asked.
-
 ## Decisions for the user, not work to start
 
 - **Split `mcp_server.py`?** It is 2,815 lines because it ships as one file

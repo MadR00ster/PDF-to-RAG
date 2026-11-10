@@ -298,6 +298,44 @@ class ServerTest(unittest.TestCase):
                          ["what does set_widget_option_03 do", "set_widget_option_04"])
         self.assertIn("git_commit", saved)
         self.assertTrue(saved["git_commit"] is None or isinstance(saved["git_commit"], str))
+        self.assertNotIn("cost", saved["results"][0], "reading cost was counted without --cost")
+
+    def test_60g_cost_counts_what_a_client_reads_to_reach_the_answer(self):
+        server = load_script("mcp_server")
+        server.CORPUS = server.Corpus(WS.index())
+        self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
+        # A question every fixture section can answer: its own heading, kept where it ranks in the top ten.
+        asked = []
+        for row in server.CORPUS.db.execute("SELECT slug, file, heading FROM chunks WHERE heading != '' ORDER BY rowid"):
+            if any(r["slug"] == row["slug"] and r["file"] == row["file"] for r in server.search(row["heading"], limit=10)):
+                asked.append({"id": f"c{len(asked)}", "kind": "concept", "question": row["heading"],
+                              "answers": [{"slug": row["slug"], "file": "sections/" + row["file"].rsplit("/", 1)[-1]}]})
+            if len(asked) == 3:
+                break
+        self.assertEqual(len(asked), 3, "the fixture has no sections that answer their own heading")
+        questions = self.tmp / "cost-questions.jsonl"
+        questions.write_text(chr(10).join(json.dumps(q) for q in asked), encoding="utf-8")
+        out = self.tmp / "cost-run.json"
+        r = run("eval_search.py", "--db", str(WS.index()), "--questions", str(questions), "--cost", "--json", str(out))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Characters a client reads to reach the answer", r.stdout)
+        self.assertIn("page + answer section, passages", r.stdout)
+        for result in json.loads(out.read_text(encoding="utf-8"))["results"]:
+            cost = result["cost"]
+            self.assertGreater(cost["page"], 0)
+            self.assertEqual(cost["direct_whole"], cost["page"] + cost["section_whole"])
+            self.assertLessEqual(cost["section_passages"], cost["section_whole"])
+            self.assertGreaterEqual(cost["down_whole"], cost["direct_whole"])
+            self.assertEqual(cost["terms_kept"], 1.0, "a short fixture section was narrowed")
+
+    def test_60f_terms_kept_counts_the_questions_words_the_passages_still_hold(self):
+        evaluator = load_script("eval_search")
+        whole = "The zorbulate option flushes buffers. Clocks gate the reset."
+        self.assertEqual(evaluator.terms_kept(whole, whole, "zorbulate buffers reset"), 1.0)
+        # Cut down to one sentence: "zorbulate" and "buffers" stay, "reset" is gone.
+        cut = "The zorbulate option flushes buffers." + chr(10) * 2 + "Passages matching `reset`: 3 of 9 characters."
+        self.assertAlmostEqual(evaluator.terms_kept(whole, cut, "zorbulate buffers reset"), 2 / 3)
+        self.assertEqual(evaluator.terms_kept("nothing here", "nothing here", "zorbulate"), 1.0)
 
 
     def test_45_remap_answers_follows_the_text_across_a_reconversion(self):
@@ -626,6 +664,95 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
         for asked in (".0001-dotted.md", "./.0001-dotted.md", "sections/.0001-dotted.md", "./sections/.0001-dotted.md"):
             self.assertIn("dotted option", server.tool_get_section({"file": asked}), asked)
+
+    def long_section(self, name: str, blocks: list[str]):
+        """A server over a one-section document made of `blocks`, and the
+        section_id of that section."""
+        root = self.tmp / name
+        doc = root / "docs" / "one"
+        (doc / "sections").mkdir(parents=True)
+        nl = chr(10)
+        text = "*One › Long*" + nl * 2 + "## Long" + nl * 2 + (nl * 2).join(blocks) + nl
+        (doc / "sections" / "0001-long.md").write_text(text, encoding="utf-8")
+        (doc / "full.md").write_text(text, encoding="utf-8")
+        (doc / "manifest.json").write_text(json.dumps({
+            "slug": "one", "title": "One", "source_pdf": "one.pdf", "page_count": 1,
+            "sections": [{"file": "sections/0001-long.md", "heading": "Long", "level": 2,
+                          "breadcrumb": "One › Long"}]}), encoding="utf-8")
+        db = self.tmp / f"{name}.sqlite3"
+        r = run("build_search_db.py", "--root", str(root), "--out", str(db))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        server = load_script("mcp_server")
+        server.CORPUS = server.Corpus(db)
+        self.addCleanup(lambda: server.CORPUS._db and server.CORPUS._db.close())
+        return server, server.CORPUS.db.execute("SELECT rowid FROM chunks").fetchone()[0]
+
+    def test_60_a_query_returns_the_passages_that_match_it(self):
+        """A long section read for one answer cost all of it. With a `query`,
+        the passages that hold the query's words come back, whole, in their
+        order, with the gaps said and the way to the rest."""
+        filler = [f"Paragraph {n} of the guide describes unrelated housekeeping for the gadget in some detail. " * 4
+                  for n in range(40)]
+        needle = "The zorbulate option controls how the gadget flushes its buffers after a reset. " * 3
+        blocks = filler[:20] + [needle.strip()] + filler[20:]
+        server, sid = self.long_section("passages", blocks)
+        whole = server.tool_get_section({"section_id": sid})
+        part = server.tool_get_section({"section_id": sid, "query": "how does zorbulate flush buffers"})
+        self.assertGreater(len(whole), 10_000)
+        self.assertLess(len(part), len(whole) // 2, "the section was not narrowed")
+        self.assertIn(needle.strip(), part, "the matching passage came back cut or not at all")
+        self.assertIn("characters omitted", part)
+        self.assertIn("Call get_section without `query` for the whole section.", part)
+        self.assertTrue(part.startswith("# Long"), "the section's own heading and citation are kept")
+        # With no query, or a blank one, nothing changes.
+        self.assertEqual(server.tool_get_section({"section_id": sid, "query": "  "}), whole)
+        self.assertNotIn("characters omitted", whole)
+
+    def test_60b_a_passage_is_never_cut_inside_and_keeps_its_order(self):
+        server, sid = self.long_section("passages-order", [
+            ("Alpha " + f"filler number {n} " * 60 + "end.") for n in range(30)]
+            + ["The quokka setting is described here. " * 12, "A fenced example follows." + chr(10) + "```" + chr(10)
+               + "set_quokka 1" + chr(10) * 2 + "set_quokka 2" + chr(10) + "```", "The quokka setting ends here. " * 12])
+        part = server.tool_get_section({"section_id": sid, "query": "quokka"})
+        body = part.split("file: ", 1)[1].split(chr(10), 1)[1]
+        whole = server.CORPUS.db.execute("SELECT body FROM chunks WHERE rowid = ?", (sid,)).fetchone()[0]
+        pieces = [p for p in body.split(chr(10) * 2) if not p.startswith(("[…", "Passages matching"))]
+        # a fenced block holding a blank line is one passage: its two halves are both there, and in order
+        self.assertIn("set_quokka 1" + chr(10) * 2 + "set_quokka 2", part)
+        position = -1
+        for piece in pieces:
+            found = whole.find(piece, position + 1)
+            self.assertGreater(found, -1, f"text that is not in the section, in this order: {piece[:60]!r}")
+            position = found
+
+    def test_60c_a_query_that_matches_nothing_or_a_short_section_gives_the_whole(self):
+        server, sid = self.long_section("passages-none", [f"Paragraph {n} is about the gadget. " * 20 for n in range(30)])
+        whole = server.tool_get_section({"section_id": sid})
+        self.assertEqual(server.tool_get_section({"section_id": sid, "query": "xylophone"}), whole)
+        self.assertEqual(server.tool_get_section({"section_id": sid, "query": "the and of"}), whole,
+                         "a query of stopwords alone narrowed the section by words that mean nothing")
+        short, short_id = self.long_section("passages-short", ["The only paragraph mentions zorbulate."])
+        self.assertEqual(short.tool_get_section({"section_id": short_id, "query": "zorbulate"}),
+                         short.tool_get_section({"section_id": short_id}))
+
+    def test_60d_a_small_saving_is_not_taken(self):
+        """A section a little over the budget, whose five passages each hold
+        one of the query's words, would lose only its last one: not worth the
+        risk of leaving out what answers, so it is returned whole."""
+        words = ["alpha", "bravo", "charlie", "delta", "echo"]
+        blocks = [f"Gadget paragraph about {w} " + f"filler number {n} " * 60 for n, w in enumerate(words)]
+        server, sid = self.long_section("passages-small", blocks)
+        whole = server.tool_get_section({"section_id": sid})
+        self.assertGreater(len(whole), server.PASSAGE_BUDGET)
+        self.assertEqual(server.tool_get_section({"section_id": sid, "query": " ".join(words)}), whole)
+        # One word of the five picks one passage and its neighbours: that is a real saving.
+        self.assertLess(len(server.tool_get_section({"section_id": sid, "query": "charlie"})), len(whole))
+
+    def test_60e_the_query_is_part_of_the_tools_schema(self):
+        server, _ = self.long_section("passages-schema", ["One paragraph."])
+        tool = next(t for t in server.build_tools() if t["name"] == "get_section")
+        self.assertIn("query", tool["inputSchema"]["properties"])
+        self.assertIn("query", tool["description"])
 
     def test_44_lookup_budget_covers_the_whole_response(self):
         """The 40,000-character budget was reset for each document that has the

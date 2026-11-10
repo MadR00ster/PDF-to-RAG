@@ -65,6 +65,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
@@ -939,6 +940,122 @@ def like_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# get_section with a `query` returns the passages of a section that match it,
+# not all of it. A passage is a block between blank lines (a fenced code block
+# is one block); blocks shorter than PASSAGE_MIN_CHARS are joined to the one
+# after them, so a heading or a lead-in sentence travels with what it
+# introduces, and a block is never cut inside. A section that already fits in
+# PASSAGE_BUDGET is returned whole.
+PASSAGE_MIN_CHARS = 300
+PASSAGE_BUDGET = 4_000
+PASSAGE_WORTH = 0.75     # narrow only if the passages are at most this share of the section
+
+
+def split_passages(body: str) -> list[str]:
+    blocks, current, fenced = [], [], False
+    for line in body.split("\n"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        if not line.strip() and not fenced:
+            if current:
+                blocks.append("\n".join(current))
+                current = []
+        else:
+            current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+    passages, pending = [], ""
+    for block in blocks:
+        pending = f"{pending}\n\n{block}" if pending else block
+        if len(pending) >= PASSAGE_MIN_CHARS:
+            passages.append(pending)
+            pending = ""
+    if pending:
+        if passages:
+            passages[-1] += "\n\n" + pending
+        else:
+            passages.append(pending)
+    return passages
+
+
+def light_stem(word: str) -> str:
+    """Enough of a stemmer for `clock` to meet `clocks` and `clocked`. The index
+    stems with Porter; a passage is matched against the query with this."""
+    for suffix in ("ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[:-len(suffix)]
+    return word
+
+
+def query_terms(query: str) -> list[tuple[str, bool]]:
+    """What a passage is matched on: the query's words without the stopwords
+    (unless nothing else is left), each with whether it names an identifier."""
+    tokens = query_tokens(query)
+    content = [(tok, ident) for tok, ident in tokens if ident or tok not in STOPWORDS]
+    return content or tokens
+
+
+def passage_scores(passages: list[str], query: str) -> list[float]:
+    """How well each passage answers `query`: the query's terms it holds, a term
+    counting for less the more passages hold it (a word every passage has says
+    nothing about which one answers), an identifier for three times as much."""
+    terms = query_terms(query)
+    lowered = [p.lower() for p in passages]
+    words = [{light_stem(w) for w in re.findall(r"[a-z0-9_-]+", text)} for text in lowered]
+    scores = [0.0] * len(passages)
+    for tok, ident in terms:
+        if ident or not tok.isalnum():
+            who = {i for i, text in enumerate(lowered) if tok in text}
+        else:
+            stem = light_stem(tok)
+            who = {i for i, w in enumerate(words) if stem in w}
+        if len(who) == len(passages) > 1:
+            continue                    # every passage holds it, so it picks none
+        for i in who:
+            scores[i] += (3.0 if ident else 1.0) * math.log(1 + len(passages) / len(who))
+    return scores
+
+
+def matching_passages(body: str, query: str) -> str | None:
+    """The part of `body` that answers `query`, or None when there is nothing to
+    narrow: the body fits already, or no passage holds a word of the query.
+
+    The best passages first, up to PASSAGE_BUDGET characters, then the block
+    either side of each while there is room; in the order they have in the
+    section, with the gaps said."""
+    if len(body) <= PASSAGE_BUDGET:
+        return None
+    passages = split_passages(body)
+    scores = passage_scores(passages, query)
+    ranked = [i for i in sorted(range(len(passages)), key=lambda i: (-scores[i], i)) if scores[i] > 0]
+    if not ranked:
+        return None
+    chosen, used = set(), 0
+    for i in ranked:                    # the passages that match
+        if chosen and used + len(passages[i]) > PASSAGE_BUDGET:
+            continue
+        chosen.add(i)
+        used += len(passages[i])
+    for i in sorted(chosen, key=lambda i: (-scores[i], i)):     # what is around them
+        for near in (i - 1, i + 1):
+            if 0 <= near < len(passages) and near not in chosen and used + len(passages[near]) <= PASSAGE_BUDGET:
+                chosen.add(near)
+                used += len(passages[near])
+    if used > PASSAGE_WORTH * sum(map(len, passages)):
+        return None                     # a small saving is not worth the risk of leaving the answer out
+    out, last = [], -1
+    for i in sorted(chosen):
+        if i != last + 1:
+            out.append(f"[… {sum(len(passages[j]) for j in range(last + 1, i)):,} characters omitted …]")
+        out.append(passages[i])
+        last = i
+    if last + 1 < len(passages):
+        out.append(f"[… {sum(len(passages[j]) for j in range(last + 1, len(passages))):,} characters omitted …]")
+    out.append(f"Passages matching `{query}`: {used:,} of {sum(map(len, passages)):,} characters. "
+               "Call get_section without `query` for the whole section.")
+    return "\n\n".join(out)
+
+
 def tool_get_section(args: dict) -> str:
     section_id, file_arg = args.get("section_id"), args.get("file")
     if section_id is not None:
@@ -963,15 +1080,21 @@ def tool_get_section(args: dict) -> str:
     else:
         raise ValueError("Pass either `section_id` (from search results) or `file`.")
 
+    query = str(args.get("query") or "").strip()
+
+    def shown(r: sqlite3.Row) -> str:
+        part = matching_passages(r["body"], query) if query else None
+        return format_section(r, r["body"] if part is None else part)
+
     context = clamp_int(args.get("context"), 0, 0, 3)
     if not context:
-        return format_section(row, row["body"])
+        return shown(row)
     neighbours = CORPUS.db.execute(
         SECTION_SELECT + " WHERE slug = ? AND collection = ? AND ord BETWEEN ? AND ? ORDER BY ord",
         (row["slug"], row["collection"], row["ord"] - context, row["ord"] + context),
     ).fetchall()
     return "\n\n".join(
-        f"---{'  <-- requested section' if n['id'] == row['id'] else ''}\n" + format_section(n, n["body"])
+        f"---{'  <-- requested section' if n['id'] == row['id'] else ''}\n" + shown(n)
         for n in neighbours
     )
 
@@ -2246,7 +2369,10 @@ def build_tools() -> list[dict]:
                 "Return the full markdown of one section chunk, by section_id from a search "
                 "result or by file path. Use it when the snippet is not enough. `context` also "
                 "returns neighbouring sections, which is how you read a procedure that "
-                "continues past one chunk. It also lists the section's figures by figure_id."
+                "continues past one chunk. It also lists the section's figures by figure_id. "
+                "A long section costs many tokens: pass `query` (your question, or the words you "
+                "are looking for) to get only the passages that match it, about 4,000 characters "
+                "at most, with the gaps marked."
             ),
             "inputSchema": {
                 "type": "object",
@@ -2254,6 +2380,7 @@ def build_tools() -> list[dict]:
                     "section_id": {"type": "integer", "description": "section_id from a search result."},
                     "file": {"type": "string", "description": "Path as shown in a search result."},
                     "context": {"type": "integer", "description": "Also return this many sections either side, 0-3 (default 0)."},
+                    "query": {"type": "string", "description": "Return only the passages of a long section that match these words."},
                 },
             },
         },

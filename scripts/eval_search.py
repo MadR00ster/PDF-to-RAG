@@ -7,6 +7,7 @@ that answers it rank?
   python scripts/eval_search.py --db ... --questions ... --misses        # what came back instead
   python scripts/eval_search.py --db ... --questions ... --json run.json # keep a run to compare
   python scripts/eval_search.py --compare before.json after.json         # what moved between two runs
+  python scripts/eval_search.py --db ... --questions ... --cost          # characters a client reads to reach the answer
 
 Runs the server's own search() in-process with its defaults -- the ranking an
 agent's first search_docs call gets, stopwords, fallback, front-matter demotion
@@ -43,6 +44,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import statistics
 import subprocess
 import sys
 from pathlib import Path
@@ -141,6 +144,64 @@ def git_commit() -> str | None:
     return out.stdout.strip() or None if out.returncode == 0 else None
 
 
+def reading_cost(rows, rank: int, question: str) -> dict:
+    """What a client takes in to reach the answer, in characters, through the
+    tools as they are: the page of results search_docs returns, then the answer
+    section from get_section whole and again with the question as `query`
+    (passages). "direct" is the page plus the answer's section, for a client
+    that fetches the right one; "down" is the page plus every section from the
+    first result to the answer, for one that reads down the list."""
+    page = len(mcp_server.format_results(rows, question))
+    whole_text = [mcp_server.tool_get_section({"section_id": r["id"]}) for r in rows[:rank]]
+    passage_text = [mcp_server.tool_get_section({"section_id": r["id"], "query": question}) for r in rows[:rank]]
+    whole, passages = [len(x) for x in whole_text], [len(x) for x in passage_text]
+    return {"page": page, "section_whole": whole[-1], "section_passages": passages[-1],
+            "direct_whole": page + whole[-1], "direct_passages": page + passages[-1],
+            "down_whole": page + sum(whole), "down_passages": page + sum(passages),
+            "terms_kept": terms_kept(whole_text[-1], passage_text[-1], question)}
+
+
+def terms_kept(whole: str, passages: str, question: str) -> float:
+    """Of the question's words that the answer section holds, the share the
+    passages still hold. Not the answer itself -- the questions do not carry
+    one -- but a passage that has lost the words the question was asked in has
+    lost something. 1.0 when nothing was cut."""
+    passages = passages.split("\n\nPassages matching `")[0]       # that line quotes the question back
+    def holds(text: str) -> set[str]:
+        lowered = text.lower()
+        stems = {mcp_server.light_stem(w) for w in re.findall(r"[a-z0-9_-]+", lowered)}
+        return {tok for tok, ident in mcp_server.query_terms(question)
+                if (tok in lowered if ident or not tok.isalnum() else mcp_server.light_stem(tok) in stems)}
+    in_whole = holds(whole)
+    return len(holds(passages) & in_whole) / len(in_whole) if in_whole else 1.0
+
+
+def print_cost(results: list[dict]) -> None:
+    reached = [r["cost"] for r in results if r.get("cost")]
+    if not reached:
+        print("\nNo question reached its answer, so there is no reading cost to report.")
+        return
+    print(f"\nCharacters a client reads to reach the answer ({len(reached)} of {len(results)} questions "
+          f"reach it in the top {LIMIT}; 3.5 characters is about a token):")
+    print(f"{'':44} {'median':>9} {'mean':>9} {'90th pct':>9}")
+    rows = (("page of results", "page"),
+            ("answer section, whole", "section_whole"), ("answer section, passages", "section_passages"),
+            ("page + answer section, whole", "direct_whole"), ("page + answer section, passages", "direct_passages"),
+            ("page + every section down to it, whole", "down_whole"),
+            ("page + every section down to it, passages", "down_passages"))
+    for label, key in rows:
+        values = sorted(c[key] for c in reached)
+        print(f"{label:44} {statistics.median(values):>9,.0f} {statistics.mean(values):>9,.0f} "
+              f"{values[int(0.9 * (len(values) - 1))]:>9,}")
+    cut = [c for c in reached if c["section_passages"] < c["section_whole"]]
+    print(f"{len(cut)} of {len(reached)} answer sections were cut to their matching passages; "
+          "the rest came whole.")
+    if cut:
+        kept = [c["terms_kept"] for c in cut]
+        print(f"Of the question's words the whole section holds, the cut ones kept {statistics.mean(kept):.1%} "
+              f"on average, at worst {min(kept):.0%}; {sum(1 for k in kept if k < 1)} of {len(cut)} lost at least one.")
+
+
 def rank_text(rank) -> str:
     return "-" if rank is None else str(rank)
 
@@ -192,6 +253,9 @@ def main() -> int:
     ap.add_argument("--questions", type=Path, help="questions.jsonl")
     ap.add_argument("--misses", action="store_true", help="print each question missing the top 5")
     ap.add_argument("--json", type=Path, help="write per-question results here")
+    ap.add_argument("--cost", action="store_true",
+                    help="also count the characters a client reads to reach each answer, "
+                         "with get_section whole and with the question as its `query`")
     ap.add_argument("--compare", nargs=2, type=Path, metavar=("A.json", "B.json"),
                     help="compare two runs saved with --json; needs no index")
     args = ap.parse_args()
@@ -225,13 +289,16 @@ def main() -> int:
             errors.append(f"{q.get('id')}: {exc}")
             rows = []
         rank = next((i for i, row in enumerate(rows, 1) if is_answer(row, q["answers"])), None)
-        results.append({
+        result = {
             "id": q.get("id"),
             "kind": q.get("kind", "-"),
             "question": q["question"],
             "rank": rank,
             "top": [f"{row['slug']} · {row['file'].rsplit('/', 1)[-1]}" for row in rows[:3]],
-        })
+        }
+        if args.cost and rank:
+            result["cost"] = reading_cost(rows, rank, q["question"])
+        results.append(result)
 
     groups: dict[str, list] = {}
     for r in results:
@@ -252,6 +319,9 @@ def main() -> int:
     print(f"{'kind':12} {'n':>4} " + " ".join(f"{'hit@' + str(k):>7}" for k in KS) + f" {'MRR':>6}")
     for kind, s in summary.items():
         print(f"{kind:12} {s['n']:>4} " + " ".join(f"{s[f'hit@{k}']:>7.0%}" for k in KS) + f" {s['mrr']:>6.3f}")
+
+    if args.cost:
+        print_cost(results)
 
     if args.misses:
         print("\nMissed the top 5:")

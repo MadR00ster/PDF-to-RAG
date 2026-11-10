@@ -119,6 +119,39 @@ machine, a model download and a dependency, and a re-embed after every
 conversion. Real users' questions (kind `real`) missing in a way this test set
 does not would be the reason to revisit.
 
+## What a client reads to reach the answer
+
+`eval_search.py --cost` counts the characters a client takes in on the way to
+the answer, through the tools as they ship. Production's corpus (34 documents,
+26,491 chunks), indexed with `build_search_db.py --out <scratch folder>`, all 76
+questions, 70 of which reach their answer in the top ten (ranking as before:
+68% hit@1, 92% hit@5, MRR 0.789):
+
+| characters | median | mean | 90th percentile |
+|---|---|---|---|
+| the page of results `search_docs` returns | 5,384 | 5,392 | 5,877 |
+| the answer's section, `get_section` whole | 4,924 | 5,160 | 8,547 |
+| the answer's section, `get_section` with `query` | 4,270 | 3,872 | 4,982 |
+| page + the answer's section, whole | 10,222 | 10,552 | 13,929 |
+| page + the answer's section, passages | 9,485 | 9,265 | 10,540 |
+| page + every section read down to it, whole | 11,334 | 11,947 | 16,958 |
+| page + every section read down to it, passages | 9,791 | 10,431 | 14,606 |
+
+(3.5 characters is about a token. The "whole" rows are what `get_section` returned before it took a `query`: the same code path, unchanged.) Of the 70, 30 answer sections were long
+enough to be narrowed; the other 40 came whole, because they fit in the 4,000
+character budget or because the passages would have been over three quarters of
+the section. Passages save 7% of the median, 12% of the mean and 24% at the
+90th percentile of reaching the answer. The results page, not the section, is
+the larger half of the cost, and passages do not touch it.
+
+What this does not say: that the passages hold the answer. The questions carry
+no answer text, only which section answers, so the check is a proxy. Of the
+question's words that the whole section holds, the narrowed ones kept 99.7% on
+average and at worst 90% (one of the 30 lost a word). That is a floor on
+recall, not recall; the queries here are the full questions, and a client that
+passes two keywords narrows differently. Real use (`real` questions) is what
+would show passages leaving the answer out.
+
 ## Figures
 
 `extract_figures.py` then `ocr_figures.py` over all 24 manuals:
