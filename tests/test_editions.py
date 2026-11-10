@@ -439,6 +439,26 @@ class EditionsTest(unittest.TestCase):
         self.assertEqual(corpus.root, nested, "an index in a subfolder of a moved corpus reads the old corpus")
         corpus._db.close()
 
+    def test_22e_a_rebuild_keeps_what_was_added_to_the_editor_entry(self):
+        """The entry was written from scratch on every build, so an `env` block
+        added to it -- the call log is switched on there -- was gone after the
+        next index rebuild, and the log stopped without a word."""
+        self.use_gadgets("keeps-env")
+        config = self.root / ".vscode" / "mcp.json"
+        config.parent.mkdir(exist_ok=True)
+        env = {"PDF_TO_RAG_LOG": "~/calls.jsonl"}
+        config.write_text(json.dumps({"servers": {"my-manuals": {
+            "type": "stdio", "command": "python",
+            "args": ["X:\\old\\checkout\\scripts\\mcp_server.py", "--db", str(self.root / "mcp-index.sqlite3")],
+            "env": env, "envFile": "${workspaceFolder}/.env"}}}), encoding="utf-8")
+        r = run("build_search_db.py", "--root", str(self.root), "--emit-vscode-config")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        entry = json.loads(config.read_text(encoding="utf-8"))["servers"]["my-manuals"]
+        self.assertEqual(entry.get("env"), env, "the entry's env block was dropped")
+        self.assertEqual(entry.get("envFile"), "${workspaceFolder}/.env")
+        self.assertEqual(entry["args"], ["${workspaceFolder}/mcp_server.py", "--db",
+                                         "${workspaceFolder}/mcp-index.sqlite3"], "the paths were not rewritten")
+
     def test_22c_an_entry_naming_the_index_another_way_is_reused(self):
         """An editor entry that reaches this index by another path is still
         this index's entry.
