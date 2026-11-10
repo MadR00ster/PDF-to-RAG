@@ -748,12 +748,15 @@ def emit_vscode_config(root: Path, db_path: Path) -> Path:
 
     servers = existing.setdefault("servers", {})
     # This corpus's entry is rewritten under whatever name it was given;
-    # every other entry is left as it is.
+    # every other entry is left as it is. What else the entry holds stays:
+    # its `env` block is where the call log is switched on, and a rebuild
+    # must not switch it off.
     mine = [name for name, cfg in servers.items() if serves_this_index(cfg)]
     name = mine[0] if mine else slugify(root.name) + "-docs"
     while name in servers and not serves_this_index(servers[name]):
         name += "-2"
     servers[name] = {
+        **(servers[name] if mine else {}),
         "type": "stdio",
         "command": "python",
         "args": ["${workspaceFolder}/" + SERVER_NAME, "--db", db_arg],
