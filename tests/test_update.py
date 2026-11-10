@@ -562,14 +562,18 @@ class UpdateTest(unittest.TestCase):
     def test_53m_run_step_leaves_no_pipe_open(self):
         """The child's stdout was read to the end but never closed, so the
         suite printed a ResourceWarning each time a step ran."""
+        import contextlib
         import gc
+        import io
         import warnings
         uc = load_script("update_corpus")
-        with warnings.catch_warnings(record=True) as caught:
+        shown = io.StringIO()               # run_step echoes the step; keep that out of the suite's output
+        with warnings.catch_warnings(record=True) as caught, contextlib.redirect_stdout(shown):
             warnings.simplefilter("always")
             status, tail = uc.run_step([sys.executable, "-c", "print('hello')"])
             gc.collect()
         self.assertEqual((status, tail), (0, ["hello"]))
+        self.assertIn("hello", shown.getvalue(), "the step's output was not passed on")
         self.assertEqual([str(w.message) for w in caught if issubclass(w.category, ResourceWarning)], [])
 
     def test_53g_a_path_that_would_hide_collections_is_refused(self):

@@ -8,7 +8,7 @@ it, what bit earlier sessions, and what is still open.
 
 Updated 2026-11-10.
 
-- `main` has every merged pull request (#1–#13). 124 tests, 1 skipped where
+- `main` has every merged pull request (#1–#13). 129 tests, 1 skipped where
   Tesseract's language data is missing; `python tests/run_each.py` passes too.
 - The October 2026 review (`IMPROVEMENT.md`) and the plan that carried it out
   (`TODO.md`, tasks T01–T26) are finished and were deleted on 2026-11-09. Read
@@ -95,7 +95,7 @@ Updated 2026-11-10.
   `update_corpus.py` (53h, on `editions.waiting_collections`, is in
   `test_editions.py`); 54–54b the server's call log; 55–55c `triage_log.py`;
   56–56c `eval_answers.py`; 57–58f `check_script`; 59–59j the HTTP transport;
-  60–60g `get_section`'s passages and `eval_search.py --cost`.
+  60–60l `get_section`'s passages and `eval_search.py --cost`.
   22d is the server copy only the index it serves may refresh; 25g is
   `editions.publish` putting the old document back.
 - test_53i reads the bash blocks under README's "The same, step by step" and

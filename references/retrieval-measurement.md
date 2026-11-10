@@ -123,34 +123,76 @@ does not would be the reason to revisit.
 
 `eval_search.py --cost` counts the characters a client takes in on the way to
 the answer, through the tools as they ship. Production's corpus (34 documents,
-26,491 chunks), indexed with `build_search_db.py --out <scratch folder>`, all 76
-questions, 70 of which reach their answer in the top ten (ranking as before:
-68% hit@1, 92% hit@5, MRR 0.789):
+26,491 chunks), read through its live index, all 76 questions, 70 of which reach
+their answer in the top ten (ranking as before: 68% hit@1, 92% hit@5, MRR
+0.789):
 
 | characters | median | mean | 90th percentile |
 |---|---|---|---|
 | the page of results `search_docs` returns | 5,384 | 5,392 | 5,877 |
 | the answer's section, `get_section` whole | 4,924 | 5,160 | 8,547 |
-| the answer's section, `get_section` with `query` | 4,270 | 3,872 | 4,982 |
+| the answer's section, `get_section` with `query` | 4,243 | 4,186 | 5,865 |
 | page + the answer's section, whole | 10,222 | 10,552 | 13,929 |
-| page + the answer's section, passages | 9,485 | 9,265 | 10,540 |
+| page + the answer's section, passages | 9,618 | 9,579 | 11,217 |
 | page + every section read down to it, whole | 11,334 | 11,947 | 16,958 |
-| page + every section read down to it, passages | 9,791 | 10,431 | 14,606 |
+| page + every section read down to it, passages | 10,138 | 10,862 | 15,965 |
 
-(3.5 characters is about a token. The "whole" rows are what `get_section` returned before it took a `query`: the same code path, unchanged.) Of the 70, 30 answer sections were long
-enough to be narrowed; the other 40 came whole, because they fit in the 4,000
-character budget or because the passages would have been over three quarters of
-the section. Passages save 7% of the median, 12% of the mean and 24% at the
-90th percentile of reaching the answer. The results page, not the section, is
-the larger half of the cost, and passages do not touch it.
+(3.5 characters is about a token. The "whole" rows are what `get_section`
+returned before it took a `query`: the same code path, unchanged.) Of the 70, 23
+answer sections were narrowed; the other 47 came whole, because they fit in the
+4,000 character budget or because the passages would have been over three
+quarters of the section. Passages save 6% of the median, 9% of the mean and 20%
+at the 90th percentile of reaching the answer. The results page, not the
+section, is the larger half of the cost, and passages do not touch it.
+
+### Holes inside lists
+
+The first version of the passages split a section at blank lines. The converter
+puts a blank line between every bullet and the paragraph that explains it, and
+keeps no indentation, so a list is many small blocks, and the scorer kept some
+and dropped the ones between: the answer to "what kinds of black boxes does
+Design Compiler topographical mode support?" came back with the explanation of
+its first kind missing, in the middle of the list that is the answer. Measured
+on the 30 answer sections that version narrowed, counting each gap that has text
+on both sides and a list item, a lead-in (a paragraph ending in a colon) or a
+heading right beside it:
+
+| | narrowed | gaps | beside a list, lead-in or heading | sections with one |
+|---|---|---|---|---|
+| first version | 30 of 70 | 71 | 32 (24 list, 8 lead-in or heading) | 17 |
+| now | 23 of 70 | 18 | 0 | 0 |
+
+Two rules did it, and neither did it alone:
+
+- A list is one passage: its lead-in, the items, the paragraphs between items
+  (at most two in a row, never a heading) and one paragraph after the last
+  item, when that is no longer than 2,000 characters. A longer list is cut
+  where the scorer says, because narrowing has to cut somewhere. A passage also
+  never ends on a heading or a lead-in, so what it introduces goes with it.
+- A gap of at most 900 characters between two chosen passages is returned, not
+  marked: the marker says something is missing, and a short gap costs less to
+  return than to explain.
+
+Swept on the same 76 questions, with the list limit at 0, 1,500, 2,000 and
+3,000 characters and the gap at 0, 300, 600, 900 and 1,200: the list rule alone
+(2,000, no gap) left 9 gaps beside a list in 6 sections; the gap rule alone (900,
+no list rule) left 9 in 7; together at 600 they left 5 in 4; together at 900
+none (every row of the sweep also has the rule that a passage never ends on a
+heading or a lead-in). The values were picked from that sweep on those
+questions, so they are fitted to them: 900 is the smallest gap tried that left
+no hole, and a different manual could still show one. The cost of choosing them
+is the saving above, which was 7%, 12% and 24% before.
 
 What this does not say: that the passages hold the answer. The questions carry
 no answer text, only which section answers, so the check is a proxy. Of the
-question's words that the whole section holds, the narrowed ones kept 99.7% on
-average and at worst 90% (one of the 30 lost a word). That is a floor on
+question's words that the whole section holds, the narrowed ones kept 99.4% on
+average and at worst 86% (one of the 23 lost a word). That is a floor on
 recall, not recall; the queries here are the full questions, and a client that
-passes two keywords narrows differently. Real use (`real` questions) is what
-would show passages leaving the answer out.
+passes two keywords narrows differently. Reading seven of the narrowed sections
+(black boxes, automatic mode, `-applies_to`, `-Cell_constraints`,
+`+ntb_solver_bias_mode_auto`, `report_scan_path` and boundary-scan pin mapping)
+against their questions, each still held what the question asks. Real use
+(`real` questions) is what would show passages leaving the answer out.
 
 ## Figures
 

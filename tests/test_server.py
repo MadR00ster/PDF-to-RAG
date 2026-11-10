@@ -754,6 +754,105 @@ class ServerTest(unittest.TestCase):
         self.assertIn("query", tool["inputSchema"]["properties"])
         self.assertIn("query", tool["description"])
 
+    QUESTION = "what kinds of widgets are supported"
+
+    def kinds_section(self, first_explanation: int) -> str:
+        """A section laid out the way a converted manual lays out a list of
+        kinds: a lead-in, bullets with a blank line between every one and a
+        paragraph that explains each, sub-bullets with no indentation worth the
+        name, and paragraphs that match the question and paragraphs that do not
+        around it. The explanations share none of the question's words."""
+        nl = chr(10)
+
+        def explain(text: str, size: int) -> str:
+            return (text * (size // len(text) + 1))[:size].rsplit(" ", 1)[0] + "."
+        filler = [f"Section {n} covers housekeeping for the sprocket in some detail and mentions nothing else. " * 5
+                  for n in range(3)]
+        strong = [("The supported kinds of widgets differ in how the tool treats them, and each kind of widget is "
+                   "described below. " * 8).strip() for _ in range(3)]
+        blocks = (filler + strong[:2] + [
+            ("The guide names the kinds of widgets that are supported before it explains each one. " * 3).strip(),
+            "The following kinds of widgets are supported:",
+            "- Opaque", explain("These cells hold contents the tool cannot see. ", first_explanation),
+            "   - Sealed housing", "   - Empty shell",
+            "- Linked", explain("These cells can be opened and read by the tool. ", 300),
+            "- Remote", explain("These cells sit on another machine. ", 300)] + strong[2:] + filler)
+        return (nl * 2).join(blocks)
+
+    def test_60h_a_list_comes_back_without_a_hole_in_it(self):
+        """The converter puts a blank line between every bullet and the
+        paragraph that explains it, so a list is many small blocks and the
+        scorer kept some and dropped the ones between: the answer to "what
+        kinds" came back with the explanation of its first kind missing."""
+        server = load_script("mcp_server")
+        part = server.matching_passages(self.kinds_section(300), self.QUESTION)
+        self.assertIsNotNone(part)
+        for item in ("- Opaque", "- Linked", "- Remote", "sit on another machine"):
+            self.assertIn(item, part, f"the list is missing {item!r}")
+        listed = part[part.index("- Opaque"):part.index("- Remote")]
+        self.assertNotIn("characters omitted", listed, "a gap was left inside the list")
+
+    def test_60i_a_whole_list_is_kept_though_one_explanation_is_longer_than_a_gap(self):
+        server = load_script("mcp_server")
+        part = server.matching_passages(self.kinds_section(server.PASSAGE_GAP + 100), self.QUESTION)
+        self.assertIsNotNone(part)
+        for item in ("- Opaque", "- Linked", "- Remote", "sit on another machine"):
+            self.assertIn(item, part, f"the list is missing {item!r}")
+        listed = part[part.index("- Opaque"):part.index("- Remote")]
+        self.assertNotIn("characters omitted", listed, "the list was cut although it is shorter than PASSAGE_LIST_MAX")
+
+    def test_60j_a_short_gap_between_two_passages_is_returned_and_a_long_one_is_marked(self):
+        server = load_script("mcp_server")
+        nl = chr(10)
+        strong = ("The supported kinds of widgets differ in how the tool treats them, and each kind of widget is "
+                  "described below. " * 8).strip()
+
+        def section(middle: int) -> str:
+            plain = ("Nothing here concerns the sprocket housing or its calibration. " * 30)[:middle].rsplit(" ", 1)[0]
+            return (nl * 2).join([strong, plain, strong, strong, strong,
+                                  "Unrelated closing note about housekeeping. " * 30, "More housekeeping text. " * 60])
+        short = server.matching_passages(section(server.PASSAGE_GAP - 100), self.QUESTION)
+        self.assertIsNotNone(short)
+        self.assertIn("Nothing here concerns", short)
+        long = server.matching_passages(section(server.PASSAGE_GAP + 400), self.QUESTION)
+        self.assertIsNotNone(long)
+        self.assertNotIn("Nothing here concerns", long)
+        self.assertIn("characters omitted", long)
+
+    def test_60k_a_passage_does_not_end_on_a_heading_or_a_lead_in(self):
+        """Closing a passage on a heading or "the options are:" put the gap
+        straight after it, and the client read a promise with nothing under it."""
+        server = load_script("mcp_server")
+        nl = chr(10)
+        for ending in ("##### **Options**", "The options are:"):
+            text = (nl * 2).join(["Some text that is nearly long enough. " * 7, ending,
+                                  "- first option", "- second option", "Text that follows. " * 40])
+            for passage in server.split_passages(text)[:-1]:
+                last = passage.split(nl * 2)[-1]
+                self.assertNotEqual(server.block_kind(last), "heading", passage[-60:])
+                self.assertNotEqual(server.block_kind(last), "lead", passage[-60:])
+
+    def test_60l_which_blocks_make_a_list(self):
+        server = load_script("mcp_server")
+        nl = chr(10)
+        kinds = lambda blocks: [server.block_kind(b) for b in blocks]  # noqa: E731
+        self.assertEqual(kinds(["- a", "1. b", "2) c", "   - d", "## H", "```", "Lead:", "Plain."]),
+                         ["item", "item", "item", "item", "heading", "code", "lead", "text"])
+        # A lead-in, items with their explanations between, and the one explanation after the last item are one unit;
+        # the heading after it is not.
+        blocks = ["Intro.", "The kinds are:", "- one", "Explains one.", "- two", "Explains two.", "More about two.",
+                  "- three", "Explains three.", "Closing remark.", "# Next"]
+        units = server.group_lists(blocks)
+        self.assertEqual(units[0], ["Intro."])
+        self.assertEqual(units[1], blocks[1:9])
+        self.assertEqual(units[2:], [["Closing remark."], ["# Next"]])
+        # Too many paragraphs between two items end the list.
+        self.assertEqual(len(server.group_lists(["- a", "p1.", "p2.", "p3.", "- b"])), 4)
+        # A list longer than the limit is left as it was: narrowing has to cut inside it.
+        long = [f"- item {n} " + "x" * 100 for n in range(40)]
+        self.assertGreater(len(nl.join(long)), server.PASSAGE_LIST_MAX)
+        self.assertEqual(server.group_lists(long), [[b] for b in long])
+
     def test_44_lookup_budget_covers_the_whole_response(self):
         """The 40,000-character budget was reset for each document that has the
         entry, so an entry in two documents came back at twice the size."""

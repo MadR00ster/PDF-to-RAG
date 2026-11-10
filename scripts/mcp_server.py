@@ -502,6 +502,11 @@ class CorpusMissing(Exception):
         )
 
 
+# The open index, set before any tool runs. It is only annotated here, with no
+# value, so a tool that runs before it is set fails loudly. pyflakes takes a
+# name bound this way for undefined inside a nested function (a false report:
+# the name is looked up when the function runs), so the three uses in
+# compare_entry and compare_listing carry `# noqa: F821`.
 CORPUS: Corpus
 
 
@@ -941,17 +946,24 @@ def like_escape(text: str) -> str:
 
 
 # get_section with a `query` returns the passages of a section that match it,
-# not all of it. A passage is a block between blank lines (a fenced code block
-# is one block); blocks shorter than PASSAGE_MIN_CHARS are joined to the one
-# after them, so a heading or a lead-in sentence travels with what it
-# introduces, and a block is never cut inside. A section that already fits in
-# PASSAGE_BUDGET is returned whole.
+# not all of it. A block is what lies between blank lines (a fenced code block
+# is one block), and a list with its lead-in is one block too (group_lists).
+# Blocks shorter than PASSAGE_MIN_CHARS are joined to the one after them, and a
+# passage never ends on a heading or a lead-in, so what introduces something
+# travels with it; a block is never cut inside. The best passages come back up
+# to PASSAGE_BUDGET, and a gap between two of them of at most PASSAGE_GAP is
+# returned too, so a list or a procedure has no hole in the middle. A section
+# that already fits in PASSAGE_BUDGET is returned whole.
 PASSAGE_MIN_CHARS = 300
 PASSAGE_BUDGET = 4_000
 PASSAGE_WORTH = 0.75     # narrow only if the passages are at most this share of the section
+PASSAGE_LIST_MAX = 2_000    # a list with its lead-in is one passage if it is no longer than this
+PASSAGE_GAP = 900           # a gap between two chosen passages this short is returned, not marked
+
+LIST_ITEM_RE = re.compile(r"\s*(?:[-*•]|\d+[.)])\s")
 
 
-def split_passages(body: str) -> list[str]:
+def split_blocks(body: str) -> list[str]:
     blocks, current, fenced = [], [], False
     for line in body.split("\n"):
         if line.lstrip().startswith("```"):
@@ -964,10 +976,68 @@ def split_passages(body: str) -> list[str]:
             current.append(line)
     if current:
         blocks.append("\n".join(current))
+    return blocks
+
+
+def block_kind(block: str) -> str:
+    """item (a bullet or numbered step), heading, code, lead (a paragraph that
+    ends in a colon, so introduces what follows) or text."""
+    first = block.lstrip().split("\n", 1)[0]
+    if first.startswith("```"):
+        return "code"
+    if first.startswith("#"):
+        return "heading"
+    if LIST_ITEM_RE.match(first):
+        return "item"
+    return "lead" if block.rstrip().endswith(":") else "text"
+
+
+def group_lists(blocks: list[str]) -> list[list[str]]:
+    """`blocks` as units, each list one unit together with the line that
+    introduces it. The converter puts a blank line between every bullet and
+    keeps no indentation, so a list is many small blocks with the paragraphs
+    that explain its items between them: a run of items, the blocks (up to two
+    at a time, never a heading) between items, and one explanation after the
+    last. A list longer than PASSAGE_LIST_MAX stays as it was; narrowing has to
+    cut somewhere inside it."""
+    kinds = [block_kind(b) for b in blocks]
+    out, i, n = [], 0, len(blocks)
+    while i < n:
+        first = i + 1 if kinds[i] == "lead" and i + 1 < n and kinds[i + 1] == "item" else i
+        if kinds[first] != "item":
+            out.append([blocks[i]])
+            i += 1
+            continue
+        last, t = first, first + 1
+        while t < n:
+            if kinds[t] == "item":
+                last, t = t, t + 1
+                continue
+            between = 0
+            while t + between < n and kinds[t + between] not in ("item", "heading") and between < 3:
+                between += 1
+            if between < 3 and t + between < n and kinds[t + between] == "item":
+                t += between
+                continue
+            break
+        end = last + 1 if last + 1 < n and kinds[last + 1] == "text" else last
+        region = blocks[i:end + 1]
+        if sum(map(len, region)) + 2 * (len(region) - 1) <= PASSAGE_LIST_MAX:
+            out.append(region)
+        else:
+            out.extend([b] for b in region)
+        i = end + 1
+    return out
+
+
+def split_passages(body: str) -> list[str]:
+    blocks = split_blocks(body)
+    units = group_lists(blocks) if PASSAGE_LIST_MAX else [[b] for b in blocks]
     passages, pending = [], ""
-    for block in blocks:
-        pending = f"{pending}\n\n{block}" if pending else block
-        if len(pending) >= PASSAGE_MIN_CHARS:
+    for unit in units:
+        pending = "\n\n".join([pending, *unit] if pending else unit)
+        # A passage never ends on a heading or a lead-in: what it introduces goes with it.
+        if len(pending) >= PASSAGE_MIN_CHARS and block_kind(unit[-1]) not in ("heading", "lead"):
             passages.append(pending)
             pending = ""
     if pending:
@@ -1021,8 +1091,10 @@ def matching_passages(body: str, query: str) -> str | None:
     narrow: the body fits already, or no passage holds a word of the query.
 
     The best passages first, up to PASSAGE_BUDGET characters, then the block
-    either side of each while there is room; in the order they have in the
-    section, with the gaps said."""
+    either side of each while there is room, then any gap of at most PASSAGE_GAP
+    characters between two of them; in the order they have in the section, with
+    the other gaps said. A list or a short gap can take the answer a little past
+    PASSAGE_BUDGET."""
     if len(body) <= PASSAGE_BUDGET:
         return None
     passages = split_passages(body)
@@ -1041,6 +1113,12 @@ def matching_passages(body: str, query: str) -> str | None:
             if 0 <= near < len(passages) and near not in chosen and used + len(passages[near]) <= PASSAGE_BUDGET:
                 chosen.add(near)
                 used += len(passages[near])
+    order = sorted(chosen)              # a short gap is cheaper to return than to explain
+    for before, after in zip(order, order[1:]):
+        gap = sum(len(passages[j]) for j in range(before + 1, after))
+        if 0 < gap <= PASSAGE_GAP:
+            chosen.update(range(before + 1, after))
+            used += gap
     if used > PASSAGE_WORTH * sum(map(len, passages)):
         return None                     # a small saving is not worth the risk of leaving the answer out
     out, last = [], -1
@@ -2126,14 +2204,12 @@ def listed(items: list[str], budget: int, what: str) -> list[str]:
 
 
 def compare_entry(old: sqlite3.Row, new: sqlite3.Row, name: str) -> str:
-    corpus = CORPUS    # a closure cannot see a name that is only annotated above
-
     def entity(doc: sqlite3.Row):
-        return corpus.db.execute("SELECT name FROM entities WHERE slug = ? AND collection = ? AND name_lower = ?",
+        return CORPUS.db.execute("SELECT name FROM entities WHERE slug = ? AND collection = ? AND name_lower = ?",  # noqa: F821
                                  (doc["slug"], doc["collection"], name.lower())).fetchone()
 
     def has_entities(doc: sqlite3.Row) -> bool:
-        return bool(corpus.db.execute("SELECT 1 FROM entities WHERE slug = ? AND collection = ? LIMIT 1",
+        return bool(CORPUS.db.execute("SELECT 1 FROM entities WHERE slug = ? AND collection = ? LIMIT 1",  # noqa: F821
                                       (doc["slug"], doc["collection"])).fetchone())
 
     in_old, in_new = entity(old), entity(new)
@@ -2211,10 +2287,9 @@ def compare_listing(old: sqlite3.Row, new: sqlite3.Row) -> str:
     v_old, v_new = edition_name(old), edition_name(new)
     out = [f"# `{new['doc_id']}`: {v_old} → {v_new}", document_label(old["collection"], old["slug"]),
            document_label(new["collection"], new["slug"]), ""]
-    corpus = CORPUS    # a closure cannot see a name that is only annotated above
 
     def names(doc: sqlite3.Row) -> tuple[Counter, dict[str, str]]:
-        shown = {r["name_lower"]: r["name"] for r in corpus.db.execute(
+        shown = {r["name_lower"]: r["name"] for r in CORPUS.db.execute(  # noqa: F821
             "SELECT name, name_lower FROM entities WHERE slug = ? AND collection = ?", (doc["slug"], doc["collection"]))}
         return Counter(shown.keys()), shown
 
@@ -2371,8 +2446,8 @@ def build_tools() -> list[dict]:
                 "returns neighbouring sections, which is how you read a procedure that "
                 "continues past one chunk. It also lists the section's figures by figure_id. "
                 "A long section costs many tokens: pass `query` (your question, or the words you "
-                "are looking for) to get only the passages that match it, about 4,000 characters "
-                "at most, with the gaps marked."
+                "are looking for) to get only the passages that match it, usually 4,000 to 6,000 "
+                "characters, with the gaps marked."
             ),
             "inputSchema": {
                 "type": "object",

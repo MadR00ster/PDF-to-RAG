@@ -251,14 +251,18 @@ shared, one place to look when it breaks.
 
 - [x] `get_section` takes an optional `query` and returns only the passages
       that match it, with enough surrounding text to be read alone.
-      Done: a section is split at blank lines (a fenced block stays whole,
-      short blocks join the next), the blocks that hold the query's words are
-      scored (a word every block holds counts for nothing, an identifier for
-      three times a plain word), and the best come back up to 4,000 characters
-      with the block either side while there is room, in section order, the
-      gaps marked and the way to the whole section named. A section that fits,
-      one where nothing matches, and one where the passages would be more than
-      three quarters of it come back whole.
+      Done: a section is split at blank lines (a fenced block stays whole),
+      and each list becomes one block: its lead-in, the items, the paragraphs
+      between items and one paragraph after the last, when that is at most
+      2,000 characters. Short blocks join the next, and a passage never ends on
+      a heading or a lead-in. The blocks that hold the query's words are scored
+      (a word every block holds counts for nothing, an identifier for three
+      times a plain word), and the best come back up to 4,000 characters with
+      the block either side while there is room. A gap of at most 900
+      characters between two chosen blocks is returned, not marked; longer gaps
+      are marked, in section order, with the way to the whole section named. A
+      section that fits, one where nothing matches, and one where the passages
+      would be more than three quarters of it come back whole.
 - [x] Token accounting in `eval_search.py`: characters a client receives to
       reach the answer, per question.
       Done: `--cost`. It counts the results page, the answer section whole and
@@ -267,7 +271,7 @@ shared, one place to look when it breaks.
       the current whole-section numbers.
       Done, in `references/retrieval-measurement.md` ("What a client reads").
       Median characters to reach the answer, page plus the answer's section:
-      10,222 whole, 9,485 as passages. `ask_docs` has to beat the second.
+      10,222 whole, 9,618 as passages. `ask_docs` has to beat the second.
 
 ### 3. `ask_docs`
 
