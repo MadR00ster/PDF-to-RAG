@@ -18,22 +18,6 @@ The code is in good shape. What is missing is evidence from real use:
 So measuring comes before building. The code phases below are small and can
 run first only because they need nothing from the user.
 
-## Phase B: a faster test loop (one pull request)
-
-HANDOVER asks for the full suite before every commit, and it takes about 7
-minutes run serially on this machine.
-
-- B1. Time each test file and the ten slowest tests. Write the numbers into
-  the pull request, not this file.
-- B2. Add a runner that runs the test files in parallel, one process per file
-  (`WS` is already per process). Keep `python -m unittest discover` working
-  unchanged; CI may use either.
-- B3. If a few tests dominate, say which and why, and speed them up only where
-  that does not weaken what they check.
-
-Done when: the parallel run passes on Windows and Linux and its wall time is
-recorded beside the serial one.
-
 ## Phase C: tell users apart in the HTTP call log (one pull request)
 
 A team trial cannot be read if every line looks the same.

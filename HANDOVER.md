@@ -6,9 +6,9 @@ it, what bit earlier sessions, and what is still open.
 
 ## Where things stand
 
-Updated 2026-11-09.
+Updated 2026-11-10.
 
-- `main` has every merged pull request (#1–#12). 113 tests, 1 skipped where
+- `main` has every merged pull request (#1–#13). 116 tests, 1 skipped where
   Tesseract's language data is missing; `python tests/run_each.py` passes too.
 - The October 2026 review (`IMPROVEMENT.md`) and the plan that carried it out
   (`TODO.md`, tasks T01–T26) are finished and were deleted on 2026-11-09. Read
@@ -23,7 +23,9 @@ Updated 2026-11-09.
 
 1. One change, one commit (or a few small ones). The full suite passes before
    each commit, and `python tests/run_each.py` passes before a push that adds
-   tests.
+   tests. The suite takes about 8 minutes serially; `python tests/run_parallel.py`
+   runs the test files two at a time (about 7 on the machine it was timed on;
+   its docstring has the numbers and why wider is slower).
 2. Work on a branch and open a pull request against `main`. CI runs Linux and
    Windows, Python 3.10 and 3.13. A red cell, Windows included, is yours to fix.
 3. A bug fix comes with a test that fails without it. Show that it fails:
