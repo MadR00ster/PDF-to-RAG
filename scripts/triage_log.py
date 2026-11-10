@@ -361,6 +361,9 @@ def summarize(calls: list[dict], bad: int) -> None:
           + (f"; {bad} unreadable line(s)" if bad else ""))
     clients = Counter(c.get("client") or "(not said)" for c in calls)
     print("clients: " + ", ".join(f"{k} {v}" for k, v in clients.most_common()))
+    tokens = Counter(c["token_id"] for c in calls if c.get("token_id"))
+    if tokens:
+        print("tokens: " + ", ".join(f"{k} {v}" for k, v in tokens.most_common()))
     print(f"\n{'tool':18} {'calls':>6} {'errors':>6} {'median ms':>10} {'p95 ms':>8} {'chars/call':>11}")
     for tool, n in Counter(c["tool"] for c in calls).most_common():
         mine = [c for c in calls if c["tool"] == tool]

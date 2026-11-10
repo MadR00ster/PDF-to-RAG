@@ -219,14 +219,17 @@ shared, one place to look when it breaks.
 - [x] One read-only SQLite connection per thread. `Corpus` holds a single
       shared connection today.
       Done. The staleness check runs under a lock, one thread at a time.
-- [ ] Per-call log line (JSONL): time, user or token id, tool, query, characters
+- [x] Per-call log line (JSONL): time, user or token id, tool, query, characters
       returned, latency. This is also the source of real user questions for the
       eval set.
-      Partly done. The log is `PDF_TO_RAG_LOG`, and its per-call state is now
-      per thread, so concurrent HTTP calls log their own sections. Still
-      missing over HTTP: the token's id in each line, and the client's name,
-      which only the `initialize` request carries and this server keeps no
-      session to remember (an HTTP line has no `client`).
+      Done, except the client's name over HTTP. The log is `PDF_TO_RAG_LOG`,
+      its per-call state is per thread, so concurrent HTTP calls log their own
+      sections, and each HTTP line carries `token_id`: the first eight hex
+      characters of the SHA-256 of the bearer token (stable, and no way back to
+      the token). A token per person therefore tells people apart. The client's
+      name only the `initialize` request carries, and remembering it needs a
+      session this server deliberately does not keep, so an HTTP line has no
+      `client`. Revisit only if a way appears that keeps the server stateless.
 - [x] Health endpoint reporting index path, document count and coverage.
       Done: `GET /health`, 200 with `status` ok or degraded (partial or stale
       index), 503 with no index.

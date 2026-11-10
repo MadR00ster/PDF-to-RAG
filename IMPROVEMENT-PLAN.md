@@ -18,22 +18,6 @@ The code is in good shape. What is missing is evidence from real use:
 So measuring comes before building. The code phases below are small and can
 run first only because they need nothing from the user.
 
-## Phase C: tell users apart in the HTTP call log (one pull request)
-
-A team trial cannot be read if every line looks the same.
-
-- C1. Each HTTP call-log line carries a token id: a short, stable label that
-  is not the token and cannot be turned back into it (for example the first 8
-  hex characters of its SHA-256, or the token's line number in the token
-  file). Say which in the docs.
-- C2. The client's name over HTTP needs a session the server does not keep.
-  Leave it out and say so in ROADMAP, unless a way appears that keeps the
-  server stateless.
-- C3. Update ROADMAP step 1 and HANDOVER's known-issues line.
-
-Not in this phase: trying the printed VS Code and Cursor settings in the
-editors. Only the user can do that; see D4.
-
 ## Phase D: measure real use (needs the user)
 
 Nothing here is code. Each step names what it needs.

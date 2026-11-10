@@ -50,7 +50,10 @@ nothing is substituted for it.
 
 Set PDF_TO_RAG_LOG=<file> to append one JSON line per tool call to that file:
 when, which tool, the arguments, the sections returned, how many characters
-and how long. It is off unless set. `triage_log.py` turns what people asked
+and how long. Over HTTP each line also carries `token_id`, the first eight hex
+characters of the SHA-256 of the bearer token the call came with: it tells one
+token's calls from another's and cannot be turned back into the token. It is
+off unless set. `triage_log.py` turns what people asked
 into test questions.
 """
 from __future__ import annotations
@@ -173,7 +176,8 @@ def log(msg: str) -> None:
 # (the section ids the call returned, in order), refs (the same sections as
 # [collection, slug, file], which survive an index rebuild when ids do not),
 # chars (text returned), ms (latency), error, and client when the client said
-# who it was. Nothing is ever written to stdout; a log that cannot be written
+# who it was, and token_id over HTTP when a token is required (see token_id()).
+# Nothing is ever written to stdout; a log that cannot be written
 # is dropped with one note on stderr and the server goes on answering.
 CALL_LOG_ENV = "PDF_TO_RAG_LOG"
 CALL_LOG_ARG_CHARS = 2_000
@@ -183,6 +187,12 @@ CALL_LOG: Path | None = None
 # clear them, or be given the name of a client that never made it (a request
 # that is not the `initialize` has no name to give). On stdio there is one thread.
 CALL_STATE = threading.local()
+
+
+def token_id(token: bytes) -> str:
+    """A label for a bearer token that is safe to write down: the first eight
+    hex characters of its SHA-256. Stable, short, and no way back to the token."""
+    return hashlib.sha256(token).hexdigest()[:8]
 
 
 def returned() -> list:
@@ -240,6 +250,9 @@ def record_call(name: str, args, content: list[dict], is_error: bool, started: f
         client = getattr(CALL_STATE, "client", None)
         if client:
             entry["client"] = client
+        who = getattr(CALL_STATE, "token_id", None)
+        if who:
+            entry["token_id"] = who
         CALL_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(CALL_LOG, "a", encoding="utf-8", errors="replace", newline="\n") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
@@ -2602,6 +2615,7 @@ class McpHandler(BaseHTTPRequestHandler):
     server_version = "pdf-to-rag-mcp"
     timeout = 60            # seconds a client may stall mid-request before its thread is let go
     tokens: tuple[bytes, ...] = ()
+    token_ids: tuple[str, ...] = ()           # token_id() of each in `tokens`, in order
     origins: frozenset = frozenset()
 
     def log_message(self, format, *args):           # noqa: A002 -- the base class's name
@@ -2637,13 +2651,21 @@ class McpHandler(BaseHTTPRequestHandler):
 
     def allowed(self) -> bool:
         """The bearer token, then the Origin. Answers the request itself if not."""
+        # A connection can carry several requests on one thread, so who made
+        # this one is set every time, and is nobody when no token is required.
+        CALL_STATE.token_id = None
         if self.tokens:
             scheme, _, supplied = self.headers.get("Authorization", "").partition(" ")
             given = supplied.strip().encode("utf-8", "replace")
-            if scheme.lower() != "bearer" or not any(hmac.compare_digest(given, t) for t in self.tokens):
+            who = None
+            for token, label in zip(self.tokens, self.token_ids):
+                if hmac.compare_digest(given, token):
+                    who = label
+            if scheme.lower() != "bearer" or who is None:
                 self.reply(401, {"error": "a valid bearer token is required"},
                            [("WWW-Authenticate", 'Bearer realm="pdf-to-rag"')], close=True)
                 return False
+            CALL_STATE.token_id = who
         # A page in a browser can reach a server on the loopback address, and the
         # transport asks servers to refuse such a request. Clients that are not
         # browsers send no Origin.
@@ -2723,6 +2745,7 @@ def serve_http(spec: str, tokens: list[str], origins: list[str]) -> int:
               f"could read the documentation. Set ${TOKEN_ENV}, or pass --token-file.", file=sys.stderr)
         return 2
     handler = type("Handler", (McpHandler,), {"tokens": tuple(t.encode("utf-8") for t in tokens),
+                                               "token_ids": tuple(token_id(t.encode("utf-8")) for t in tokens),
                                                "origins": frozenset(origins)})
     server_class = type("Server", (ThreadingHTTPServer,), {
         "address_family": socket.AF_INET6 if ":" in host else socket.AF_INET, "daemon_threads": True})

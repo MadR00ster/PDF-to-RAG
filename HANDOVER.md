@@ -8,7 +8,7 @@ it, what bit earlier sessions, and what is still open.
 
 Updated 2026-11-10.
 
-- `main` has every merged pull request (#1–#13). 116 tests, 1 skipped where
+- `main` has every merged pull request (#1–#13). 117 tests, 1 skipped where
   Tesseract's language data is missing; `python tests/run_each.py` passes too.
 - The October 2026 review (`IMPROVEMENT.md`) and the plan that carried it out
   (`TODO.md`, tasks T01–T26) are finished and were deleted on 2026-11-09. Read
@@ -168,7 +168,7 @@ Noticed, not fixed. Fix one with a test, and delete its line here.
   configuration (CLAUDE.md, memory, plugins, hooks) unless `--bare` is passed,
   and asks its questions one at a time.
 - Over HTTP, a call-log line has no client name (only `initialize` carries it
-  and no session is kept) and no token id.
+  and no session is kept); it has a `token_id` instead.
 - Ten older PDFs in production are not converted (they are the entries in its
   two `superseded.json` files). Converting them through `update_corpus.py`
   needs the user to choose the prose converter: `convert_manual` matches the

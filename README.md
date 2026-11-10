@@ -83,7 +83,10 @@ file open, so restart it after `update_corpus.py` replaces the index.
 To find out how it does on what people really ask, start it with
 `PDF_TO_RAG_LOG=<file>` in its environment (the `env` block of `.vscode/mcp.json`
 or `.mcp.json`). It then appends one JSON line per tool call (time, tool,
-arguments, sections returned, characters, latency) and logs nothing otherwise.
+arguments, sections returned, characters, latency; over HTTP also `token_id`,
+the first eight hex characters of the SHA-256 of the bearer token, which tells
+one person's token from another's and cannot be turned back into it) and logs
+nothing otherwise.
 The file holds what was searched for and any log pasted into `explain_log`, so
 keep it private. `triage_log.py` turns the logged searches you mark hit or miss
 into `real` questions for `eval_search.py`; `eval_answers.py` runs questions
