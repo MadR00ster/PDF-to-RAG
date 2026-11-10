@@ -1,7 +1,9 @@
 # Roadmap: a shared MCP server that answers, not only retrieves
 
-Status: **planned, nothing built.** Written 2026-10-02. This file describes
-work that does not exist yet; `SKILL.md` describes what does.
+Status: **partly built.** Written 2026-10-02; updated 2026-11-09. Step 1, the
+HTTP transport, is built apart from two items, and `eval_answers.py` covers part
+of step 4. `ask_docs` and the deployment are not started; the user has deferred
+the shared server. `SKILL.md` describes what exists.
 
 ## Goal
 
@@ -14,8 +16,8 @@ own credits.
 
 `scripts/mcp_server.py` is a content-feeding server. It finds sections in a
 SQLite FTS5 index and returns their text; the client's model does all the
-reading and answering, on that user's credits. It speaks stdio only, so each
-user runs a private copy on their own machine.
+reading and answering, on that user's credits. It speaks stdio, or HTTP with a
+bearer token for several users on one machine (step 1 below).
 
 Retrieval is measured (`references/retrieval-measurement.md`): hit@1 71%,
 hit@5 92%, MRR 0.802 on 76 questions.
@@ -270,6 +272,10 @@ shared, one place to look when it breaks.
 - [ ] `eval_answers.py` over the same `questions.jsonl`: does the answer cite a
       section listed in `answers`; does it abstain when retrieval missed;
       tokens returned.
+      Partly done: `eval_answers.py` exists, but it grades a client model
+      answering through `claude -p` with the server's tools (correct,
+      unsupported, declined, tokens), not `ask_docs`. Point it at `ask_docs`
+      once that exists.
 - [ ] Faithfulness check on every answer in the set: no claim absent from the
       cited sections. By hand at this size, or with a judge model.
 - [ ] Score figure questions separately. A text-only model sees OCR text, not

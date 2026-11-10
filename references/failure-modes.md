@@ -232,8 +232,7 @@ Recorded so a future pass doesn't rediscover them as surprises.
 
 - **Lexical retrieval only.** BM25 over the chunks, served over MCP, is strong
   for exact identifier lookup and weakest where a question avoids the manual's
-  own words. Measure that gap with a test set (SKILL.md, "Measuring
-  retrieval") before adding embeddings for it.
+  own words. Measure that gap with a test set (`evaluation-workflow.md`) before adding embeddings for it.
 - **Prose converted before `convert_manual.py` tracked pages has none.** Every
   converter writes `page_start`/`page_end` now, but a document converted
   earlier keeps what it had (46% of chunks across one corpus, the documents
