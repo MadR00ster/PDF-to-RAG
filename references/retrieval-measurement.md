@@ -31,6 +31,93 @@ flow is also spelled out, step by step, in the companion reference manual. Each
 was added as an answer, with a note saying so. Review misses before believing
 them.
 
+## Whole-corpus baseline (2026-11-12)
+
+The 76 questions above were drawn when the corpus had 24 manuals. Production
+now has 34 documents (26,491 chunks), and ten of them, 12,364 chunks, had no
+question: the eight PrimeTime-family manuals (`pt-cmds`, `pt-errors`,
+`pt-vars-attrs`, `pt-invoke`, `primelib-cmds`, `primelib-ug`, `psug`, `ptug`)
+and two older IJTAG editions. The set now has 146 questions, over a copy of
+production's live index (`mcp-index.sqlite3`, built 2026-11-10, code `1fa341f`).
+
+What changed in the set:
+
+- Every answer of the 76 also carries a `quote` form (`doc_id`, `version`, a
+  short phrase that is in that section and no other of its document). Scored
+  with the file form, the quote form, or both, the 76 give the same rank on
+  every question (`eval_search.py --compare`: 0 rank changes).
+- 70 new questions, written with the answer section open and carrying `quote`
+  answers only: 43 for the eight PrimeTime-family manuals (5 or 6 each, 3 for
+  `pt-invoke`, whose whole text is 4 chunks), 4 figure questions
+  (2 each for `ptug` and `primelib-ug`), 15 top-ups so that every current
+  document has at least 3, and 8 `version` questions for the IJTAG manual.
+  Of the large chunks (`psug`, `ptug`, `primelib-ug`: 8,000 to 9,000
+  characters each) the question author read the opening of each section, not
+  all of it, and wrote each question from what was read.
+- A `version` question carries `document` and `version`, and `eval_search.py`
+  searches that edition only, as `search_docs` does. Before this change every
+  question was a plain search, which answers from the edition in use, so a
+  question about an older edition could only score as a miss. The 8 `version`
+  questions (2022.4, 2025.2 and 2026.2 asked the same two questions, and the
+  last two asked of 2025.2 and 2026.2 alone) all rank first: a scoped search
+  of one edition tests the scoping, not ranking across editions, so that 100%
+  says little about retrieval.
+
+Scores, through the shipped defaults:
+
+| set | kind | n | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|---|---|
+| old 76 | identifier | 26 | 81% | 100% | 100% | 0.897 |
+| | concept | 20 | 70% | 90% | 90% | 0.800 |
+| | paraphrase | 11 | 45% | 64% | 73% | 0.538 |
+| | figure | 19 | 63% | 89% | 95% | 0.774 |
+| | all | 76 | 68% | 89% | 92% | 0.789 |
+| new 70 | identifier | 22 | 91% | 100% | 100% | 0.947 |
+| | concept | 25 | 76% | 88% | 100% | 0.835 |
+| | paraphrase | 11 | 64% | 73% | 73% | 0.692 |
+| | figure | 4 | 50% | 75% | 75% | 0.625 |
+| | version | 8 | 100% | 100% | 100% | 1.000 |
+| | all | 70 | 80% | 90% | 94% | 0.854 |
+| all 146 | identifier | 48 | 85% | 100% | 100% | 0.920 |
+| | concept | 45 | 73% | 89% | 96% | 0.819 |
+| | paraphrase | 22 | 55% | 68% | 73% | 0.615 |
+| | figure | 23 | 61% | 87% | 91% | 0.748 |
+| | version | 8 | 100% | 100% | 100% | 1.000 |
+| | all | 146 | 74% | 90% | 93% | 0.820 |
+
+The new questions score above the old ones, and the cause is not known. Their
+authors read the answer first, as the old ones did, and the PrimeTime-family
+manuals are made of small entries (a variable, a command or a message each)
+whose first line names the thing a question names, which a lexical index
+matches well. The old set's paraphrase row (45% at rank 1) is still the
+weakest, and nothing new measured here changes it.
+
+Every new question that did not rank first was read against what ranked above
+it before it was recorded. Six answers, in five questions, were added where
+another section answers as well, each with a note in the question file:
+
+- `report_variation_bottleneck` (q59): the command's own man page in
+  `pt-cmds` ranked first and answers the question.
+- `si_multi_input_switching_tied_input_filter` (q63): the variable's man page
+  in `pt-vars-attrs` ranked first and lists the same values; the user guide's
+  continuation chunk is a second answer.
+- `gui_create_pref_key` (q79): the question names no tool and Design
+  Compiler's reference documents the same option in the same words.
+- Ring against hierarchical SMS architecture (q104): the two sections say in
+  the same words that only a complete ring can be bypassed.
+- Defect test summary table (q110): the sibling Silicon.da guide's table says
+  the same as the Yield Explorer guide's; the question names no product.
+
+Four new questions still miss, recorded as they are: q66 (extracted timing
+models and level shifters, a reworded question: nothing in the top ten was
+found to answer it), q72 (names no option or tool; PrimeTime's
+minimum period section ranks first, and the question was first filed as
+`identifier` although it names no identifier, so its kind was changed to
+`paraphrase` after the first score, the rank unchanged), q78 (rank 9: the user
+guide's ECO flow sections outrank the command that writes the session) and f22
+(a figure whose words are raster and OCR read badly). The six old misses stand
+as before (q01, q04, q25, q30, q34, f09).
+
 ## Lexical search: two changes, measured together
 
 Right section in the top five (hit@5) and mean reciprocal rank, through
@@ -55,8 +142,9 @@ On 57 questions one question is 1.75 points. Read the per-question changes
 
 ## Experiments left off
 
-Two changes to the index are built, tested and off by default. Neither has been
-measured here, and choosing a default is a separate decision from building them.
+Two changes to the index are built, tested and off by default. Both were
+measured on 2026-11-12 (next section); choosing a default is a separate
+decision from building them, and is the user's.
 
 - `build_search_db.py --body-without-breadcrumb` indexes a chunk's text without
   its first line when that line is its breadcrumb. The breadcrumb has a column of
@@ -73,6 +161,41 @@ The BM25 weights, `(10, 8, 3, 1, 1)`, stay as they are. Tuning them on the 76
 questions they were scored on measures nothing: any weights can be fitted to
 the questions that chose them. They are worth revisiting once there are
 held-out `real` questions, asked by someone who had not read the answer.
+
+## Index-only measurements (2026-11-12)
+
+Four changes that need no reconversion, each scored on the 146 questions of the
+whole-corpus baseline above against a control: an index rebuilt from the same
+converted corpus with the code on `main` (`1fa341f`), which reproduces
+production's live index exactly (74% hit@1, 90% hit@3, 93% hit@5, MRR 0.820,
+26,491 chunks). One scratch index per measurement, built with `--out` into a
+work copy of the corpus; `eval_search.py --compare` read question by question.
+
+| change | what was built | hit@1 | MRR | questions that moved |
+|---|---|---|---|---|
+| control | `main` | 74% | 0.820 | |
+| `--body-without-breadcrumb` | flag on | 73% | 0.813 | 3: q23 1 to 2, f15 1 to 2, q78 9 to 10 |
+| `--ident-index` | flag on | 75% | 0.824 | 1: q74 2 to 1 |
+| front matter demoted by its whole heading | index built with the old rule (any heading starting with a front-matter word) restored | 74% | 0.820 | none |
+| entity named inside a question is boosted | server with the old rule (only a query that is the entity, or a prefix of it) restored, control index | 74% | 0.822 | 1: q103 2 under the old rule, 5 now |
+
+Per kind (hit@1, control to flag): `--ident-index` raises identifier from 85% to
+88% (one question, q74) and no kind falls; `--body-without-breadcrumb` leaves
+identifier at 85% and lowers concept from 73% to 71% and figure from 61% to
+57%. The rule on record is that a flag is adopted only if identifier hit@1
+rises and no kind falls: `--ident-index` meets it on one question, which is a
+small basis, and `--body-without-breadcrumb` does not. Whether to turn
+`--ident-index` on is the user's decision.
+
+The last two rows are the changes already on `main`, measured by putting the
+old rule back, so "moved" reads old rule to current. Demoting front matter by
+its whole heading changed no rank on these questions (none of them is answered
+by a section whose heading merely begins with "Index" or "Contents"). The
+entity rule moved one question the wrong way: q103 ("what clock timing does
+dft_drc assume ...", answered in the Boundary Scan guide) ranked 2 under the old
+rule and 5 now; nothing moved the other way. The rule exists for questions such
+as "what does set_scan_configuration do", of which this set has few that the
+old rule missed; one question is the whole difference.
 
 ## Orphaned sub-chunks
 
