@@ -374,6 +374,102 @@ questions showed the Tcl-comment scraps hurting: the checker's two warnings for
 the 90% line), and of the 6 new questions answered there, 5 are in the top five
 and the sixth (q78) ranks 9 behind user-guide sections, not behind a scrap.
 
+## Furniture pass and empty chunks, in place (2026-11-12)
+
+`enrich_chunks.py --dry-run --list-furniture` over both collections of a work
+copy, the lists read, then applied to the five documents whose lists were
+running titles, page numbers and page labels and nothing else:
+`etassemblereference-2021-2` (491 copies of its running title),
+`tshell-ijtag-user-2022-4` and `-2026-2` (the title cut by highlight tags
+around its apostrophe, and "N-N Software Version 2026.2"), `tshell-mbist-user-2026-2`
+(462 page labels, chapter and appendix) and `ye-data-intg` (465 running titles
+and 465 bare page numbers). The first dry run found nothing in the IJTAG
+editions because of the apostrophe, and left the appendix labels ("A-12 ...")
+of the MemoryBIST guide; both were fixed in `enrich_chunks.py` and the pass
+repeated.
+
+| `check_corpus.py`, 34 documents | before | after |
+|---|---|---|
+| chunks holding page furniture | 4,088 | 23 (`vcs` 17, `dftug` 3, `pt-cmds` 3) |
+| warnings | 40 | 32 |
+| empty chunks | 12 outside tshell-ref (`atpg-gd` 2, `tshell-user` 5, `tsi-usage-ref` 5) | 12 |
+
+The 23 left are a standalone "Feedback" line in `vcs`'s contents and running
+titles `enrich_chunks.py` does not recognise; they were not touched. Scored on
+the 138 text and figure questions after this pass and the tshell-ref
+reconversion above: 71% hit@1, 88% hit@3, 92% hit@5, MRR 0.801 (before: 72%,
+89%, 93%, 0.810). Besides the reference's questions, q110 moved from 1 to 2 and
+f05 from 5 to 4, both in documents whose chunks lost furniture.
+
+Empty chunks: the cause is a line of a printed script or a table rule that the
+text layer sets flush left ("#  ------  -----", a bare "#"), which the chunker
+cut at as a heading and left as a chunk of one line. The fix (a heading must
+hold a letter or digit) is in `convert_manual.py`, so it reaches a document only
+when that document is converted again: reconverting `atpg-gd` in the pilot below
+left no empty chunk (the other two were not converted). The 12 stay in the work
+copy until they are.
+
+## Prose pilot: `convert_manual.py` against Docling (2026-11-12)
+
+Three prose manuals converted two ways in copies of the work corpus and each
+copy indexed whole: (a) `convert_manual.py --shape prose` as it is on `main`,
+then `enrich_chunks.py` (which writes the breadcrumbs; without it every chunk
+fails the checker's breadcrumb check), figures extracted again and read with
+Tesseract; (b) `convert_docling.py` (Docling was already installed), same
+figure steps. `bsdxg` is the small one (227 pages), `dftug` the large (1,168),
+`atpg-gd` the Tessent one (780). Docling stopped on `atpg-gd` twice, once inside
+a batch and once alone, with a segmentation fault in the layout model's
+convolution ("not enough memory: you tried to allocate 13,107,200 bytes"); the
+unchanged conversion stands in for it below. Content is `check_corpus.py`'s
+share of 30 sampled PDF pages' words found in the chunks claiming the page.
+
+| | current (no pages) | (a) `convert_manual.py` | (b) Docling |
+|---|---|---|---|
+| **`bsdxg`** chunks / median characters | 81 / 5,076 | 152 / 314 | 46 / 8,647 |
+| pages on chunks | 0% | 100% | 100% |
+| figures tied to a section | 97.7% | 100% | 97.7% |
+| content | 98.1% | 94.5% | 96.0% |
+| `--strict` | WARN (no pages) | ok | ok |
+| conversion time | | 61 s (0.27 s a page) | 148 s (0.65 s a page) |
+| **`dftug`** chunks / median characters | 402 / 5,520 | 691 / 459 | 226 / 8,660 |
+| pages on chunks | 0% | 100% | 100% |
+| figures tied | 92.9% | 98.7% | 99.1% |
+| content | 99.0% | 95.7% | 95.3% |
+| `--strict` | WARN | ok | ok |
+| conversion time | | 271 s (0.23 s a page) | 668 s (0.57 s a page) |
+| **`atpg-gd`** chunks / median characters | 765 / 1,256 | 442 / 1,799 | crashed |
+| pages on chunks | 0% | 100% | |
+| figures tied | 99.1% | 100% | |
+| content | 100% | 99.9% | |
+| `--strict` | WARN (empty chunks, no pages) | ok | |
+
+Search, 138 text and figure questions, whole index each time (the questions in
+these three manuals are 12 of them):
+
+| | hit@1 | hit@3 | hit@5 | MRR | median characters to reach the answer, page + section whole / with passages |
+|---|---|---|---|---|---|
+| current | 71% | 88% | 92% | 0.801 | 9,921 / 9,528 |
+| (a) | 70% | 88% | 91% | 0.795 | 10,117 / 9,618 |
+| (b) | 72% | 88% | 91% | 0.804 | 10,117 / 9,616 |
+
+Moves against the current conversion: (a) q09 1 to 4 (`dftug`), q03 1 to 2
+(`atpg-gd`), f12 2 to 1, q05 5 to 6 and q103 6 to 7 (documents not converted);
+(b) f12 2 to 1, q05 5 to 6, q103 6 to 7. Nothing in (b) moved a question
+of the converted manuals, which is no evidence for it: only two manuals were
+converted and each has few questions. The cost of reaching the answer is
+within 2% of the current conversion either way.
+
+What the table shows and does not. Both converters give every chunk a page, pass
+the strict check once the breadcrumbs are there, and tie the same or more
+figures. Chunk shape differs a great deal: `convert_manual.py` cut `bsdxg` into
+chunks with a median of 314 characters (the current ones: 5,076), where Docling
+merges to about 8,650; the retrieval numbers above do not tell which suits an
+agent better. Content found in the chunks fell by 3 to 5 points for both on
+`bsdxg` and `dftug`; the sample is 30 pages, so a difference of that size is one
+page's words, and which words were lost was not read. Docling is 2.4 times
+slower, needs several gigabytes, and failed on one of three. Which converter
+the older editions get is the user's decision.
+
 ## Caveats
 
 - Small: 76 questions, 57 text and 19 figure, so one question moves a text
