@@ -593,6 +593,141 @@ page's words, and which words were lost was not read. Docling is 2.4 times
 slower, needs several gigabytes, and failed on one of three. Which converter
 the older editions get is the user's decision.
 
+## Prose chunk size: cause, fix, and the pilot redone (2026-11-12)
+
+The first pilot cut `bsdxg` into 152 chunks with a median of 323 characters (51
+under 200) and `dftug` into 691 with a median of 473, against 5,231 and 5,650 in
+the work copy's existing conversions (production's).
+
+**Cause.** Not a change in the code. `convert_manual.py` was run on `bsdxg` at
+eight commits from the first (`6c2e7d0`, 2026-08-09) to `dbe40aa`: every one
+gives 152 to 156 chunks with a median of 281 to 362, so the chunker has cut
+there since it was committed. The first commit's output has the same
+`full.md` as production's (401,597 characters, the same 88 level-1 and 34
+level-2 headings), so the difference is in the chunking, not the extraction:
+the manual sets its captions and callouts in a larger font, pymupdf4llm writes
+them as `#` and `##` lines, and the chunker cuts at each. Production's
+`bsdxg` has 81 chunks and its sections folder is dated 2026-08-09 21:09,
+before the first commit; no committed version of the chunker reproduces its
+boundaries (variants of the top-level split matched 68 of its 79 chunk starts at
+best), so it was written by an earlier version that is not in git. Joining a
+chunk smaller than 500 characters to the next gives 82 chunks for `bsdxg` and
+397 for `dftug`, against production's 81 and 402.
+
+**Fix.** `pack_small` in `convert_manual.py` joins a chunk under `MIN_CHUNK`
+(500 characters) to the one after it, never past `MAX_CHUNK` and never across a
+chunk that opens a bookmarked section (its heading, without numbering and
+emphasis, is a title in the PDF's outline). A joined chunk starts at its first
+piece's heading and ends at its last, so it is a slice of the text and its pages
+come from `trim_span` and `page_range` as before. Test 11e fails without it. The
+fixture method (convert every fixture PDF with `main` and with the change,
+`diff -r`): the only difference is the manifest's timestamp, except in `tiny`
+(a reference below the command threshold, converted as prose), whose
+SYNTAX and ARGUMENTS pieces under 500 characters now join their entry's heading.
+
+### Three arms on the same three manuals
+
+Current is the work copy's existing conversion. Fixed is `convert_manual.py` with
+`pack_small`, then `enrich_chunks.py` for the breadcrumbs. Backfill is a
+prototype (not repo code) that leaves the existing chunks as they are and adds
+`page_start` and `page_end` by matching each chunk's opening and closing words
+against the PDF's page text. Content is `check_corpus.py`'s share of 30 sampled
+pages' words found in the chunks claiming the page.
+
+| | current | fixed `convert_manual.py` | in-place backfill |
+|---|---|---|---|
+| **`bsdxg`** chunks / median / under 200 | 81 / 5,231 / 5 | 82 / 4,007 / 0 | 81 / 5,231 / 5 |
+| pages on chunks | 0% | 100% | 100% (97.5% matched, 2 chunks from the next one's page) |
+| figures tied | 97.7% | 100% | 100% |
+| content | 98.1% | 94.5% | 96.4% |
+| `--strict` | WARN (no pages) | ok | WARN: 1 figure on the page after its section |
+| **`dftug`** chunks / median / under 200 | 402 / 5,650 / 26 | 397 / 5,433 / 1 | 402 / 5,650 / 26 |
+| pages on chunks | 0% | 100% | 100% (94.0% matched; 24 from the next, 3 ends widened) |
+| figures tied | 92.9% | 98.7% | 98.4% |
+| content | 99.0% | 95.7% | 96.4% |
+| `--strict` | WARN (3 furniture, no pages) | ok | WARN: 2 figures, the 3 furniture |
+| **`atpg-gd`** chunks / median / under 200 | 765 / 1,285 / 163 | 269 / 6,716 / 0 | 765 / 1,285 / 163 |
+| pages on chunks | 0% | 100% | 100% (98.7% matched, 10 from the next) |
+| figures tied | 99.1% | 100% | 99.4% |
+| content | 100% | 99.9% | 99.9% |
+| `--strict` | WARN (2 empty, no pages) | ok | WARN: 2 empty (not touched), 1 figure |
+
+The fixed `atpg-gd` is coarser than the existing one (269 chunks, median 6,716,
+against 765 and 1,285): the existing conversion cut it finer than any version of
+this chunker does, and the fix does not bring that back.
+
+Search, 138 text and figure questions, whole index each time, `--compare`
+against the current conversion:
+
+| | hit@1 | hit@3 | hit@5 | MRR | median characters to the answer, whole / passages |
+|---|---|---|---|---|---|
+| current | 71% | 88% | 92% | 0.801 | 9,921 / 9,528 |
+| fixed, first pilot (no `pack_small`) | 70% | 88% | 91% | 0.795 | 10,117 / 9,618 |
+| fixed | 70% | 88% | 91% | 0.795 | 10,117 / 9,620 |
+| backfill | 70% | 88% | 92% | 0.797 | 9,942 / 9,528 |
+
+`pack_small` changes the sizes (above) and moves one of the first pilot's five
+questions (q09, 4 to 3); the others move as before, so they were not about size.
+q09 (hybrid flow, scan cells outside any subpartition) goes from 1 to 3 because
+its answer phrase sits at the start of an 8,398-character chunk of the current
+conversion and, in the fixed one, in two chunks of 603 and 3,640 characters; the
+sentence that answers it ("If some scan cells exist in a top-level partition but
+...") is in one chunk that ranks 2, so by that sentence the move is 1 to 2. q03
+(`atpg-gd`: when random patterns stop) goes from 1 to 2 because the answer's
+2,315-character chunk of the current conversion is part of an 8,947-character
+one in the fixed. f12 rose (2 to 1) and q05 and q103 fell by one in manuals
+that were not converted. An answer written as a phrase moves with the chunk
+boundaries, so a comparison between two chunkings is a comparison of where the
+phrase landed.
+
+Backfill, built with the new `figures.json`: one move among the 138, f15 1 to 2.
+The bodies are the current ones, so the cause is not the text: with the page
+numbers backfilled and the old `figures.json` the index moves no question; the
+new one ties 30 more figures of `dftug` (and 1 each in the others) to sections
+by their pages, which puts their text into those chunks. So "0 rank changes"
+holds for the backfilled pages and not for the figures they let
+`extract_figures.py` tie.
+
+Where the fixed arm and the backfill have a chunk with the same heading (48
+pairs in `bsdxg`, 241 in `dftug`, 175 in `atpg-gd`, matching the n-th chunk of
+each heading), the start pages are equal in 87.5%, 85.1% and 92.0%, and within
+a page in 91.7%, 88.0% and 94.3%. Most of the rest are not disagreements about
+one chunk: repeated headings ("Contents", "Table of Contents", "List of
+Figures") pair different pieces. Of the 43 pairs more than a page apart, each
+chunk's start words are on the page named for it in 39 of 43 (fixed) and 38 of
+43 (backfill), so both are mostly right about their own chunk.
+
+Backfill, of 1,248 chunks: 1,212 (97.1%) were matched by their opening words (the
+first 8 words, then 6, 5, 4, searched from where the previous chunk began, trying
+up to 40 words into the chunk). 36 more are chapter-title stubs and front matter
+too short to match (33, under 3 words) or had no match (3), and took the page
+their next neighbour starts on. 3 chunks' closing words were not found: they got
+their start page and an end page no later than the next chunk's. It cannot place
+a chunk whose words the PDF's text layer writes differently, and it never looks
+backwards, so one wrong early match would take the rest with it (the tool
+counted chunks whose start page ran backwards from an earlier one's: none). Not vouched for: the page of a chunk with no match, which is a guess,
+and the end page where the closing words matched an earlier repeat (4 figures
+sit on the page after their section's backfilled end).
+
+### What the content shortfall is
+
+On the sampled pages of the fixed arm only two are below 90%: p219 of `bsdxg`
+(87%) and p202 of `dftug` (89%). The words missing from the chunks that claim a
+page are of two kinds, and neither is text the converter dropped. (1) Running
+headers and footers the converter's furniture pass removes on purpose:
+"feedback", "chapter", and the words of the chapter title on every page
+("components", "inserting", "registers"). (2) Words that exist only in PyMuPDF's
+reading of the page, not in the chunks: two or three words run together
+("delaytest", "periodtest", "variablesetingtest") and words with a doubled
+letter missing ("comand", "atribute", "mesage", "controler", "asembly"), which
+are the PDF's text layer for table cells and double-letter ligatures and are in
+no chunk of the document. Over all 218 pages of `bsdxg` the mean is 93.3% and 49
+pages are under 90%; `dftug` 96.2% and 58 of 1,152; `atpg-gd` 100%. The current
+conversion scored higher (98 to 100%) because it kept the header lines. Whether
+that is a loss depends on whether a header is content: for citing a chapter it
+is not. The pages under 90% on all pages were not read one by one; the eight
+lowest of each sample were.
+
 ## Caveats
 
 - Small: 76 questions, 57 text and 19 figure, so one question moves a text
