@@ -230,6 +230,29 @@ def nested_reference_fixture(path: Path, n_commands: int) -> None:
     write_pdf(path, pages, toc)
 
 
+def tessent_reference_fixture(path: Path, n_commands: int) -> None:
+    """A command reference set the way Tessent's is: each example script's
+    commands in bold, and a footer carrying the page label on every page."""
+    doc = pymupdf.open()
+    toc = []
+    for i in range(n_commands):
+        name = f"set_widget_option_{i:02d}"
+        page = doc.new_page()
+        page.insert_text((72, 72), name, fontsize=20)
+        page.insert_text((72, 110), "Usage", fontsize=14)
+        page.insert_text((72, 130), f"{name} -value <int>", fontsize=11)
+        page.insert_text((72, 160), "Examples", fontsize=14)
+        page.insert_text((72, 180), "The following script sets the option and reports it:", fontsize=11)
+        for j, line in enumerate((f"{name} -value 4", "report_widget_status", "check_widget_design")):
+            page.insert_text((72, 200 + j * 16), line, fontsize=11, fontname="hebo")
+        label = f"A-{i}" if i % 4 == 0 else f"3-{17 + i}"     # chapters and appendices both label pages
+        page.insert_text((72, 760), f"{label} Software Version 2026.2", fontsize=8)
+        toc.append([1, name, i + 1])
+    doc.set_toc(toc)
+    doc.save(str(path))
+    doc.close()
+
+
 def figure_fixture(path: Path) -> None:
     """Two captioned figures of the two kinds real manuals mix: a vector block
     diagram whose labels are real text (Synopsys draws its figures) and a

@@ -358,6 +358,78 @@ class ConverterTest(unittest.TestCase):
                          {f"set_widget_option_{i:02d}" for i in range(22)},
                          "bounding the regions cost a command its attribution")
 
+    def test_11b_reference_entries_stay_whole_and_lose_page_labels(self):
+        """An entry that fits one chunk is one chunk, bold example lines and
+        all, and a footer carrying the page label is stripped.
+
+        Dictionary mode split on every bold line and never packed the pieces
+        back, so tshell-ref's examples came out one command per 110-byte
+        chunk, headed by another command's name. Its "N-NNN Software Version
+        2026.2" footer was left in 3,070 of 4,511 chunks: the furniture rule
+        looked for lines repeated as themselves, and a page label never is.
+        """
+        from _support import tessent_reference_fixture
+        corpus = self.tmp / "TessentRefCorpus"
+        (corpus / "docs").mkdir(parents=True)
+        pdf = corpus / "tref.pdf"
+        tessent_reference_fixture(pdf, 40)
+        r = run("rebuild_reference.py", str(pdf), "--title", "Widget Shell Reference", "--slug", "tref")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        slug_dir = corpus / "docs" / "tref"
+        sections = json.loads((slug_dir / "manifest.json").read_text(encoding="utf-8"))["sections"]
+        bodies = {s["file"]: (slug_dir / s["file"]).read_text(encoding="utf-8") for s in sections}
+
+        footers = [f for f, b in bodies.items() if "Software Version" in b]
+        self.assertFalse(footers, f"page-label footer left in {len(footers)} chunks")
+        owned = [s for s in sections if s["command"]]
+        per_command = {}
+        for s in owned:
+            per_command.setdefault(s["command"], []).append(s["file"])
+        split = {c: fs for c, fs in per_command.items() if len(fs) > 1}
+        self.assertFalse(split, f"entries split although each fits one chunk: {list(split.items())[:2]}")
+        self.assertEqual(len(per_command), 40, "an entry lost its attribution")
+        for s in owned:
+            self.assertIn("report_widget_status", bodies[s["file"]],
+                          f"{s['command']}'s example was cut away from it")
+            self.assertIn(f"{s['command']} -value <int>", bodies[s["file"]],
+                          f"{s['command']}'s usage line was taken for a page label: it repeats on every "
+                          "page with only its name's number changing")
+
+    def test_11c_titles_are_compared_without_trademark_signs_and_highlight_tags(self):
+        enrich = load_script("enrich_chunks")
+        title = "Yield Explorer® Data Guide"
+        pages = [f"Body {n} has its own words here." + chr(10)*2 + "<mark>Yield Explorer Data Guide</mark>" + chr(10) for n in range(6)]
+        self.assertTrue(any("Yield Explorer Data Guide" in line for line in enrich.detect_furniture(pages, title)),
+                        "a <mark>-wrapped running title was kept although the title carries a (R)")
+        # A title cut by highlight tags around its apostrophe, as IJTAG's is.
+        split = "<mark>Tessent™ IJTAG User</mark> ’ <mark>s Manual, v2022.4</mark>"
+        pages = ["Body " + str(n) + " has its own words here." + chr(10) * 2 + split + chr(10) for n in range(6)]
+        found = enrich.detect_furniture(pages, "Tessent™ IJTAG User’s Manual")
+        self.assertIn(split, found, "a running title split by tags around its apostrophe was kept")
+        # Numbered prose is not a page label however often it repeats.
+        prose = [f"Part {n}" + chr(10) * 2 + f"Fix the clock case {n}." + chr(10) for n in range(25)]
+        self.assertEqual(enrich.detect_furniture(prose, "Widget Guide"), set())
+
+    def test_11d_a_line_that_is_only_markup_is_not_a_heading(self):
+        """A script printed in a manual keeps its comment lines flush left, so
+        the text layer holds "#  ------  -----" and a bare "#". Each was cut at
+        as a heading and left a chunk that was only that line: 12 such chunks
+        in three of production's manuals, 23 more in the reference rebuilt."""
+        cm = load_script("convert_manual")
+        nl = chr(10)
+        md = nl.join(["# Setup", "", "Install the tool first.", "",
+                      "#  ------  -------  ------", "", "#   Edit this file so every parameter has a value.", "",
+                      "#  ", "", "# Running", "", "Start the tool with the script.", ""])
+        for dictionary in (False, True):
+            chunks = cm.chunk_markdown(md, dictionary)
+            self.assertEqual([h for h, _, _ in chunks], ["Setup", "Edit this file so every parameter has a value.", "Running"],
+                             f"dictionary={dictionary}")
+        # And below the top level, where oversized chunks are split.
+        big = "# Guide" + nl * 2 + "".join(f"## Part {i}" + nl * 2 + "word " * 700 + nl * 2 + "#### ------" + nl * 2
+                                          for i in range(6))
+        for _, _, body in cm.chunk_markdown(big, False):
+            self.assertNotEqual(body.strip(), "#### ------")
+
     def test_12_enrich_leaves_converter_breadcrumbs_alone_in_walk_mode(self):
         """The no-downgrade guard used to hold for flat documents only.
 

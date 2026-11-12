@@ -293,6 +293,87 @@ were remapped by matching each old chunk's text, kept in `.rebuild-backup`,
 against the new sections (`scripts/remap_answers.py` does that now); the
 figures were re-extracted. Budget for both after any rebuild.
 
+## Reconverting `tshell-ref-2026-2` with entries kept whole (2026-11-12)
+
+The Tessent Shell reference had 3,070 chunks (of 4,511) carrying the page
+footer "N-NNN Software Version 2026.2", 104 chunks headed by one command and
+owned by another (examples cut one bold command line per chunk, 110 bytes
+each), 23 chunks that were only a breadcrumb, and 66% of owned chunks naming
+their owner. It was reconverted in a work copy with two changes to the
+converter: a footer made of plain words and a changing number is page furniture
+(a line holding an identifier, an option or a number glued to letters is not),
+and the pieces of one entry are packed back up to 9,000 characters. Figures
+were extracted again and read with Tesseract. Production was not touched.
+
+| `check_corpus.py`, tshell-ref | before | after |
+|---|---|---|
+| chunks | 4,511 | 2,339 |
+| median chunk, characters | 1,258 | 4,527 |
+| chunks holding page furniture | 3,070 | 0 |
+| heading mismatches | 104 | 1 |
+| empty chunks | 23 | 0 |
+| owned chunks that name their owner | 66.3% | 90.0% |
+| chunks attributed to a command | 94.1% | 92.7% |
+| figures tied to a section | 89.1% (513) | 95.9% (513) |
+| PDF words found in chunks (30 sampled pages) | not measured | 93% |
+
+The one mismatch left is a false positive of the checker: the entry
+`report_edt_configurations` prints an example whose script has a bold line
+`set_edt_pins...`, which the checker reads as another entry's heading.
+Attribution fell by 1.4 points because the pieces that used to be orphans are
+now inside the entries they belong to, but 7.3% of the chunks (171) are still owned
+by none: the front matter, contents and lists of figures, and the chapters that
+are not command entries.
+
+Figures: 370 tied by caption, 122 by page, 21 by neither. On the 247 captioned
+figures the page method picked the caption's section every time.
+
+Search, on the 138 text and figure questions (the 8 `version` questions are
+left out: this branch's `eval_search.py` does not read them), against the
+index of the unchanged copy, `--compare` read question by question:
+
+| | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|
+| before | 72% | 89% | 93% | 0.810 |
+| after | 72% | 88% | 92% | 0.804 |
+
+Six questions moved, and two of them are the reconversion's: q42 (which
+HsioIsolationMultiplexer property is the WLAST output pin) fell from 1 to 3,
+because its continuation chunk and the examples chunk, which also hold the
+word, now rank above the chunk with the property's description; q11 (a message
+printed during EDT rules checking) rose from 2 to 1, because the reference
+result that outranked the guide was a one-line fragment of the
+`report_edt_configurations` example, a chunk of its own, and is now inside that
+entry's chunk, which ranks lower. q05 fell from 3 to
+5 as other reference chunks moved above it. Three questions about other
+manuals (f20, q103, q78) moved by one rank or two with no change to their
+documents: BM25 scores depend on the whole index, and 2,172 fewer chunks change
+the average length and every term's frequency. The answer to "did cleaning the
+reference help search" on this set is therefore: no measurable change, with
+one question a little worse and one a little better. What it bought is in the
+structural table above. Two things this does not show: that an agent finds an
+entry's example sooner (the chunks hold whole entries now), and what packing
+costs entries that used to be chunks of their own (a packed chunk keeps the
+heading of its first piece).
+
+### Why `tmax-rules` ties 34% of its figures
+
+49 of its 74 figures are tied to no section. Every one of the 49 sits on a page
+that holds two sections (the median page belongs to two sections), and none has a caption (DRC rule diagrams are
+drawn without one). The page method ties a figure only where the page belongs
+to one section, because on a shared page it was right 76.7% of the time, so it
+declines, and with no caption nothing else applies. The 25 figures on a page of
+one section are tied. Nothing was changed. The figures are still served by
+page.
+
+### `pt-cmds`
+
+Not reconverted. The plan called for it only if the checker or the new
+questions showed the Tcl-comment scraps hurting: the checker's two warnings for
+`pt-cmds` are 3 chunks with furniture and its owner-named share (88.5%, under
+the 90% line), and of the 6 new questions answered there, 5 are in the top five
+and the sixth (q78) ranks 9 behind user-guide sections, not behind a scrap.
+
 ## Caveats
 
 - Small: 76 questions, 57 text and 19 figure, so one question moves a text
