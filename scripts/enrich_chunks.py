@@ -73,6 +73,22 @@ TITLE_SHARE = 0.6
 # with the title, and are kept.
 PROSE_RUN_RE = re.compile(r"\b[a-z]+\s+[a-z]+\s+[a-z]+\b")
 
+# A page-label footer must appear on at least this share of the texts (pages,
+# or chunks when run after chunking), and differ on at least this share of its
+# appearances. See detect_furniture.
+PAGE_LABEL_SHARE = 0.25
+PAGE_LABEL_VARIETY = 0.5
+# ...and take at least this many texts and this many different lines. Numbered
+# prose ("Body of part 3.", "Fix the clock case 7.") repeats across a few dozen
+# chunks of a rules manual and passes the shares above; a page footer differs
+# on every page of a document that has pages enough to have a footer.
+PAGE_LABEL_MIN_TEXTS = 10
+PAGE_LABEL_MIN_DISTINCT = 30
+
+APPENDIX_PAGE_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z]-(?=\d)")
+TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+MARKS = str.maketrans("", "", "™℠®©")
+
 
 def iter_lines_outside_code(text: str):
     """Yield (index, raw_line, in_code) tracking fenced code blocks."""
@@ -127,18 +143,25 @@ def detect_furniture(section_texts: list[str], title: str) -> set[str]:
     Lines matching the manual's own title are the classic running footer, so
     they qualify at a much lower count than arbitrary repeated prose.
     """
-    title_core = re.sub(r"\s+", " ", strip_emphasis(title)).strip().lower()
+    title_core = comparable(title)
 
     counts: Counter[str] = Counter()
+    labelled: dict[str, set[str]] = {}   # digit-masked line -> the lines behind it
+    carriers: Counter[str] = Counter()   # digit-masked line -> texts carrying it
     for text in section_texts:
-        seen_here = set()
+        seen_here, masked_here = set(), set()
         for _, raw, in_code in iter_lines_outside_code(text):
             if in_code:
                 continue
             core = strip_emphasis(raw)
             if eligible_furniture_candidate(raw, core):
                 seen_here.add(core)
+                if looks_like_label(core):
+                    masked = re.sub(r"\d+", "#", APPENDIX_PAGE_RE.sub("0-", core))     # "A-12" is a page as "3-12" is
+                    labelled.setdefault(masked, set()).add(core)
+                    masked_here.add(masked)
         counts.update(seen_here)
+        carriers.update(masked_here)
 
     # Precision over recall, deliberately. An earlier version also treated
     # "any line repeated often enough" as furniture, which deleted
@@ -150,16 +173,56 @@ def detect_furniture(section_texts: list[str], title: str) -> set[str]:
     furniture = set()
     head = title_core[:40]
     for line, n in counts.items():
-        spaced = re.sub(r"\s+", " ", line).strip()
-        norm = spaced.lower()
-        is_title_line = title_core and (
+        spaced = re.sub(r"\s+", " ", TAG_RE.sub("", line)).strip().translate(MARKS)
+        norm = comparable(line)
+        is_title_line = title_core and norm and (
             (norm.startswith(head) and not norm[len(head):len(head) + 1].isalnum()
              and not PROSE_RUN_RE.search(spaced[len(head):]))
             or (title_core.startswith(norm[:40]) and len(norm) >= TITLE_SHARE * len(title_core))
         )
         if norm == "feedback" or (is_title_line and n >= 3):
             furniture.add(line)
+
+    # A running footer carrying the page label ("5-138 Software Version
+    # 2026.2") is a different line on every page, so it never repeats as
+    # itself. It repeats as a shape: the same words with a number that changes
+    # nearly every time, on a large share of pages. Tessent's was left in
+    # 3,070 of one reference's 4,511 chunks. Content does not look like that --
+    # numbered captions differ in their words, and a numbered line of prose
+    # repeated identically is not a label -- so this stays on the precision
+    # side of the rule above.
+    floor = max(PAGE_LABEL_MIN_TEXTS, PAGE_LABEL_SHARE * len(section_texts))
+    for masked, lines in labelled.items():
+        if (carriers[masked] >= floor and len(lines) >= PAGE_LABEL_MIN_DISTINCT
+                and len(lines) >= PAGE_LABEL_VARIETY * carriers[masked]):
+            furniture |= lines
     return furniture
+
+
+def looks_like_label(core: str) -> bool:
+    """A page label: plain words and numbers ("5-138 Software Version
+    2026.2", "Guide, v2022.4 102"). A line that holds an identifier or an
+    option -- an underscore, a word starting with - or <, a number glued to
+    letters -- is a command's usage line, which repeats on every page of a
+    reference with only its name's number changing, and is content."""
+    tokens = TAG_RE.sub(" ", core).translate(MARKS).split()
+    if len(re.findall(r"[A-Za-z]{2,}", " ".join(tokens))) < 2 or not any(re.search(r"\d", t) for t in tokens):
+        return False
+    for t in tokens:
+        if "_" in t or (t[0] in "-<[({`" and not re.fullmatch(r"-?\d[\d.\-]*", t)):
+            return False
+        if re.search(r"\d", t) and not re.fullmatch(r"(?:[A-Za-z]-|[vV])?[\d.,\-/:]+", t):
+            return False
+    return True
+
+
+def comparable(line: str) -> str:
+    """A line as the words a reader sees: without highlight tags or trademark
+    signs, which a footer carries and a manifest title may not."""
+    s = TAG_RE.sub("", strip_emphasis(line)).translate(MARKS)
+    s = strip_emphasis(s)
+    s = re.sub(r"\s*([’'])\s*", r"", s)       # "User </mark> ' <mark>s Manual"
+    return re.sub(r"\s+", " ", s).strip().lower()
 
 
 def strip_furniture(text: str, furniture: set[str],

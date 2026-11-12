@@ -90,6 +90,13 @@ TOP_HEADING_RE = re.compile(r"^(#{1,2})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 BOLD_LINE_RE = re.compile(r"^\*\*([^*\n]{2,80})\*\*[ \t]*$", re.MULTILINE)
 
 
+def has_words(title: str) -> bool:
+    """A heading names something. "#  ------  -----" and a bare "#" are the
+    comment lines of a script or a table rule that the PDF's text layer set
+    flush left; cut at, they leave a chunk that is only its own line."""
+    return any(ch.isalnum() for ch in title)
+
+
 def heading_re(level: int) -> re.Pattern:
     return re.compile(rf"^(#{{{level}}})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 
@@ -107,7 +114,8 @@ def dedupe_slug(slug: str, seen: dict) -> str:
 def top_matches(text: str, dictionary: bool) -> list[tuple[int, int, str]]:
     """Primary chapter split: H1/H2 headings, plus standalone **bold** lines
     in --dictionary mode."""
-    matches = {m.start(): (len(m.group(1)), m.group(2).strip()) for m in TOP_HEADING_RE.finditer(text)}
+    matches = {m.start(): (len(m.group(1)), m.group(2).strip())
+               for m in TOP_HEADING_RE.finditer(text) if has_words(m.group(2))}
     if dictionary:
         for m in BOLD_LINE_RE.finditer(text):
             matches.setdefault(m.start(), (2, f"**{m.group(1).strip()}**"))
@@ -122,7 +130,8 @@ def next_heading_matches(text: str, min_level: int, dictionary: bool,
     no numbered heading level matches at all. Positions are in `text`."""
     body = text[start:end]
     for lvl in range(min_level, 7):
-        matches = [(start + m.start(), lvl, m.group(2).strip()) for m in heading_re(lvl).finditer(body)]
+        matches = [(start + m.start(), lvl, m.group(2).strip())
+                   for m in heading_re(lvl).finditer(body) if has_words(m.group(2))]
         if matches:
             return matches
     if dictionary:
@@ -517,7 +526,17 @@ def convert_reference(plan: editions.Plan, title: str, command_level: int | None
     for r_start, r_end, name, entry_index in regions:
         region = full_md[r_start:r_end]
         crumb = ec.BREADCRUMB_SEP.join([title, *(chains[entry_index] if entry_index is not None else [])])
-        for span in chunk_spans(region, dictionary=name is not None or not prose_outside_entries):
+        dictionary = name is not None or not prose_outside_entries
+        spans = chunk_spans(region, dictionary)
+        if dictionary:
+            # Dictionary mode splits on every standalone bold line, and Tessent
+            # sets each command of an example script in bold, so an entry's
+            # examples came out one command line per ~110-byte chunk, headed by
+            # another command's name. PrimeTime's unfenced Tcl comments did the
+            # same. Every span of a region belongs to the same entry, so packing
+            # them back up to MAX_CHUNK can never mix two.
+            spans = pack_adjacent(spans)
+        for span in spans:
             chunks.append((span.heading, span.level, region[span.start:span.end], r_start + span.start, name, crumb))
 
     staging = editions.staging_dir(out_root, slug)

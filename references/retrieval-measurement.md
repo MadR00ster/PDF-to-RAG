@@ -416,6 +416,183 @@ were remapped by matching each old chunk's text, kept in `.rebuild-backup`,
 against the new sections (`scripts/remap_answers.py` does that now); the
 figures were re-extracted. Budget for both after any rebuild.
 
+## Reconverting `tshell-ref-2026-2` with entries kept whole (2026-11-12)
+
+The Tessent Shell reference had 3,070 chunks (of 4,511) carrying the page
+footer "N-NNN Software Version 2026.2", 104 chunks headed by one command and
+owned by another (examples cut one bold command line per chunk, 110 bytes
+each), 23 chunks that were only a breadcrumb, and 66% of owned chunks naming
+their owner. It was reconverted in a work copy with two changes to the
+converter: a footer made of plain words and a changing number is page furniture
+(a line holding an identifier, an option or a number glued to letters is not),
+and the pieces of one entry are packed back up to 9,000 characters. Figures
+were extracted again and read with Tesseract. Production was not touched.
+
+| `check_corpus.py`, tshell-ref | before | after |
+|---|---|---|
+| chunks | 4,511 | 2,339 |
+| median chunk, characters | 1,258 | 4,527 |
+| chunks holding page furniture | 3,070 | 0 |
+| heading mismatches | 104 | 1 |
+| empty chunks | 23 | 0 |
+| owned chunks that name their owner | 66.3% | 90.0% |
+| chunks attributed to a command | 94.1% | 92.7% |
+| figures tied to a section | 89.1% (513) | 95.9% (513) |
+| PDF words found in chunks (30 sampled pages) | not measured | 93% |
+
+The one mismatch left is a false positive of the checker: the entry
+`report_edt_configurations` prints an example whose script has a bold line
+`set_edt_pins...`, which the checker reads as another entry's heading.
+Attribution fell by 1.4 points because the pieces that used to be orphans are
+now inside the entries they belong to, but 7.3% of the chunks (171) are still owned
+by none: the front matter, contents and lists of figures, and the chapters that
+are not command entries.
+
+Figures: 370 tied by caption, 122 by page, 21 by neither. On the 247 captioned
+figures the page method picked the caption's section every time.
+
+Search, on the 138 text and figure questions (the 8 `version` questions are
+left out: this branch's `eval_search.py` does not read them), against the
+index of the unchanged copy, `--compare` read question by question:
+
+| | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|
+| before | 72% | 89% | 93% | 0.810 |
+| after | 72% | 88% | 92% | 0.804 |
+
+Six questions moved, and two of them are the reconversion's: q42 (which
+HsioIsolationMultiplexer property is the WLAST output pin) fell from 1 to 3,
+because its continuation chunk and the examples chunk, which also hold the
+word, now rank above the chunk with the property's description; q11 (a message
+printed during EDT rules checking) rose from 2 to 1, because the reference
+result that outranked the guide was a one-line fragment of the
+`report_edt_configurations` example, a chunk of its own, and is now inside that
+entry's chunk, which ranks lower. q05 fell from 3 to
+5 as other reference chunks moved above it. Three questions about other
+manuals (f20, q103, q78) moved by one rank or two with no change to their
+documents: BM25 scores depend on the whole index, and 2,172 fewer chunks change
+the average length and every term's frequency. The answer to "did cleaning the
+reference help search" on this set is therefore: no measurable change, with
+one question a little worse and one a little better. What it bought is in the
+structural table above. Two things this does not show: that an agent finds an
+entry's example sooner (the chunks hold whole entries now), and what packing
+costs entries that used to be chunks of their own (a packed chunk keeps the
+heading of its first piece).
+
+### Why `tmax-rules` ties 34% of its figures
+
+49 of its 74 figures are tied to no section. Every one of the 49 sits on a page
+that holds two sections (the median page belongs to two sections), and none has a caption (DRC rule diagrams are
+drawn without one). The page method ties a figure only where the page belongs
+to one section, because on a shared page it was right 76.7% of the time, so it
+declines, and with no caption nothing else applies. The 25 figures on a page of
+one section are tied. Nothing was changed. The figures are still served by
+page.
+
+### `pt-cmds`
+
+Not reconverted. The plan called for it only if the checker or the new
+questions showed the Tcl-comment scraps hurting: the checker's two warnings for
+`pt-cmds` are 3 chunks with furniture and its owner-named share (88.5%, under
+the 90% line), and of the 6 new questions answered there, 5 are in the top five
+and the sixth (q78) ranks 9 behind user-guide sections, not behind a scrap.
+
+## Furniture pass and empty chunks, in place (2026-11-12)
+
+`enrich_chunks.py --dry-run --list-furniture` over both collections of a work
+copy, the lists read, then applied to the five documents whose lists were
+running titles, page numbers and page labels and nothing else:
+`etassemblereference-2021-2` (491 copies of its running title),
+`tshell-ijtag-user-2022-4` and `-2026-2` (the title cut by highlight tags
+around its apostrophe, and "N-N Software Version 2026.2"), `tshell-mbist-user-2026-2`
+(462 page labels, chapter and appendix) and `ye-data-intg` (465 running titles
+and 465 bare page numbers). The first dry run found nothing in the IJTAG
+editions because of the apostrophe, and left the appendix labels ("A-12 ...")
+of the MemoryBIST guide; both were fixed in `enrich_chunks.py` and the pass
+repeated.
+
+| `check_corpus.py`, 34 documents | before | after |
+|---|---|---|
+| chunks holding page furniture | 4,088 | 23 (`vcs` 17, `dftug` 3, `pt-cmds` 3) |
+| warnings | 40 | 32 |
+| empty chunks | 12 outside tshell-ref (`atpg-gd` 2, `tshell-user` 5, `tsi-usage-ref` 5) | 12 |
+
+The 23 left are a standalone "Feedback" line in `vcs`'s contents and running
+titles `enrich_chunks.py` does not recognise; they were not touched. Scored on
+the 138 text and figure questions after this pass and the tshell-ref
+reconversion above: 71% hit@1, 88% hit@3, 92% hit@5, MRR 0.801 (before: 72%,
+89%, 93%, 0.810). Besides the reference's questions, q110 moved from 1 to 2 and
+f05 from 5 to 4, both in documents whose chunks lost furniture.
+
+Empty chunks: the cause is a line of a printed script or a table rule that the
+text layer sets flush left ("#  ------  -----", a bare "#"), which the chunker
+cut at as a heading and left as a chunk of one line. The fix (a heading must
+hold a letter or digit) is in `convert_manual.py`, so it reaches a document only
+when that document is converted again: reconverting `atpg-gd` in the pilot below
+left no empty chunk (the other two were not converted). The 12 stay in the work
+copy until they are.
+
+## Prose pilot: `convert_manual.py` against Docling (2026-11-12)
+
+Three prose manuals converted two ways in copies of the work corpus and each
+copy indexed whole: (a) `convert_manual.py --shape prose` as it is on `main`,
+then `enrich_chunks.py` (which writes the breadcrumbs; without it every chunk
+fails the checker's breadcrumb check), figures extracted again and read with
+Tesseract; (b) `convert_docling.py` (Docling was already installed), same
+figure steps. `bsdxg` is the small one (227 pages), `dftug` the large (1,168),
+`atpg-gd` the Tessent one (780). Docling stopped on `atpg-gd` twice, once inside
+a batch and once alone, with a segmentation fault in the layout model's
+convolution ("not enough memory: you tried to allocate 13,107,200 bytes"); the
+unchanged conversion stands in for it below. Content is `check_corpus.py`'s
+share of 30 sampled PDF pages' words found in the chunks claiming the page.
+
+| | current (no pages) | (a) `convert_manual.py` | (b) Docling |
+|---|---|---|---|
+| **`bsdxg`** chunks / median characters | 81 / 5,076 | 152 / 314 | 46 / 8,647 |
+| pages on chunks | 0% | 100% | 100% |
+| figures tied to a section | 97.7% | 100% | 97.7% |
+| content | 98.1% | 94.5% | 96.0% |
+| `--strict` | WARN (no pages) | ok | ok |
+| conversion time | | 61 s (0.27 s a page) | 148 s (0.65 s a page) |
+| **`dftug`** chunks / median characters | 402 / 5,520 | 691 / 459 | 226 / 8,660 |
+| pages on chunks | 0% | 100% | 100% |
+| figures tied | 92.9% | 98.7% | 99.1% |
+| content | 99.0% | 95.7% | 95.3% |
+| `--strict` | WARN | ok | ok |
+| conversion time | | 271 s (0.23 s a page) | 668 s (0.57 s a page) |
+| **`atpg-gd`** chunks / median characters | 765 / 1,256 | 442 / 1,799 | crashed |
+| pages on chunks | 0% | 100% | |
+| figures tied | 99.1% | 100% | |
+| content | 100% | 99.9% | |
+| `--strict` | WARN (empty chunks, no pages) | ok | |
+
+Search, 138 text and figure questions, whole index each time (the questions in
+these three manuals are 12 of them):
+
+| | hit@1 | hit@3 | hit@5 | MRR | median characters to reach the answer, page + section whole / with passages |
+|---|---|---|---|---|---|
+| current | 71% | 88% | 92% | 0.801 | 9,921 / 9,528 |
+| (a) | 70% | 88% | 91% | 0.795 | 10,117 / 9,618 |
+| (b) | 72% | 88% | 91% | 0.804 | 10,117 / 9,616 |
+
+Moves against the current conversion: (a) q09 1 to 4 (`dftug`), q03 1 to 2
+(`atpg-gd`), f12 2 to 1, q05 5 to 6 and q103 6 to 7 (documents not converted);
+(b) f12 2 to 1, q05 5 to 6, q103 6 to 7. Nothing in (b) moved a question
+of the converted manuals, which is no evidence for it: only two manuals were
+converted and each has few questions. The cost of reaching the answer is
+within 2% of the current conversion either way.
+
+What the table shows and does not. Both converters give every chunk a page, pass
+the strict check once the breadcrumbs are there, and tie the same or more
+figures. Chunk shape differs a great deal: `convert_manual.py` cut `bsdxg` into
+chunks with a median of 314 characters (the current ones: 5,076), where Docling
+merges to about 8,650; the retrieval numbers above do not tell which suits an
+agent better. Content found in the chunks fell by 3 to 5 points for both on
+`bsdxg` and `dftug`; the sample is 30 pages, so a difference of that size is one
+page's words, and which words were lost was not read. Docling is 2.4 times
+slower, needs several gigabytes, and failed on one of three. Which converter
+the older editions get is the user's decision.
+
 ## Caveats
 
 - Small: 76 questions, 57 text and 19 figure, so one question moves a text
