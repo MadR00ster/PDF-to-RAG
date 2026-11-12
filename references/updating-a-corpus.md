@@ -83,3 +83,14 @@ read than buried. `update_corpus.py` answers each of those:
 A test (test_53i) fails when the by-hand sequence in SKILL.md or README names
 a script `update_corpus.py` does not run, so a step added to one has to be
 added to the other.
+
+## A document converted before pages existed
+
+`check_corpus.py` warns `no-pages` for a document whose chunks carry no page
+numbers. Reconverting it adds them but re-cuts the chunks, which moves search
+results. `backfill_pages.py <collection> --dry-run` finds each chunk's pages in
+the source PDF without touching a body, and prints how many it matched, how many
+it could only bound or take from the next chunk (flagged `pages_from` in the
+manifest), and how many it left out. Run `extract_figures.py` and
+`ocr_figures.py` on the document afterwards, then rebuild the index. The
+measurements are in `references/retrieval-measurement.md`.
