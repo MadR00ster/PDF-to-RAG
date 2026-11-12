@@ -281,6 +281,35 @@ class EditionsTest(unittest.TestCase):
         self.assertIn("pin-invalid", r.stdout)
         pins.unlink()
 
+    def test_21b_a_question_can_name_the_edition_it_is_asked_of(self):
+        """eval_search.py ran every question as a plain search, which answers
+        from the edition in use, so a question about an older edition could
+        only score as a miss. With `document` and `version` it asks that
+        edition, as search_docs does."""
+        self.use_gadgets("evalver")
+        self.assertEqual(self.build().returncode, 0)
+        questions = self.tmp / "version-questions.jsonl"
+        out = self.tmp / "version-run.json"
+        asked = {"question": "unpacking the gadget",
+                 "answers": [{"doc_id": "gadget", "version": "2025.1",
+                              "quote": "This section covers unpacking for the gadget in release 2025.1."}]}
+
+        def score(**extra) -> dict:
+            questions.write_text(json.dumps({"id": "v1", "kind": "version", **asked, **extra}) + chr(10),
+                                 encoding="utf-8")
+            r = run("eval_search.py", "--db", str(self.db), "--questions", str(questions), "--json", str(out))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            return json.loads(out.read_text(encoding="utf-8"))["results"][0]
+
+        self.assertIsNone(score()["rank"], "a plain search answered from the older edition")
+        named = score(document="gadget", version="2025.1")
+        self.assertEqual(named["rank"], 1, "a question naming its edition was not asked of that edition")
+        # `version` alone names no manual: the question cannot be searched, and says so.
+        questions.write_text(json.dumps({"id": "v2", "kind": "version", **asked, "version": "2025.1"}) + chr(10),
+                             encoding="utf-8")
+        r = run("eval_search.py", "--db", str(self.db), "--questions", str(questions))
+        self.assertIn("`version` needs `document`", r.stdout + r.stderr)
+
     def test_22_comparison_reads_the_whole_entry(self):
         """A difference past the lookup's cut must still be found.
 

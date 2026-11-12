@@ -37,6 +37,9 @@ descriptions — is a guess until it moves a number. Build the number first.
    can instead be written as `{"doc_id": …, "quote": "a short exact phrase"}`,
    which `eval_search.py` resolves to the sections holding the phrase and which
    needs no remap at all.
+   A question can also be asked of one edition, with `"document"` and
+   `"version"` beside `answers`: the search is then that edition's only, as
+   `search_docs` takes them, so a question about an older edition can be scored.
 
 Questions written by someone who has just read the answer share its words, so
 they flatter lexical search. `paraphrase` measures that bias; `real` questions

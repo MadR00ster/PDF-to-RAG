@@ -32,6 +32,12 @@ reconversion that left answers by file behind, remap_answers.py finds them. Wher
 well, add it there: a test that marks right answers wrong under-reports, and
 the misses are where to look.
 
+A question may also name the edition it is asked of, as search_docs takes it:
+  {"id": "v01", "kind": "version", "question": "...", "document": "dftug",
+   "version": "2023.12", "answers": [{"doc_id": "dftug", "version": "2023.12", "quote": "..."}]}
+The search is then of that edition only, so a question about an older edition
+can be scored; without `document` and `version` it is the plain search.
+
 `kind` is free-form and results are broken down by it. The ones this skill
 uses, matching SKILL.md's "Measuring retrieval": identifier (names a command,
 option, rule or message), concept (natural wording, sharing some of the
@@ -70,6 +76,19 @@ def load_questions(path: Path) -> list[dict]:
             sys.exit(f"{path}:{n}: every question needs `question` and `answers`")
         questions.append(q)
     return questions
+
+
+def scope(q: dict) -> dict:
+    """What a question narrows its search to: `document` (a manual's doc_id)
+    and `version`, as search_docs takes them, for a question asked of one
+    edition. Without them the search is the plain one, which answers from the
+    edition in use."""
+    if q.get("version") and not q.get("document"):
+        raise ValueError("`version` needs `document`: versions belong to one manual")
+    if not q.get("document"):
+        return {}
+    row = mcp_server.resolve_document(q["document"], q.get("version"), q.get("collection"))
+    return {"collection": row["collection"], "document": row["slug"]}
 
 
 def is_answer(row, answers: list[dict]) -> bool:
@@ -281,7 +300,7 @@ def main() -> int:
     results, errors = [], []
     for q in questions:
         try:
-            rows = mcp_server.search(q["question"], limit=LIMIT)
+            rows = mcp_server.search(q["question"], limit=LIMIT, **scope(q))
         except ValueError as exc:
             # A query the index cannot run is not a miss. Scored as one, a
             # search that is broken for every question reads as a search that
