@@ -76,37 +76,13 @@ These are estimates, not measurements. Replace each with the number once taken.
   number that was not measured.
 - Repo changes go on a branch with a pull request, a test with each fix.
 
-## Phase 3: repair the reference manuals
-
-1. Port the unmerged branch `reference-chunks` (`28385d9`) onto `main`: footer
-   lines like "5-138 Software Version 2026.2" stripped as furniture, titles
-   compared without ®, ™ and `<mark>`. Its tests are in the old
-   `tests/test_pipeline.py`; move them to `tests/test_converters.py`. Entry
-   packing (`pack_adjacent`) is already on `main`; check before porting it again.
-2. Reconvert `tshell-ref-2026-2` in the work copy, re-extract and OCR its 513
-   figures. Targets: furniture 3,070 to about 0, heading mismatches 104 to 0,
-   owner named 66% to 90% or more, no empty chunk.
-3. Reconvert `pt-cmds` only if the checker or the phase 1 questions show the
-   Tcl-comment scraps hurting (169 chunks under 200 characters).
-4. `tmax-rules`: 49 of 74 figures are tied to no section. Find out why (its
-   pages are shared between rules, so the page tie declines) before changing
-   anything.
-
 ## Phase 4: repair the prose manuals
 
-1. **Furniture, in place.** After phase 3's port, `enrich_chunks.py
-   --dry-run --list-furniture` on the six documents listed above; read the list;
-   apply. Bodies otherwise unchanged, so file answers still hold.
-2. **Empty chunks.** Find which step writes a chunk that is only a breadcrumb
-   (`sections/NNN-section.md`); fix it with a test, or drop them at conversion.
-3. **Pages: a pilot, then the user decides.** On three prose manuals (one
-   small, one large, one Tessent: `bsdxg`, `dftug`, `atpg-gd`) compare
-   (a) `convert_manual.py` as it is on `main`, which now writes pages, and
-   (b) `convert_docling.py`. For each: `check_corpus.py --strict`, the content
-   percentage, figures tied, chunk size, questions' ranks, and
-   `eval_search.py --cost`. Report and stop. This is the "prose routing under
-   review" decision in HANDOVER, and it also settles which converter the ten
-   older editions get.
+Steps 1 to 3 are done and measured in `references/retrieval-measurement.md`
+(furniture 4,088 to 23 chunks; the empty-chunk fix is in the converter, and the
+12 empty chunks of `atpg-gd`, `tshell-user` and `tsi-usage-ref` go when those are
+converted again; the pilot is tabled, and the converter choice is the user's).
+
 4. Roll the chosen converter over the remaining no-page documents, one at a
    time, each gated as in the rules. Then re-extract figures: with pages, a
    figure on an unshared page ties by page, which should lift the six worst
