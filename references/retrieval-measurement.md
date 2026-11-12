@@ -868,6 +868,179 @@ One question moved: f15 (PRPG driving the scan chain inputs, a figure question)
 1 to 2. All 123 text questions kept their rank. The cause is the figures, not
 the bodies: pages let `extract_figures.py` tie more figures to sections, and a
 figure's text is searched with its section (the same move as in the pilot).
+## The ten older editions, converted in the work copy (2026-11-13)
+
+The entries of the two `superseded.json` files (`dcug`, `tmax_rules`, `tmax_ug`;
+`atpg_gd_2022_4`, `edt_gd_2022_4`, `tshell_mbist_user_2022_4` and `_2025_2`,
+`tshell_ref_2022_4` and `_2025_2`, `tshell_user_2022_4`) were moved from
+`source/` to `new_docs/` in the work copy, their `superseded.json` entries
+removed (both files are now `[]`), and the work copy's index replaced by the
+Part 1 index so that only they were new. Then, with the code of `main` at
+`fb4ad2a`:
+
+```
+python scripts/update_corpus.py H:\Playground\dq-work\corpus --dry-run --questions questions-quoteonly-all.jsonl --prose-converter convert_manual
+python scripts/update_corpus.py H:\Playground\dq-work\corpus          --questions questions-quoteonly-all.jsonl --prose-converter convert_manual
+```
+
+The dry run planned what it should: `tmax_rules` and the two `tshell_ref` as
+references (`--shape reference`), the other seven as prose, every version read
+from the cover, every `doc_id` joining the edition already there. Conversion,
+enrichment, figures and OCR took several hours, not timed (the two `tshell_ref` editions,
+5,132 and 5,204 pages, were most of it). The run then **stopped at the strict
+check, before touching the index**: one FAIL (below). The remaining steps of
+the plan were run by hand, with the commands the plan printed:
+`build_index.py` per collection, `build_search_db.py --out idx\p2-editions.sqlite3`,
+`mcp_smoke_test.py` (all checks pass), `eval_search.py`. The work copy's own
+index was therefore not swapped.
+
+### Per edition
+
+| edition | version (cover) | PDF pages | chunks | median chars | under 200 | pages | figures (tied) | content | owned / named | `<mark>` page labels in chunks | `--strict` |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| dcug-t-2022-03 | T-2022.03 | 850 | 274 | 6,774 | 20 | 100% | 226 (100%) | 97% | - | 0 | ok: ok |
+| tmax-rules-t-2022-03 | T-2022.03 | 433 | 449 | 1,562 | 0 | 100% | 71 (34%) | 98% | 95% / 100% | 0 | ok: ok |
+| tmax-ug-t-2022-03 | T-2022.03 | 1571 | 430 | 7,719 | 2 | 100% | 489 (92%) | 97% | - | 0 | ok: ok |
+| atpg-gd-2022-4 | 2022.4 | 820 | 262 | 6,737 | 0 | 100% | 310 (100%) | 97% | - | 249 | ok: ok |
+| edt-gd-2022-4 | 2022.4 | 394 | 119 | 6,617 | 0 | 100% | 99 (100%) | 96% | - | 116 | ok: ok |
+| tshell-mbist-user-2022-4 | 2022.4 | 892 | 252 | 7,166 | 0 | 100% | 115 (99%) | 97% | - | 248 | ok: ok |
+| tshell-mbist-user-2025-2 | 2025.2 | 844 | 259 | 6,959 | 0 | 100% | 120 (100%) | 100% | - | 1 | WARN: furniture x3 |
+| tshell-ref-2022-4 | 2022.4 | 5132 | 2115 | 5,039 | 0 | 100% | 413 (94%) | 97% | 90% / 99% | 1991 | FAIL: entity-contradicts-pages x3, entity-heading-mismatch x1 |
+| tshell-ref-2025-2 | 2025.2 | 5204 | 2227 | 4,489 | 1 | 100% | 491 (93%) | 100% | 93% / 90% | 1 | WARN: entity-heading-mismatch x4 |
+| tshell-user-2022-4 | 2022.4 | 928 | 302 | 6,306 | 0 | 100% | 303 (100%) | 97% | - | 281 | ok: ok |
+
+Pages are on every chunk of every edition (these went through `convert_manual.py`,
+which writes them). Content is the checker's sampled share. `tshell-ref-2025-2`
+and `tshell-ref-2022-4` have 93% and 90% of their chunks owned by an entry and
+99% and 90% of those name it (2026.2: 93% and 90%).
+
+**The FAIL: `tshell-ref-2022-4`.** Three chunks (1459 to 1461, pages 3516 to
+3526) are owned by "Procedure Rules (P Rules)", whose bookmark spans 3466 to
+3514. The next bookmark, "Core Mapping for ATPG and Scan Pattern Retargeting
+Rules (R Rules)" at 3514, was not found as an entry because the PDF's text layer
+writes its heading garbled ("Retar etin Rules R Rules", the `g`s dropped into an
+underline tag), so the text of R1 to R14 went to the entry before it. That is
+3 of 2,115 chunks; it is a converter limitation (a heading is matched by its
+text, not by its bookmark's page) and I did not change the converter. `update_corpus.py`
+will stop on this edition in production until it is fixed or the user accepts
+it. Not done: a fallback that takes the bookmark's page when the text does not
+match.
+
+**What the checker found and the converter did not do** (all in the edition
+named, none fixed here except the first):
+
+- *A bookmark title with a line separator (U+2028)* in 24 titles of
+  `tshell-ref-2025-2` and 20 of `tshell-mbist-user-2025-2`. Written into a
+  breadcrumb it ended the first line of 2,167 chunks early for the checker
+  (`breadcrumb-file-mismatch` and `furniture` on every one, and `named` inflated
+  to 100% because the breadcrumb, which ends in the entry's name, stayed in the
+  body). Fixed in `convert_manual.py` (`outline()` collapses whitespace in
+  bookmark titles) with test 11f, which fails without it. The two work-copy
+  editions were converted before the fix, and the converter was not run on them again.
+  Their breadcrumbs, manifest `toc` titles and each chunk's first line were
+  rewritten in place with the same collapse (`dq-work\tools\fix2028.py`,
+  manifests before kept in `idx\pre2028\`); a reconversion would give the same
+  strings, but that was not run.
+- *Page labels written as highlight tags.* `<mark>3516</mark>` is in 1,991 of
+  the 2,115 chunks of `tshell-ref-2022-4`, 249 of `atpg-gd-2022-4`, 116 of
+  `edt-gd-2022-4`, 248 and 281 of the 2022.4 MemoryBIST and Shell User's
+  manuals; 0 or 1 in the 2025.2 and 2026.2 editions. It is page furniture the
+  furniture pass does not recognise (it is where the chunks named `mark-3516-mark`
+  come from) and `check_corpus.py` does not flag it.
+- *Running footers made of words only.* `Command Dictionary (Sa-Set_l)
+  set_edt_options` is on its own line in 1,343 chunks of `tshell-ref-2025-2` and
+  1,262 of `2022.4`, 0 of `2026.2` (whose footer, "N-NNN Software Version
+  2026.2", has a number and was caught). It leaks the *next* command's name into
+  an entry whenever the next command starts on the same page.
+
+### Search: the current editions moved
+
+`eval_search.py --compare` of the Part 1 index against the index with the ten
+editions, 146 questions:
+
+| | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|
+| Part 1 (pages in place) | 72% | 89% | 92% | 0.808 |
+| with the ten older editions | 72% | 88% | 92% | 0.805 |
+
+**Eight questions changed rank though no older edition is searched by default.**
+q113 3 to 6, q32 2 to 4, f20 2 to 4, q60 4 to 3, q80 1 to 2, f02 2 to 1,
+f05 4 to 3, q78 8 to 6. In the default top ten of the 138 questions that do not
+name an edition, **0 results are from an older edition**, so the cause cannot be
+the results; it is the index. SQLite's BM25 takes its document frequencies and
+average chunk length from the whole table, and the 6,689 added chunks change
+every score. I have not isolated it by
+rebuilding without the ten, so this is the likely cause, not a measured one. It
+is a design question, not fixed: keeping the older editions in a table of their
+own would keep the current ranking exactly as it was, and would cost a second
+query for `document` + `version`.
+
+### Version questions
+
+20 new questions (`questions-versions-p2.jsonl`, v01 to v20), two per edition,
+each asked with `document` and `version` of the older edition and answered by a
+quote from a passage read in that edition: `dcug` and `tmax-rules` and `tmax-ug`
+T-2022.03, `atpg-gd`, `edt-gd` and `tshell-user` 2022.4, `tshell-mbist-user`
+2022.4 and 2025.2, `tshell-ref` 2022.4 and 2025.2. With the 8 IJTAG ones:
+
+| | n | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|---|
+| the 20 new | 20 | 90% | 95% | 95% | 0.931 |
+| all 28 version questions | 28 | 93% | 96% | 96% | 0.951 |
+| all 166 | 166 | 74% | 89% | 92% | 0.820 |
+
+18 of 20 rank first. v19 ("Which command adds scan or non-scan clocks to the
+clock list?", `tshell-ref` 2025.2) ranks 8: the question names no command, and
+a reference of 2,227 entries has many that add things. As before a scoped
+search tests the scoping more than the ranking.
+
+### `compare_versions` on real editions
+
+Called in-process through `mcp_server.tool_compare_versions` on the index above.
+
+*Listing, `tshell-ref` 2025.2 against 2026.2:* 1,319 entries against 1,295;
+25 added, 1 removed, 1,294 in both. The 25 added are plausibly new in 2026.2
+(HB-IJTAG, IEEE 2929 and pseudo-IJTAG commands and rules, a few variables);
+two are not commands but section titles ("HB-IJTAG Rules", "Ports with
+Unconstrained Array Types in the Root Design Entity of a Child Block") and one
+removed entry is `tessent -siliconinsight`. I did not check each against a
+release note, and the tool does not claim to be one.
+
+*Five entries compared with `name`* (`add_clocks`, `report_clocks`,
+`set_system_mode`, `add_scan_chains`, `set_edt_options`, chosen before looking at
+their diffs). Before the fix below, `set_system_mode` showed 7 lines only in
+2025.2 and 7 only in 2026.2. One is a real change ("See the User's Manual" became
+"Refer to"). The other six were a heading written `####` in one edition and
+`######` in the other, three list items written `- setup` and `###### • setup`,
+and the page footers. Since lines are keyed, not positioned, nothing was
+invented: every difference is a line that is different in the stored text.
+What is wrong is that the stored text differs where the manual does not.
+
+*Fixed, with a test:* a heading level and a list marker are not compared in
+prose (`diff_key`; test 25f fails without it). `set_system_mode` falls to 3 and
+3 lines, `report_clocks` 30 and 29 to 24 and 23, `add_scan_chains` 10 and 11 to
+7 and 8, `set_edt_options` 67 and 63 to 42 and 38, `add_clocks` 58 and 81 to 48
+and 71.
+
+*Not fixed, reported:* what remains is mostly conversion differences between
+the two editions, not edits to the manual: the `Command Dictionary (...)` footer
+lines of 2025.2 (above), a bare repeat of the command name in 2026.2's `set_system_mode`,
+and the same sentence split differently across lines. So the comparison of
+`tshell-ref` 2022.4 and 2025.2 against 2026.2 lists several lines per entry that
+a reader would not call changes until the furniture of all three editions is
+treated the same way. This is a design question (a furniture pass before
+comparison, or one pass in the converter); I stopped.
+
+*Prose, `tmax-ug` and `dcug` V-2023.12 (the old chunking) against T-2022.03 (the
+new):* 1,920 headings against 1,846, 98 added and 24 removed (`tmax-ug`);
+998 against 967, 45 added and 14 removed (`dcug`). **Differing chunk boundaries
+produce no false differences**, because for prose the listing is built from the
+PDFs' bookmark outlines, not from the chunks: of the 98 added and 24 removed,
+none is a title in the other edition's outline. The chunk headings, which do
+differ much more (`tmax-ug`: 252 of 406 headings of the new edition are not
+headings of the old), are not used. The limit is the one `references/editions.md`
+already states: prose compares headings only, never text, and I did not have a
+way to check whether the 98 additions are all real; none of the 98 was read against the PDFs.
 
 ## Caveats
 

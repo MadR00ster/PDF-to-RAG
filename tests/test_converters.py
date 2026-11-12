@@ -430,6 +430,30 @@ class ConverterTest(unittest.TestCase):
         for _, _, body in cm.chunk_markdown(big, False):
             self.assertNotEqual(body.strip(), "#### ------")
 
+    def test_11f_a_bookmark_with_a_line_separator_makes_a_one_line_breadcrumb(self):
+        """Two editions of one vendor's manuals carry U+2028 inside bookmark
+        titles. Written into a breadcrumb it ended the chunk's first line early
+        for every reader that splits lines the way Python does, and the checker
+        reported the breadcrumb and the running title wrong on every chunk."""
+        coll = self.tmp / "LineSep"
+        coll.mkdir()
+        pdf = coll / "sep-guide.pdf"
+        body = [("This section explains the widget and how to seat it correctly.", 11),
+                ("Torque the bolts evenly to avoid warping the bracket.", 11)]
+        write_pdf(pdf, [[("Chapter 3 Setup", 22)] + body, [("Mounting", 16)] + body],
+                  [[1, "Chapter 3  Setup", 1], [2, "Mounting", 2]])
+        (coll / "docs").mkdir()
+        r = run("convert_manual.py", str(pdf), "--title", "Sep Guide", "--slug", "sep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run("enrich_chunks.py", str(coll))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        m = self.manifest_of(coll, "sep")
+        self.assertNotIn(" ", json.dumps(m, ensure_ascii=False))
+        self.assertEqual(m["toc"][0]["title"], "Chapter 3 Setup")
+        for s in m["sections"]:
+            first = (coll / "docs" / "sep" / s["file"]).read_text(encoding="utf-8").splitlines()[0]
+            self.assertEqual(first.strip("*"), s["breadcrumb"])
+
     def test_11e_a_run_of_one_line_headings_is_one_chunk(self):
         """A slide-like page sets each caption in a larger font, which the
         extractor writes as a heading, and every one was a cut: bsdxg came out

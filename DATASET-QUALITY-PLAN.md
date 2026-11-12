@@ -98,10 +98,13 @@ choice, and whether backfill becomes repo code, is the user's.
 
 ## Phase 5: completeness of editions
 
-Convert the ten older PDFs through `update_corpus.py --questions` in the work
-copy with the converter phase 4 chose. Then add entry-level `compare_versions`
-questions for `tshell-ref` (three editions), which has only been tested on
-fixtures.
+Done in the work copy 2026-11-13 (`references/retrieval-measurement.md`, "The
+ten older editions"): the ten converted with `convert_manual.py`, 20 version
+questions added (2 per edition, 90% at rank 1), `compare_versions` run on
+`tshell-ref` 2025.2 against 2026.2 and on two prose pairs. What is left: the
+`tshell-ref-2022-4` strict FAIL, the page furniture of the older reference
+editions, and whether older editions belong in the same BM25 table as the current
+ones. None of this is in production.
 
 ## Phase 6: real use (needs the user)
 

@@ -177,7 +177,15 @@ Noticed, not fixed. Fix one with a test, and delete its line here.
   and asks its questions one at a time.
 - Over HTTP, a call-log line has no client name (only `initialize` carries it
   and no session is kept); it has a `token_id` instead.
-- Ten older PDFs in production are not converted (they are the entries in its
-  two `superseded.json` files). Converting them through `update_corpus.py`
-  needs the user to choose the prose converter: `convert_manual` matches the
-  existing editions, Docling adds pages but makes comparisons unfair.
+- Ten older PDFs in production are not converted (the entries of its two
+  `superseded.json` files). Converted in the work copy 2026-11-13 with
+  `--prose-converter convert_manual` (`references/retrieval-measurement.md`,
+  "The ten older editions"); production still waits for the user's go-ahead.
+  Three things stop or blur that update: `check_corpus.py --strict` FAILs
+  `tshell-ref-2022-4` (3 chunks of the "Core Mapping ... (R Rules)" section are
+  owned by the rule section before it, because the PDF's text writes that
+  heading garbled); the index shifts BM25 scores of current editions by adding
+  chunks of older ones (8 of 146 questions changed rank, none from an older
+  edition); and the older reference editions keep page furniture the current
+  one lost (`<mark>NNNN</mark>` page labels, "Command Dictionary (...) name"
+  footers), which `compare_versions` shows as differences.
