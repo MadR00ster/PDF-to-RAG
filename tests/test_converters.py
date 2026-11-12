@@ -430,6 +430,53 @@ class ConverterTest(unittest.TestCase):
         for _, _, body in cm.chunk_markdown(big, False):
             self.assertNotEqual(body.strip(), "#### ------")
 
+    def test_11e_a_run_of_one_line_headings_is_one_chunk(self):
+        """A slide-like page sets each caption in a larger font, which the
+        extractor writes as a heading, and every one was a cut: bsdxg came out
+        as 152 chunks with a median of 314 characters, 51 of them under 200,
+        where the conversion it replaced had 81 with a median over 5,000.
+        Chunks under MIN_CHUNK are joined to the next, so a chunk is a heading
+        and enough text to be about something; each still starts at a heading
+        and its pages come from the text it holds."""
+        cm = load_script("convert_manual")
+        pages = []
+        for n in range(6):
+            pages.append([("Chapter %d Slides" % n, 24)] + [(f"caption {n}.{k} of the slide", 14) for k in range(8)]
+                         + [(f"Body text of chapter {n}: the widget is fitted.", 10)]
+                         + [("Check the seals, then check the clamps, then close the lid.", 10)] * 7)
+        pdf = self.tmp / "slides.pdf"
+        toc = [[1, f"Chapter {n} Slides", n + 1] for n in range(6)]
+        write_pdf(pdf, pages, toc)
+        coll = WS.collection("slides")
+        shutil.copy(pdf, coll / "slides.pdf")
+        r = run("convert_manual.py", str(coll / "slides.pdf"), "--title", "Slide Guide", "--slug", "slides",
+                "--shape", "prose")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        doc = coll / "docs" / "slides"
+        sections = json.loads((doc / "manifest.json").read_text(encoding="utf-8"))["sections"]
+        bodies = [(doc / s["file"]).read_text(encoding="utf-8") for s in sections]
+        floor = getattr(cm, "MIN_CHUNK", 500)
+        small = [len(b) for b in bodies[:-1] if len(b) < floor]
+        self.assertFalse(small, f"chunks under {floor} characters that are not the last: {small}")
+        for s, b in zip(sections, bodies):
+            self.assertTrue(b.lstrip().startswith("#") or b.lstrip().startswith("**"),
+                            f"{s['file']} does not open with its heading")
+            self.assertTrue(1 <= s["page_start"] <= s["page_end"] <= 6, s)
+        # Every chapter's body is somewhere, in the order of the pages.
+        text = "".join(bodies)
+        positions = [text.find(f"Body text of chapter {n}") for n in range(6)]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn(-1, positions)
+        # The joining itself: pieces are consecutive slices of the text.
+        nl = chr(10)
+        md = nl.join(["# One", "", "short", "", "# Two", "", "short", "", "# Three", "", "x " * 400, ""])
+        spans = cm.pack_small(cm.chunk_spans(md, False))
+        self.assertEqual(spans[0].heading, "One")
+        self.assertEqual(spans[0].start, 0)
+        self.assertEqual(spans[-1].end, len(md))
+        for a, b in zip(spans, spans[1:]):
+            self.assertEqual(a.end, b.start)
+
     def test_12_enrich_leaves_converter_breadcrumbs_alone_in_walk_mode(self):
         """The no-downgrade guard used to hold for flat documents only.
 

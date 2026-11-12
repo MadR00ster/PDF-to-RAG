@@ -79,16 +79,21 @@ These are estimates, not measurements. Replace each with the number once taken.
 ## Phase 4: repair the prose manuals
 
 Steps 1 to 3 are done and measured in `references/retrieval-measurement.md`
-(furniture 4,088 to 23 chunks; the empty-chunk fix is in the converter, and the
-12 empty chunks of `atpg-gd`, `tshell-user` and `tsi-usage-ref` go when those are
-converted again; the pilot is tabled, and the converter choice is the user's).
+(furniture 4,088 to 23 chunks; the 12 empty chunks of `atpg-gd`, `tshell-user` and
+`tsi-usage-ref` go when those are converted again). The pilot was redone after
+the chunk-size fix (`pack_small`) with three arms: the fixed `convert_manual.py`,
+Docling (crashed on `atpg-gd`), and an in-place page backfill prototype
+(`H:\Playground\dq-work	oolsackfill_pages.py`, not repo code). The converter
+choice, and whether backfill becomes repo code, is the user's.
 
-4. Roll the chosen converter over the remaining no-page documents, one at a
+4. Roll the chosen route (converter, or backfill) over the remaining no-page documents, one at a
    time, each gated as in the rules. Then re-extract figures: with pages, a
    figure on an unshared page ties by page, which should lift the six worst
    documents.
 5. `bsdrm-q-2019-12` at 93% content: list the sampled pages whose words are
-   missing and say whether it is the PDF's text layer or dropped text.
+   missing and say whether it is the PDF's text layer or dropped text (the
+   same reading was done for `bsdxg` and `dftug`: furniture and text-layer
+   artefacts, none dropped).
 
 ## Phase 5: completeness of editions
 

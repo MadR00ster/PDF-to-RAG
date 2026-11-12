@@ -76,6 +76,9 @@ from _common import MIN_COMMANDS, detect_shape, looks_like_entry, pick_command_l
 from _common import slugify as common_slugify  # noqa: E402
 
 MAX_CHUNK = 9000
+# A prose chunk smaller than this is joined to the one after it (up to MAX_CHUNK)
+# so a run of one-line headings is one chunk, not dozens. See pack_small.
+MIN_CHUNK = 500
 
 
 class Span(NamedTuple):
@@ -225,6 +228,40 @@ def pack_adjacent(leaves: list[Span]) -> list[Span]:
     return packed
 
 
+def title_key(text: str) -> str:
+    """A heading or a bookmark title as the words it says: without emphasis,
+    a "(intro)" or "(cont.)" the chunker added, or a chapter number."""
+    t = ec.strip_emphasis(re.sub(r"\s*\((?:intro|cont\.)\)\s*$", "", text))
+    t = re.sub(r"^(?:chapter|appendix|section)\s+\w{1,4}\s*[:.]?\s+|^\d+(?:\.\d+)*\.?\s+", "", t.strip(), flags=re.I)
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+def pack_small(spans: list[Span], toc_titles: set[str] | None = None) -> list[Span]:
+    """Join consecutive chunks until each holds at least MIN_CHUNK characters,
+    never past MAX_CHUNK, and never across a bookmarked section: a chunk that
+    opens one (its heading is in `toc_titles`, see title_key) starts a new
+    chunk, however small the one before it. A page of slide-like text sets
+    every caption and callout in a larger font, which the extractor writes as
+    "# caption" lines, and cutting at each made bsdxg 152 chunks with a median
+    of 314 characters (51 under 200); a chunk that small is a heading and a
+    line, which neither matches a question nor says what it is about. A joined
+    chunk starts at its first piece's heading and runs to the end of its last,
+    so it is still a slice of the text, and its pages are read from that slice.
+    A chunk already at MIN_CHUNK stands alone."""
+    packed: list[Span] = []
+    group: Span | None = None
+    for span in spans:
+        opens_section = bool(toc_titles) and title_key(span.heading) in toc_titles
+        if group and (group.end - group.start >= MIN_CHUNK or opens_section
+                      or span.end - group.start > MAX_CHUNK):
+            packed.append(group)
+            group = None
+        group = span if group is None else Span(group.heading, group.level, group.start, span.end)
+    if group:
+        packed.append(group)
+    return packed
+
+
 def split_oversized(text: str, heading: str, level: int, dictionary: bool, start: int, end: int) -> list[Span]:
     """Recursively break a >MAX_CHUNK block into leaf fragments by descending
     one heading level at a time: split on the shallowest deeper heading level
@@ -347,7 +384,8 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
     doc = pymupdf.open(str(pdf_path))
 
     print("Chunking ...")
-    spans = chunk_spans(md_text, dictionary)
+    toc_titles = {title_key(t) for _lvl, t, _pg in doc.get_toc()}
+    spans = pack_small(chunk_spans(md_text, dictionary), toc_titles)
 
     out_dir = out_root / slug
     staging = editions.staging_dir(out_root, slug)
