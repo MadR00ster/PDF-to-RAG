@@ -2046,6 +2046,7 @@ DIFF_QUOTES = str.maketrans({"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u201
 # underscore inside; `set_mode -pattern data_*` loses nothing.
 MD_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|<>~])")
 MD_CODE_RE = re.compile(r"`([^`\n]+)`")
+MD_LEADING_MARKER_RE = re.compile(r"^(?:#{1,6} )?(?:[-*+•] )?")
 MD_EMPHASIS_RES = (
     re.compile(r"(?<![\w*])\*\*(?=\S)(.+?)(?<=\S)\*\*(?![\w*])"),
     re.compile(r"(?<![\w])__(?=[^\s_])(.+?)(?<=[^\s_])__(?![\w])"),
@@ -2101,6 +2102,10 @@ def diff_key(line: str, literal: bool = False, exact: bool = True) -> str:
         if text == before:
             break
     text = " ".join(MD_ESCAPE_RE.sub(r"\1", text).split())
+    # A heading level and a list marker are the extractor's reading of a font,
+    # which changes between releases of one manual: "###### • setup" in one
+    # edition is "- setup" in the next.
+    text = MD_LEADING_MARKER_RE.sub("", text)
     return re.sub(r"\x00(\d+)\x00",
                   lambda m: held[int(m.group(1))] if exact else _typography(held[int(m.group(1))]), text)
 

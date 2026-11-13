@@ -74,8 +74,11 @@ wildcard, not emphasis. A line of code that differs only in spacing or quote
 style is listed as that, on its own, because one name added to an aligned
 block moves every other line in it.
 
-Two things it does not do yet. It compares exact lines, so an edition whose
-page footers survived conversion shows them as differences. And for prose it
+Two things it does not do yet. It compares exact lines (a heading level and a
+list marker are ignored, as emphasis is), so an edition whose page footers
+survived conversion shows them as differences: the 2025.2 and 2022.4 editions of
+the Tessent Shell Reference Manual keep a "Command Dictionary (...) name" footer
+that 2026.2 does not. And for prose it
 compares headings only; to compare a topic, search each edition.
 
 `scripts/editions.py status <corpus>` shows every manual, its editions, which

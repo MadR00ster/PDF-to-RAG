@@ -900,6 +900,20 @@ class EditionsTest(unittest.TestCase):
         self.assertNotIn("Then use", out, "prose that differs in nothing was reported")
         self.assertNotIn("- [", out, "a line that is in both editions was reported")
 
+    def test_25f_a_heading_level_or_list_marker_is_not_a_difference(self):
+        """One manual's releases set the same list in different fonts: the
+        extractor wrote "###### • setup" in one and "- setup" in the next, and
+        "####" for a title that was "######". Compared between two real
+        editions, those lines were listed as removed and added."""
+        key = self.server.diff_key
+        self.assertEqual(key("###### • **setup**"), key("- **setup**"))
+        self.assertEqual(key("#### **set_system_mode**"), key("###### **set_system_mode**"))
+        self.assertEqual(key("- **insertion**"), key("insertion"))
+        # a word is still a word, a dash that begins an option is still an option
+        self.assertNotEqual(key("- setup"), key("- setup now"))
+        self.assertNotEqual(key("-setup"), key("setup"))
+        self.assertNotEqual(key("1. setup"), key("setup"))
+
     def test_25e_an_edition_that_names_no_entries_proves_nothing_about_one(self):
         """Absent from an edition with no entity rows is not "removed".
 

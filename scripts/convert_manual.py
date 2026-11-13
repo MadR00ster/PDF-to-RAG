@@ -339,6 +339,14 @@ def chunk_markdown(md_text: str, dictionary: bool) -> list[tuple[str, int, str]]
     return [(s.heading, s.level, md_text[s.start:s.end]) for s in chunk_spans(md_text, dictionary)]
 
 
+def outline(doc) -> list:
+    """The PDF's bookmarks with each title's whitespace collapsed to single
+    spaces. A title can hold a line separator (U+2028, in two editions of one
+    vendor's manuals), which `str.splitlines` and every reader built on it takes
+    for a line break: a breadcrumb made from it then ends its first line early."""
+    return [[lvl, " ".join(title.split()), page] for lvl, title, page in doc.get_toc()]
+
+
 def trim_span(text: str, start: int, end: int) -> tuple[int, int]:
     """text[start:end] without the whitespace around it. A piece cut at a
     newline begins with that newline, which can be the last character of the
@@ -384,7 +392,7 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
     doc = pymupdf.open(str(pdf_path))
 
     print("Chunking ...")
-    toc_titles = {title_key(t) for _lvl, t, _pg in doc.get_toc()}
+    toc_titles = {title_key(t) for _lvl, t, _pg in outline(doc)}
     spans = pack_small(chunk_spans(md_text, dictionary), toc_titles)
 
     out_dir = out_root / slug
@@ -413,7 +421,7 @@ def convert(plan: editions.Plan, title: str, dictionary: bool) -> None:
         "title": title,
         "slug": slug,
         "page_count": doc.page_count,
-        "toc": [{"level": lvl, "title": t.strip(), "page": pg} for lvl, t, pg in doc.get_toc()],
+        "toc": [{"level": lvl, "title": t, "page": pg} for lvl, t, pg in outline(doc)],
         "sections": section_entries,
         "full_md_chars": len(md_text),
         "schema_version": editions.MANIFEST_SCHEMA_VERSION,
@@ -458,7 +466,7 @@ def convert_reference(plan: editions.Plan, title: str, command_level: int | None
     texts, page_numbers = page_markdown(pdf_path)
     full_md, page_starts, furn_removed = join_pages(texts, ec.detect_furniture(texts, title))
     doc = pymupdf.open(str(pdf_path))
-    toc = doc.get_toc()
+    toc = outline(doc)
     print(
         f"[{slug}] {len(page_starts)} pages, {len(full_md):,} chars, "
         f"{furn_removed} furniture lines stripped pre-chunking",
