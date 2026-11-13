@@ -48,6 +48,8 @@
           "level": {"type": "integer", "minimum": 0},
           "page_start": {"type": ["integer", "null"]},
           "page_end": {"type": ["integer", "null"]},
+          "pages_from": {"const": "neighbour", "description": "backfill_pages.py: the chunk was too short to find in the PDF, so both pages are the next chunk's start page, a guess"},
+          "page_end_from": {"const": "neighbour", "description": "backfill_pages.py: the chunk's start was found but not its closing words, so page_end is the page the next chunk starts on"},
           "command": {"type": ["string", "null"], "description": "the entry this chunk documents (a reference); null where none"},
           "entity": {"type": ["string", "null"]},
           "breadcrumb": {"type": "string"},
@@ -57,6 +59,20 @@
       }
     },
     "full_md_chars": {"type": "integer", "minimum": 0},
+    "pages_backfill": {
+      "type": "object",
+      "description": "backfill_pages.py: the pages were found in the PDF afterwards, not by the converter, and how each chunk's were placed",
+      "required": ["script", "at"],
+      "properties": {
+        "script": {"type": "string"},
+        "at": {"type": "string"},
+        "matched": {"type": "integer", "minimum": 0},
+        "end_from_next": {"type": "integer", "minimum": 0},
+        "bounded": {"type": "integer", "minimum": 0},
+        "neighbour": {"type": "integer", "minimum": 0},
+        "unplaced": {"type": "integer", "minimum": 0}
+      }
+    },
     "schema_version": {"type": "integer", "minimum": 1},
     "converter": {
       "type": "object",

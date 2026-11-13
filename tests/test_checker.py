@@ -161,6 +161,33 @@ class CheckerTest(unittest.TestCase):
                 self.assertIn(expected, raised, f"{name} went unreported; raised {raised}\n{r.stdout}")
                 self.assertEqual(r.returncode, 1 if fails else 0, r.stdout)
 
+    def test_18b_a_page_taken_from_a_neighbour_is_not_held_to_the_outline(self):
+        """backfill_pages.py gives a chunk too short to find in the PDF the page
+        its next chunk starts on, and says so. A guess does not contradict the
+        outline; the same pages on a chunk that claims to have found them do."""
+        import shutil
+        clean = WS.hand_corpus()
+        for flagged in (False, True):
+            with self.subTest(flagged=flagged):
+                corpus = self.tmp / f"Guess{int(flagged)}"
+                shutil.copytree(clean, corpus)
+                d = corpus / "docs" / "hand"
+                m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+                s = m["sections"][1]
+                s["command"] = "Gamma Limits"          # an owner from another page, as in test_18
+                f = d / s["file"]
+                lines = f.read_text(encoding="utf-8").split("\n")
+                lines[0] = "*Hand Guide › Gamma › Gamma Limits*"
+                f.write_text("\n".join(lines), encoding="utf-8")
+                s["breadcrumb"] = "Hand Guide › Gamma › Gamma Limits"
+                s.pop("chars", None)
+                if flagged:
+                    s["pages_from"] = "neighbour"
+                (d / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
+                r, raised = self.check(corpus)
+                for name in ("entity-contradicts-pages", "ancestor-contradicts-pages"):
+                    self.assertEqual(name in raised, not flagged, f"{name}: {raised}\n{r.stdout}")
+
     def test_19_checker_order_prefers_the_enclosing_entry(self):
         """A repeated title must not send the order check ahead to a later
         copy when the one enclosing the reading position fits. Breadcrumbs

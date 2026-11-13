@@ -492,7 +492,7 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
     metrics["max_chars"] = max(sizes, default=0)
 
     # ---- per chunk
-    n_pages = n_crumbs = n_ancestors = n_owned = n_named = 0
+    n_pages = n_crumbs = n_ancestors = n_owned = n_named = n_guessed = 0
     prev_start = None
     pos = -1                      # reading-order rank of the last chunk's deepest ancestor
     page_of: dict[str, tuple[int, int] | None] = {}
@@ -513,6 +513,12 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
 
         state, pages = valid_pages(s, page_count)
         page_of[name] = pages
+        # backfill_pages.py marks a page it took from the next chunk because the
+        # chunk was too short to find in the PDF: a guess does not contradict
+        # the outline, so the outline is not asked to confirm it.
+        guessed = s.get("pages_from") == "neighbour"
+        n_guessed += guessed
+        toc_pages = None if guessed else pages
         if state == "invalid":
             f.add("page-invalid", f"{name}: {s.get('page_start')}-{s.get('page_end')} of {page_count}")
         elif state == "ok":
@@ -575,7 +581,7 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
                         if not is_owner:
                             f.add("ancestor-not-in-toc", f"{name}: {a!r}")
                         continue
-                    fits, verdict = toc.overlapping(cands, pages)
+                    fits, verdict = toc.overlapping(cands, toc_pages)
                     if verdict is False:
                         if not is_owner:
                             wrong.append(f"{a!r} is at {toc.describe(cands)}")
@@ -603,7 +609,7 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
                 if not cands:
                     f.add("entity-not-in-toc", f"{name}: {entity!r}")
                 else:
-                    fits, verdict = toc.overlapping(cands, pages)
+                    fits, verdict = toc.overlapping(cands, toc_pages)
                     if verdict is False:
                         f.add("entity-contradicts-pages",
                               f"{name} p{pages[0]}-{pages[1]}: {entity!r} is at {toc.describe(cands)}")
@@ -644,6 +650,7 @@ def check_document(doc_dir: Path, collection_dir: Path, pdf_pages: int) -> dict:
 
     n = len(chunks) or 1
     metrics["pages"] = n_pages / n
+    metrics["pages_from_neighbour"] = n_guessed
     metrics["breadcrumbs"] = n_crumbs / n
     metrics["with_ancestors"] = n_ancestors / n
     metrics["owned"] = n_owned / n

@@ -31,7 +31,7 @@ The gaps, largest first:
 | Documents with no test question | 10 of 34, holding 12,364 chunks (47% of the index): the 8 PrimeTime-family manuals and the two older IJTAG editions | 0 current documents without questions | questions per slug |
 | Real questions | 0; the call log file does not exist yet (switched on 2026-11-10) | first triage from 2026-11-24 | `triage_log.py --summary` |
 | Answer-level score | never run | one live run recorded | `eval_answers.py` |
-| Chunks with no page number | 7,647 chunks in 23 documents (14,199 pages) | 0 | checker `pages` |
+| Chunks with no page number | 7,647 chunks in 23 documents (14,199 pages); **0 in the work copy since `backfill_pages.py`** (production still has them) | 0 | checker `pages` |
 | Page furniture left in chunks | 4,088 chunks (15%); 3,070 in `tshell-ref-2026-2`, 357 `etassemblereference`, 335 `tshell-mbist-user`, 142 + 73 IJTAG, 88 `ye-data-intg`, 17 `vcs`, 3 each `dftug`, `pt-cmds` | under 50 | checker `furniture` |
 | `tshell-ref-2026-2` entries | 66% of owned chunks name their owner; 104 chunks headed by another command; 1,171 chunks under 200 characters; 23 empty | 90% or more named; 0 mismatches; 0 empty | checker `entities`, `empty-chunk` |
 | Empty chunks elsewhere | 12 (`atpg-gd` 2, `tshell-user` 5, `tsi-usage-ref` 5) | 0 | checker `empty-chunk` |
@@ -86,10 +86,11 @@ Docling (crashed on `atpg-gd`), and an in-place page backfill prototype
 (`H:\Playground\dq-work	oolsackfill_pages.py`, not repo code). The converter
 choice, and whether backfill becomes repo code, is the user's.
 
-4. Roll the chosen route (converter, or backfill) over the remaining no-page documents, one at a
-   time, each gated as in the rules. Then re-extract figures: with pages, a
-   figure on an unshared page ties by page, which should lift the six worst
-   documents.
+4. Done in the work copy (`references/retrieval-measurement.md`, "Page numbers in
+   place"): the 23 documents have pages from `scripts/backfill_pages.py`, 132 of
+   7,647 flagged as taken from a neighbour; figures tied 87.0% to 97.6%; no text
+   question moved. `smsug` (84%) and `vcs` (87%) are still under the 92% target.
+   Production gets this when the user says so.
 5. `bsdrm-q-2019-12` at 93% content: list the sampled pages whose words are
    missing and say whether it is the PDF's text layer or dropped text (the
    same reading was done for `bsdxg` and `dftug`: furniture and text-layer

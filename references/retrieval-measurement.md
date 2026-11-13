@@ -728,6 +728,147 @@ that is a loss depends on whether a header is content: for citing a chapter it
 is not. The pages under 90% on all pages were not read one by one; the eight
 lowest of each sample were.
 
+## Page numbers in place: `backfill_pages.py` over 23 documents (2026-11-12)
+
+The user decided that existing manuals get pages in place (the pilot above:
+reconverting moved five questions, in place moved none). The prototype became
+`scripts/backfill_pages.py`. It writes only `page_start` and `page_end` to the
+manifest (bodies, `full.md`, file names and headings are not opened for
+writing), copies the manifest to `.rebuild-backup/manifests-<date>-pre-pages/`
+first, and has `--dry-run` and `--redo`.
+
+**What differs from the prototype.** Matching is on characters, not words: both
+texts are cut to lower-case letters and digits with every run of one repeated
+character collapsed, so a text layer that runs words together or drops a doubled
+letter ("comand") still matches. A chunk's start is estimated from every probe
+slid along its first 600 characters, and the estimate the most probes agree on
+is taken (ties: nearest where the chunks before it leave off). That fixed two
+real mistakes found while building it: a table header that is the same in a
+dozen tables (`ye-data-intg`, the one `--strict` FAIL of the first run), and a
+cross-reference to the next chapter inside the previous chunk's "Related
+Topics". The end is the last words of the chunk found between its start and the
+next chunk's, no nearer than 0.6 of the chunk's length from its start (a 7,914
+character chunk had ended on its own first page, on an earlier repeat of its
+closing words: `tshell-ijtag-user-2025-2` p131). A start more than 150,000
+characters beyond where the search stands must be confirmed by a second probe,
+so one repeated phrase cannot carry every later chunk with it. A chunk is still
+never searched for behind the previous one's start, so a wrong early match is
+bounded by that confirmation, not undone; the run found no chunk whose start
+page ran backwards (`pages-backwards`: none in 23 documents).
+
+**Chunks that cannot be matched** (under 3 words or 16 letters: chapter titles,
+front matter; 189 of 7,647) sit between two placed chunks. If the one before
+ends on the page the one after starts on, the page is known and not flagged
+("bounded", 57). Otherwise the chunk takes the page the next one starts on, and
+the manifest says so: `"pages_from": "neighbour"` on the section (132). A chunk
+whose start was found and whose closing words were not gets `"page_end_from":
+"neighbour"` where its end page differs from its start (35; the end is the page
+the next chunk starts on, an upper bound). `manifest.schema.json` allows both
+and a `pages_backfill` record of the counts. Nothing was left unplaced (0).
+
+How far a guess can be off: a flagged chunk lies between the previous chunk's
+end page and the next chunk's start page. That gap is 0 or 1 page for 89 of 118
+(75%), 2 for 21, 3 to 5 for 8 (14 more sit at the edge of a document), so the
+page given is within two pages of the truth for 110 of 118 (93%).
+
+**`check_corpus.py` knows the flag** (`pages_from_neighbour` in the metrics; test
+18b fails without it): a guess is not held to the outline, because
+`ancestor-contradicts-pages` and `entity-contradicts-pages` are FAILs and a
+chapter stub can sit on a different page from the outline's entry. It does not
+warn on the flag: 132 chunks in 23 documents are stubs. **The server does not
+know it**: a stub's citation reads "p. N" with N the page its chapter starts on,
+which is where a reader would look. If a flagged page proves misleading in use,
+the server could print "p. ~N"; there is no evidence yet.
+
+### Accuracy
+
+Two measurements, neither a gold standard.
+
+*Against the PDF's outline.* A chunk whose first heading equals exactly one
+bookmark title has that bookmark's page as its true start page: 4,060 of the
+7,647 chunks. The start page equals the bookmark's in 96.6% (3,920) and is
+within one page in 97.0% (3,937); lowest `ye-data-intg` 86% and `tmax-ug` 87%.
+Most misses are false golds: the table of contents is cut into many chunks all
+headed "Contents" (23 of `tmax-ug`'s 30 misses; without them 96.6%). The
+prototype on the three pilot manuals scored 176 of 196, 29 of 33 and 417 of 429
+against 180, 30 and 422 here.
+
+*Chunk words on the claimed pages*, the spot check from the pilot (a stride
+sample of the chunks; the first 12 distinct words of 4 letters or more must be
+on the start page, 75% of them, and the last 12 on the end page or the one
+before): `bsdxg` 78 of 79, `dftug` 182 of 188, `atpg-gd` 191 of 193 (prototype:
+78, 183, 193). The pilot's "47 of 54 on `bsdxg`" was taken with a rule that was
+not recorded and is not comparable. Every sampled chunk has its words
+somewhere in its page range (`bsdxg` 79 of 79).
+
+The end page is the weaker half. It can be a page early or late: a chunk that
+closes on the lines naming the previous and next topic (these manuals print
+them at a page's foot) ends where those are, and the nearest repeat of ordinary
+closing words can be on an earlier page. `silicon-da-loc-data-intg` p439 is an
+example: the content check reads p439 as 62% in the chunk that claims it,
+because the chunk before it is given an end on p437 and the page's first lines
+are its tail. Not vouched for: any single end page.
+
+### Per document
+
+All 23 documents with no pages in the work copy: `backfill_pages.py` (23 s in
+all), then `extract_figures.py` and `ocr_figures.py`. The two figure scripts
+were run over the whole of each collection, because the helper that built the
+`--only` list failed; documents that already had pages were extracted again.
+"Tied" is `check_corpus.py`'s `figures_attached`. Content is its sampled-pages
+share; with pages it compares each sampled page with the chunks that claim it,
+without pages with the whole document, so the before and after columns measure
+slightly different things.
+
+| document | chunks | matched | end from next | bounded | neighbour | figures | tied before | tied after | content before | content after | --strict after |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| bsdrm-q-2019-12 | 64 | 63 | 0 | 0 | 1 | 87 | 94% | 99% | 93% | 90% | WARN: figure-outside-section |
+| bsdxg-q-2019-12 | 81 | 79 | 0 | 0 | 2 | 44 | 98% | 100% | 98% | 96% | WARN: figure-outside-section |
+| dcug-v-2023-12 | 317 | 298 | 0 | 1 | 18 | 225 | 92% | 100% | 100% | 98% | WARN: figure-outside-section |
+| dftug-v-2023-12-sp1 | 402 | 378 | 1 | 8 | 15 | 548 | 93% | 99% | 99% | 96% | WARN: figure-outside-section,furniture |
+| silicon-da-loc-data-intg | 129 | 119 | 2 | 0 | 8 | 113 | 56% | 94% | 98% | 95% | WARN: content-gap,figure-outside-section |
+| smsug-y-2026-03-sp2 | 76 | 75 | 1 | 0 | 0 | 51 | 67% | 84% | 100% | 97% | WARN: figure-outside-section |
+| tmax-ug-v-2023-12 | 456 | 413 | 3 | 11 | 29 | 517 | 68% | 97% | 100% | 97% | WARN: figure-outside-section |
+| tmsmsvmug-y-2026-03-sp2 | 47 | 45 | 2 | 0 | 0 | 37 | 86% | 97% | 97% | 97% | WARN: figure-outside-section |
+| vcs | 446 | 408 | 3 | 1 | 34 | 263 | 75% | 87% | 100% | 98% | WARN: furniture |
+| ye-data-intg | 96 | 89 | 3 | 0 | 4 | 120 | 70% | 98% | 100% | 100% | ok: ok |
+| 9-tessent-deterministic-on-chip-compare-diagnosis-tessent-streaming-scan-network | 5 | 3 | 0 | 0 | 2 | 34 | 71% | 100% | 99% | 99% | ok: ok |
+| atpg-gd-2025-2 | 765 | 754 | 2 | 8 | 1 | 348 | 99% | 99% | 100% | 100% | WARN: empty-chunk,figure-outside-section |
+| edt-gd-2025-2 | 362 | 358 | 0 | 3 | 1 | 101 | 97% | 100% | 100% | 99% | WARN: figure-outside-section |
+| etassemblereference-2021-2 | 518 | 514 | 2 | 0 | 2 | 24 | 100% | 100% | 100% | 97% | ok: ok |
+| tessent-diagnosis-user-2025-2 | 396 | 395 | 0 | 0 | 1 | 165 | 95% | 100% | 100% | 100% | ok: ok |
+| tessentmbist-useref-2025-2 | 549 | 537 | 7 | 0 | 5 | 69 | 97% | 100% | 100% | 100% | ok: ok |
+| tshell-ijtag-user-2022-4 | 75 | 73 | 1 | 0 | 1 | 41 | 100% | 100% | 99% | 99% | ok: ok |
+| tshell-ijtag-user-2025-2 | 79 | 78 | 0 | 0 | 1 | 47 | 100% | 100% | 100% | 100% | ok: ok |
+| tshell-ijtag-user-2026-2 | 292 | 290 | 1 | 0 | 1 | 85 | 93% | 99% | 100% | 94% | ok: ok |
+| tshell-mbist-user-2026-2 | 765 | 757 | 6 | 1 | 1 | 151 | 97% | 97% | 100% | 93% | WARN: figure-outside-section |
+| tshell-siliconinsight-2025-2 | 335 | 332 | 1 | 1 | 1 | 73 | 90% | 100% | 100% | 99% | WARN: figure-outside-section |
+| tshell-user-2025-2 | 1161 | 1143 | 0 | 17 | 1 | 349 | 94% | 98% | 100% | 100% | WARN: empty-chunk,figure-outside-section |
+| tsi-usage-ref-2025-2 | 231 | 222 | 0 | 6 | 3 | 159 | 100% | 100% | 100% | 100% | WARN: empty-chunk |
+
+Across the 23: figures tied 3,178 of 3,651 (87.0%) before, 3,562 (97.6%) after;
+mean content 99.2% before, 97.6% after. `--strict`: 0 FAIL, 23 warnings: 32
+`figure-outside-section` in 13 documents (a figure on a page outside its
+section's pages; the check cannot run without pages), 3 `furniture` in `dftug`,
+3 documents with `empty-chunk` (known), 1 `content-gap`. Two documents are still
+under the plan's 92% tied: `smsug` (84%) and `vcs` (87%). `bsdrm-q-2019-12`
+content went 93% to 90%.
+
+### Search
+
+One index (`bf-pages.sqlite3`) from the work copy, 146 quote-only questions, the
+control `p4-furn.sqlite3` reproduced first.
+
+| | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|
+| control | 73% | 89% | 92% | 0.812 |
+| pages in place | 72% | 89% | 92% | 0.808 |
+
+One question moved: f15 (PRPG driving the scan chain inputs, a figure question)
+1 to 2. All 123 text questions kept their rank. The cause is the figures, not
+the bodies: pages let `extract_figures.py` tie more figures to sections, and a
+figure's text is searched with its section (the same move as in the pilot).
+
 ## Caveats
 
 - Small: 76 questions, 57 text and 19 figure, so one question moves a text

@@ -69,6 +69,11 @@ Updated 2026-11-10.
   strip furniture with `join_pages`, cut with `chunk_spans` and read a chunk's
   pages with `trim_span` and `page_range`: a chunk is on the page its first
   word is, not the one its leading newline is on.
+- `backfill_pages.py` gives a document converted without pages its `page_start` and
+  `page_end` from the PDF's text, writing only the manifest (backup first). A
+  chunk too short to match takes its next neighbour's page and carries
+  `pages_from: neighbour`; `check_corpus.py` does not hold that page to the
+  outline (test_18b).
 - Every manifest carries `schema_version` and `converter`
   (`scripts/manifest.schema.json`); no converter writes `chars`.
 - `editions.collections_under(path)` is how every command line turns a path
@@ -89,13 +94,14 @@ Updated 2026-11-10.
 - New tests go in the file for their area: `test_converters.py`,
   `test_server.py`, `test_figures.py`, `test_checker.py`, `test_editions.py`,
   `test_update.py`, `test_usage.py` (the call log's triage and answer
-  grading), `test_check_script.py` or `test_http.py`.
+  grading), `test_backfill.py`, `test_check_script.py` or `test_http.py`.
 - **Test numbers.** Each test's number is unique across files; pick the next
   free one in the area's range and keep its letter series together: 53–53m
   `update_corpus.py` (53h, on `editions.waiting_collections`, is in
   `test_editions.py`); 54–54b the server's call log; 55–55c `triage_log.py`;
   56–56c `eval_answers.py`; 57–58f `check_script`; 59–59j the HTTP transport;
-  60–60l `get_section`'s passages and `eval_search.py --cost`.
+  60–60l `get_section`'s passages and `eval_search.py --cost`; 61–61h
+  `backfill_pages.py` (18b, the checker's side of its flag, is in `test_checker.py`).
   22d is the server copy only the index it serves may refresh; 22e is the
   editor entry keeping its `env` across a rebuild; 25g is
   `editions.publish` putting the old document back.
